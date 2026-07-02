@@ -8,7 +8,7 @@ import {
   DisconnectButton,
   useRoomContext
 } from '@livekit/components-react';
-import { Track, RoomEvent, TranscriptionSegment, Participant } from 'livekit-client';
+import { Track, RoomEvent, type TranscriptionSegment, type Participant } from 'livekit-client';
 import '@livekit/components-styles';
 import { useInterview } from '../context/InterviewContext';
 
@@ -26,6 +26,10 @@ export const InterviewRoom: React.FC = () => {
         serverUrl={import.meta.env.VITE_LIVEKIT_URL}
         connect={true}
         onDisconnected={() => setStage('completed')}
+        onError={(err) => {
+          console.error("LiveKit Error:", err);
+          alert(`Connection Error: ${err.message || 'Could not connect. Ensure microphone permissions are granted.'}`);
+        }}
         style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#111', color: 'white' }}
       >
         <RoomHeader />
