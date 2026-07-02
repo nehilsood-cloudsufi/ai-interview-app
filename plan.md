@@ -35,9 +35,8 @@ Build a browser-based AI interview app leveraging LiveKit Cloud, LiveKit Python 
 **Goal:** Set up Python virtual environment and build the LiveKit token generation endpoint using FastAPI.
 
 - [ ] **TODO 1.1:** Setup Python Virtual Environment
-  - `cd backend` && `python3 -m venv venv`
-  - Install base dependencies: `fastapi`, `uvicorn`, `livekit-server-sdk`, `livekit-agents`, `python-dotenv`.
-  - Install AI plugins: `livekit-plugins-liveavatar`, `livekit-plugins-google`, `livekit-plugins-deepgram`, `livekit-plugins-elevenlabs`.
+  - `cd backend` && `uv init --app` && `uv add fastapi uvicorn livekit-api livekit-agents python-dotenv livekit-plugins-liveavatar livekit-plugins-google livekit-plugins-deepgram livekit-plugins-elevenlabs`
+  - Install base dependencies and AI plugins.
 - [ ] **TODO 1.2:** Configure Environment Variables
   - Create `.env` file with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEAVATAR_API_KEY`, `LIVEAVATAR_AVATAR_ID`, `GEMINI_API_KEY`, `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`.
 - [ ] **TODO 1.3:** Implement FastAPI Token Server (`server.py`)
