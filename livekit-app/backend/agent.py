@@ -55,8 +55,9 @@ async def entrypoint(ctx: JobContext):
             video_quality="high",
         )
 
-        agent.start(ctx.room, avatar)
+        # Start the avatar session FIRST to hook the agent's audio tail, then start the agent
         await avatar.start(agent, room=ctx.room)
+        agent.start(ctx.room)
 
         # State machine logic
         turn_count = 0
