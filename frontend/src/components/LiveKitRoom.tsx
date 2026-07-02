@@ -1,13 +1,14 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   LiveKitRoom, 
   RoomAudioRenderer, 
   VideoTrack,
   useTracks,
   AudioVisualizer,
-  DisconnectButton
+  DisconnectButton,
+  useRoomContext
 } from '@livekit/components-react';
-import { Track } from 'livekit-client';
+import { Track, RoomEvent, TranscriptionSegment, Participant } from 'livekit-client';
 import '@livekit/components-styles';
 import { useInterview } from '../context/InterviewContext';
 
@@ -29,13 +30,13 @@ export const InterviewRoom: React.FC = () => {
       >
         <RoomHeader />
         
-        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
           <ActiveAvatar />
+          <TranscriptOverlay />
         </div>
         
         <RoomFooter />
 
-        {/* This component ensures we hear the remote audio */}
         <RoomAudioRenderer />
       </LiveKitRoom>
     </div>
@@ -52,9 +53,7 @@ const RoomHeader = () => {
 };
 
 const ActiveAvatar = () => {
-  // Find all remote video tracks (the avatar)
   const videoTracks = useTracks([Track.Source.Camera]);
-  // Find all remote audio tracks (for visualization)
   const audioTracks = useTracks([Track.Source.Microphone]);
 
   const avatarTrack = videoTracks.find(t => t.participant.identity !== 'local');
@@ -80,6 +79,52 @@ const ActiveAvatar = () => {
           <AudioVisualizer trackRef={agentAudio} />
         </div>
       )}
+    </div>
+  );
+};
+
+const TranscriptOverlay = () => {
+  const room = useRoomContext();
+  const [transcripts, setTranscripts] = useState<{name: string, text: string}[]>([]);
+
+  useEffect(() => {
+    const handleTranscription = (segments: TranscriptionSegment[], participant?: Participant) => {
+      const text = segments.map(s => s.text).join(' ');
+      if (text.trim()) {
+        const name = participant?.name || participant?.identity || 'Agent';
+        setTranscripts(prev => {
+          const newT = [...prev, { name, text }];
+          return newT.slice(-3); // keep only the last 3 messages for the overlay
+        });
+      }
+    };
+    
+    room.on(RoomEvent.TranscriptionReceived, handleTranscription);
+    return () => {
+      room.off(RoomEvent.TranscriptionReceived, handleTranscription);
+    };
+  }, [room]);
+
+  if (transcripts.length === 0) return null;
+
+  return (
+    <div style={{ 
+      position: 'absolute', 
+      bottom: '20px', 
+      left: '50%', 
+      transform: 'translateX(-50%)',
+      backgroundColor: 'rgba(0,0,0,0.7)', 
+      padding: '1rem', 
+      borderRadius: '8px',
+      width: '80%',
+      maxWidth: '600px',
+      textAlign: 'left'
+    }}>
+      {transcripts.map((t, i) => (
+        <div key={i} style={{ marginBottom: i === transcripts.length - 1 ? 0 : '0.5rem' }}>
+          <strong style={{ color: t.name === 'Agent' ? '#4dabf7' : '#fff' }}>{t.name}:</strong> {t.text}
+        </div>
+      ))}
     </div>
   );
 };

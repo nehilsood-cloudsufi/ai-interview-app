@@ -5,6 +5,8 @@ type InterviewStage = 'greeting' | 'background' | 'technical' | 'behavioral' | '
 interface InterviewContextType {
   participantName: string;
   setParticipantName: (name: string) => void;
+  jobRole: string;
+  setJobRole: (role: string) => void;
   roomName: string;
   setRoomName: (room: string) => void;
   token: string | null;
@@ -17,6 +19,7 @@ const InterviewContext = createContext<InterviewContextType | undefined>(undefin
 
 export const InterviewProvider = ({ children }: { children: ReactNode }) => {
   const [participantName, setParticipantName] = useState('');
+  const [jobRole, setJobRole] = useState('');
   const [roomName, setRoomName] = useState('');
   const [token, setToken] = useState<string | null>(null);
   const [stage, setStage] = useState<InterviewStage>('greeting');
@@ -26,6 +29,8 @@ export const InterviewProvider = ({ children }: { children: ReactNode }) => {
       value={{
         participantName,
         setParticipantName,
+        jobRole,
+        setJobRole,
         roomName,
         setRoomName,
         token,

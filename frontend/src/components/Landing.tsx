@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import { useInterview } from '../context/InterviewContext';
 
 export const Landing: React.FC = () => {
-  const { setParticipantName, setRoomName, setToken } = useInterview();
+  const { setParticipantName, setJobRole, setRoomName, setToken } = useInterview();
   const [name, setName] = useState('');
+  const [role, setRole] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -18,7 +19,6 @@ export const Landing: React.FC = () => {
     setError('');
     
     try {
-      // Create a unique room name for this interview
       const generatedRoom = `interview-${Date.now()}`;
       
       const response = await fetch(`${import.meta.env.VITE_API_URL}/token?room=${generatedRoom}&name=${encodeURIComponent(name)}`);
@@ -30,6 +30,7 @@ export const Landing: React.FC = () => {
       const data = await response.json();
       
       setParticipantName(name);
+      setJobRole(role);
       setRoomName(generatedRoom);
       setToken(data.token);
     } catch (err) {
@@ -52,6 +53,16 @@ export const Landing: React.FC = () => {
             placeholder="Your Name" 
             value={name}
             onChange={(e) => setName(e.target.value)}
+            disabled={loading}
+            style={{ padding: '0.5rem', width: '100%', boxSizing: 'border-box' }}
+          />
+        </div>
+        <div>
+          <input 
+            type="text" 
+            placeholder="Target Role (e.g., Frontend Engineer)" 
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
             disabled={loading}
             style={{ padding: '0.5rem', width: '100%', boxSizing: 'border-box' }}
           />
