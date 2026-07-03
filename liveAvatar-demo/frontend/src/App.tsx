@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { LiveAvatarSession, SessionEvent } from '@heygen/liveavatar-web-sdk';
 import { Mic, MicOff, Play, Square, Loader2, Video, VideoOff, Signal, SignalHigh, SignalMedium, SignalLow, SignalZero, Upload, X } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_URL = import.meta.env.PROD ? '' : (import.meta.env.VITE_API_URL || 'http://localhost:3001');
 
 type SessionStatus = 'disconnected' | 'connecting' | 'connected';
 type SpeakingState = 'idle' | 'user_speaking' | 'avatar_speaking' | 'processing';
