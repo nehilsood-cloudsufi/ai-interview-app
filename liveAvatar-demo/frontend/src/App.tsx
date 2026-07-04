@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { LiveAvatarSession, SessionEvent } from '@heygen/liveavatar-web-sdk';
-import { Mic, MicOff, Play, Square, Loader2, Video, VideoOff, Signal, SignalHigh, SignalMedium, SignalLow, SignalZero, Upload, X } from 'lucide-react';
+import { LiveAvatarSession, SessionEvent, AgentEventsEnum } from '@heygen/liveavatar-web-sdk';
+import { Mic, MicOff, Play, Square, Loader2, Video, VideoOff, SignalHigh, SignalMedium, SignalLow, SignalZero, Upload, X } from 'lucide-react';
 
 const API_URL = import.meta.env.PROD ? '' : (import.meta.env.VITE_API_URL || 'http://localhost:3001');
 
@@ -137,22 +137,12 @@ function App() {
         }
       });
 
-      newSession.on(SessionEvent.SESSION_STOPPED, () => cleanupSession(newSession));
+      newSession.on(SessionEvent.SESSION_DISCONNECTED, () => cleanupSession(newSession));
       
-      newSession.on(SessionEvent.AGENT_MESSAGE_RECEIVED, (event: any) => {
-          console.log("Agent Event:", event); // Debug log to see the event structure
-          const type = event.event_type;
-          
-          if (type === 'avatar.speak_started') setSpeakingState('avatar_speaking');
-          else if (type === 'avatar.speak_ended') setSpeakingState('idle');
-          else if (type === 'user.speak_started') setSpeakingState('user_speaking');
-          else if (type === 'user.speak_ended') setSpeakingState('processing');
-      });
-      
-      newSession.on(SessionEvent.SESSION_ERROR, (err) => {
-          console.error("Session error:", err);
-          setError("A session error occurred.");
-      });
+      newSession.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, () => setSpeakingState('avatar_speaking'));
+      newSession.on(AgentEventsEnum.AVATAR_SPEAK_ENDED, () => setSpeakingState('idle'));
+      newSession.on(AgentEventsEnum.USER_SPEAK_STARTED, () => setSpeakingState('user_speaking'));
+      newSession.on(AgentEventsEnum.USER_SPEAK_ENDED, () => setSpeakingState('processing'));
 
       await newSession.start();
       setSession(newSession);
@@ -250,7 +240,7 @@ function App() {
   }, [session]);
 
   useEffect(() => {
-      let interval: NodeJS.Timeout;
+      let interval: ReturnType<typeof setInterval>;
       if (status === 'connected') {
           interval = setInterval(() => setSessionDuration(prev => prev + 1), 1000);
       } else {
