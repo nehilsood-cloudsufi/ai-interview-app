@@ -7,6 +7,8 @@ import uuid
 from typing import List
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,6 +24,9 @@ app.add_middleware(
 )
 
 LIVEAVATAR_API_KEY = os.getenv("LIVEAVATAR_API_KEY")
+if not LIVEAVATAR_API_KEY:
+    raise RuntimeError("LIVEAVATAR_API_KEY is missing from the environment variables.")
+    
 LIVEAVATAR_BASE_URL = "https://api.liveavatar.com/v1"
 
 @app.post("/api/upload-resume")
@@ -139,6 +144,8 @@ async def stop_session(request: Request):
     try:
         body = await request.json()
         session_token = body.get("session_token")
+        context_id = body.get("context_id") # Get context_id to clean up
+        
         if not session_token:
             return {"status": "ignored"}
             
@@ -147,8 +154,32 @@ async def stop_session(request: Request):
                 f"{LIVEAVATAR_BASE_URL}/sessions/stop",
                 headers={"Authorization": f"Bearer {session_token}"}
             )
+            
+            # Clean up the dynamically created context if one was used
+            if context_id:
+                try:
+                    await client.delete(
+                        f"{LIVEAVATAR_BASE_URL}/contexts/{context_id}",
+                        headers={"X-API-KEY": LIVEAVATAR_API_KEY}
+                    )
+                except Exception as e:
+                    print(f"Failed to clean up context {context_id}: {e}")
+                    
             return {"status": "stopped", "api_status": res.status_code}
     except Exception as e:
         print(f"Error stopping session: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to stop session")
+
+# Serve React Frontend in production
+frontend_dist = os.path.join(os.path.dirname(__file__), "../frontend/dist")
+
+@app.middleware("http")
+async def fallback_to_index(request: Request, call_next):
+    response = await call_next(request)
+    if response.status_code == 404 and not request.url.path.startswith("/api/"):
+        return FileResponse(os.path.join(frontend_dist, "index.html"))
+    return response
+
+if os.path.isdir(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
 

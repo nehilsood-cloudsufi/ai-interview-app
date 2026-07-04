@@ -1,9 +1,35 @@
-node_modules
-dist
+# Dockerignore
+
+# Environment files
 .env
-.venv
-__pycache__
-*.pyc
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+yarn-debug.log
+
+# Build outputs
+frontend/dist/
+backend/dist/
+build/
+
+# Git
 .git
 .gitignore
+
+# IDE / OS
+.vscode/
+.idea/
 .DS_Store
+*.swp
