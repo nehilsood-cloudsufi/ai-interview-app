@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { LiveAvatarSession, SessionEvent, AgentEventsEnum } from '@heygen/liveavatar-web-sdk';
-import { Mic, MicOff, Play, Square, Loader2, Video, VideoOff, SignalHigh, SignalMedium, SignalLow, SignalZero, Upload, X } from 'lucide-react';
+import { Mic, MicOff, Play, Square, Loader2, Video, VideoOff, SignalHigh, SignalMedium, SignalLow, SignalZero, Upload, X, Users } from 'lucide-react';
 
 const API_URL = import.meta.env.PROD ? '' : (import.meta.env.VITE_API_URL || 'http://localhost:3001');
 
@@ -23,6 +23,12 @@ function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   
+  const [apiKey, setApiKey] = useState('');
+  const [concurrencyCount, setConcurrencyCount] = useState<number | null>(null);
+  
+  const apiKeyRef = useRef(apiKey);
+  useEffect(() => { apiKeyRef.current = apiKey; }, [apiKey]);
+  
   const videoRef = useRef<HTMLVideoElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -41,6 +47,23 @@ function App() {
           conn.addEventListener('change', updateQuality);
           return () => conn.removeEventListener('change', updateQuality);
       }
+  }, []);
+
+  useEffect(() => {
+      const fetchConcurrency = async () => {
+          try {
+              const res = await fetch(`${API_URL}/api/concurrency`);
+              if (res.ok) {
+                  const data = await res.json();
+                  setConcurrencyCount(data.active_sessions);
+              }
+          } catch (e) {
+              console.error("Failed to fetch concurrency", e);
+          }
+      };
+      fetchConcurrency();
+      const interval = setInterval(fetchConcurrency, 5000);
+      return () => clearInterval(interval);
   }, []);
 
   const NetworkIcon = () => {
@@ -90,6 +113,7 @@ function App() {
       if (files.length > 0) {
           const formData = new FormData();
           files.forEach(file => formData.append('files', file));
+          if (apiKey) formData.append('api_key', apiKey);
           
           const uploadRes = await fetch(`${API_URL}/api/upload-resume`, {
               method: 'POST',
@@ -112,10 +136,14 @@ function App() {
         body: JSON.stringify({
           context_id: currentContextId,
           llm_configuration_id: import.meta.env.VITE_LLM_CONFIG_ID,
+          api_key: apiKey || undefined,
         }),
       });
 
-      if (!response.ok) throw new Error('Failed to create session on backend');
+      if (!response.ok) {
+          const errData = await response.json().catch(() => null);
+          throw new Error(errData?.detail || 'Failed to create session on backend');
+      }
 
       const { session_token } = await response.json();
       localStorage.setItem('liveavatar_session_token', session_token);
@@ -151,6 +179,15 @@ function App() {
       console.error(err);
       setError(err.message || 'An error occurred connecting to the avatar.');
       setStatus('disconnected');
+      
+      const orphanedToken = localStorage.getItem('liveavatar_session_token');
+      if (orphanedToken) {
+          fetch(`${API_URL}/api/session/stop`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ session_token: orphanedToken, api_key: apiKeyRef.current || undefined })
+          }).catch(console.error).finally(() => localStorage.removeItem('liveavatar_session_token'));
+      }
     }
   };
 
@@ -205,7 +242,7 @@ function App() {
           fetch(`${API_URL}/api/session/stop`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ session_token: orphanedToken })
+              body: JSON.stringify({ session_token: orphanedToken, api_key: apiKeyRef.current || undefined })
           }).catch(console.error).finally(() => localStorage.removeItem('liveavatar_session_token'));
       }
   }, []);
@@ -217,7 +254,7 @@ function App() {
               fetch(`${API_URL}/api/session/stop`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ session_token: activeToken }),
+                  body: JSON.stringify({ session_token: activeToken, api_key: apiKeyRef.current || undefined }),
                   keepalive: true
               });
           }
@@ -232,7 +269,7 @@ function App() {
                   fetch(`${API_URL}/api/session/stop`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ session_token: activeToken })
+                      body: JSON.stringify({ session_token: activeToken, api_key: apiKeyRef.current || undefined })
                   }).catch(console.error);
               }
           }
@@ -287,13 +324,23 @@ function App() {
                 )}
             </div>
 
-            {status === 'disconnected' && files.length < 5 && (
-                <div className="p-6 border-t border-slate-800 bg-slate-900/60 backdrop-blur-md shrink-0">
-                    <label className="flex items-center justify-center gap-2 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 px-4 py-4 rounded-xl cursor-pointer transition-all border border-indigo-500/30 hover:border-indigo-500/50 hover:shadow-lg hover:shadow-indigo-500/10 group">
-                        <Upload className="w-5 h-5 group-hover:-translate-y-0.5 transition-transform" />
-                        <span className="text-sm font-semibold tracking-wide">Upload File</span>
-                        <input type="file" multiple accept=".pdf,.docx,.txt" className="hidden" onChange={handleFileChange} disabled={status !== 'disconnected'} />
-                    </label>
+            {status === 'disconnected' && (
+                <div className="p-6 border-t border-slate-800 bg-slate-900/60 backdrop-blur-md shrink-0 flex flex-col gap-4">
+                    {files.length < 5 && (
+                        <label className="flex items-center justify-center gap-2 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 px-4 py-4 rounded-xl cursor-pointer transition-all border border-indigo-500/30 hover:border-indigo-500/50 hover:shadow-lg hover:shadow-indigo-500/10 group mb-2">
+                            <Upload className="w-5 h-5 group-hover:-translate-y-0.5 transition-transform" />
+                            <span className="text-sm font-semibold tracking-wide">Upload File</span>
+                            <input type="file" multiple accept=".pdf,.docx,.txt" className="hidden" onChange={handleFileChange} disabled={status !== 'disconnected'} />
+                        </label>
+                    )}
+
+                    <input 
+                        type="password" 
+                        placeholder="LiveAvatar API Key (optional)" 
+                        value={apiKey} 
+                        onChange={e => setApiKey(e.target.value)} 
+                        className="w-full bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors" 
+                    />
                 </div>
             )}
         </div>
@@ -309,6 +356,12 @@ function App() {
                     </div>
                 </div>
                 <div className="flex items-center gap-4">
+                    {concurrencyCount !== null && (
+                        <div className="flex items-center gap-2 bg-slate-800/50 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-700/50" title="Active Sessions">
+                            <Users className="w-4 h-4 text-sky-400" />
+                            <span className="text-xs font-semibold text-slate-300">{concurrencyCount}</span>
+                        </div>
+                    )}
                     {status === 'connected' && (
                         <span className="font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-lg text-sm font-semibold tracking-wider shadow-inner">{formatTime(sessionDuration)}</span>
                     )}

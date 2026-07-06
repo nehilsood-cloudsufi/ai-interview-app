@@ -4,8 +4,8 @@ import httpx
 import pymupdf
 import docx
 import uuid
-from typing import List
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -25,12 +25,23 @@ app.add_middleware(
 
 LIVEAVATAR_API_KEY = os.getenv("LIVEAVATAR_API_KEY")
 if not LIVEAVATAR_API_KEY:
-    raise RuntimeError("LIVEAVATAR_API_KEY is missing from the environment variables.")
+    print("WARNING: LIVEAVATAR_API_KEY is missing from the environment variables. Users will need to provide their own.")
     
 LIVEAVATAR_BASE_URL = "https://api.liveavatar.com/v1"
 
+# Concurrency Tracking
+active_sessions_count = 0
+
+@app.get("/api/concurrency")
+async def get_concurrency():
+    global active_sessions_count
+    return {"active_sessions": active_sessions_count}
+
 @app.post("/api/upload-resume")
-async def upload_resume(files: List[UploadFile] = File(...)):
+async def upload_resume(
+    files: List[UploadFile] = File(...),
+    api_key: Optional[str] = Form(None)
+):
     if len(files) > 5:
         raise HTTPException(status_code=400, detail="Maximum 5 files allowed")
     
@@ -63,8 +74,9 @@ async def upload_resume(files: List[UploadFile] = File(...)):
     base_prompt = "You are an experienced technical interviewer assessing a candidate for an AI Engineering role. Ask them a few simple, basic questions about RAG (Retrieval-Augmented Generation), fundamentals of Large Language Models (LLMs), and general Generative AI basics. Keep your responses concise and conversational. Do not output markdown, speak naturally."
     full_prompt = f"{base_prompt}\n\nCandidate's Additional Context (Resume/Portfolio):\n{extracted_text}"
     
-    if not LIVEAVATAR_API_KEY:
-        raise HTTPException(status_code=500, detail="LIVEAVATAR_API_KEY missing")
+    liveavatar_key = api_key if api_key else LIVEAVATAR_API_KEY
+    if not liveavatar_key:
+        raise HTTPException(status_code=500, detail="LiveAvatar API Key missing")
         
     async with httpx.AsyncClient() as client:
         try:
@@ -76,7 +88,7 @@ async def upload_resume(files: List[UploadFile] = File(...)):
                     "prompt": full_prompt[:25000], # Keep within reasonable limits
                     "opening_text": "Hello! I've reviewed the documents you shared. Let me know when you're ready to begin the technical interview."
                 },
-                headers={"X-API-KEY": LIVEAVATAR_API_KEY}
+                headers={"X-API-KEY": liveavatar_key}
             )
             context_res.raise_for_status()
             context_id = context_res.json()["data"]["id"]
@@ -87,14 +99,17 @@ async def upload_resume(files: List[UploadFile] = File(...)):
 
 @app.post("/api/session")
 async def create_session(request: Request):
-    if not LIVEAVATAR_API_KEY:
-        raise HTTPException(status_code=500, detail="LIVEAVATAR_API_KEY not configured on backend")
-        
+    global active_sessions_count
     try:
         body = await request.json()
         context_id = body.get("context_id")
         llm_configuration_id = body.get("llm_configuration_id")
         avatar_id = body.get("avatar_id")
+        api_key = body.get("api_key")
+        
+        liveavatar_key = api_key if api_key else LIVEAVATAR_API_KEY
+        if not liveavatar_key:
+            raise HTTPException(status_code=500, detail="LiveAvatar API Key not configured")
         
         # 1. Generate Session Token
         token_payload = {
@@ -117,7 +132,7 @@ async def create_session(request: Request):
                 f"{LIVEAVATAR_BASE_URL}/sessions/token",
                 json=token_payload,
                 headers={
-                    "X-API-KEY": LIVEAVATAR_API_KEY,
+                    "X-API-KEY": liveavatar_key,
                     "Content-Type": "application/json"
                 }
             )
@@ -126,6 +141,8 @@ async def create_session(request: Request):
             token_data = token_response.json()["data"]
             session_token = token_data["session_token"]
             session_id = token_data["session_id"]
+            
+            active_sessions_count += 1
             
             return {
                 "session_token": session_token,
@@ -141,10 +158,14 @@ async def create_session(request: Request):
 
 @app.post("/api/session/stop")
 async def stop_session(request: Request):
+    global active_sessions_count
     try:
         body = await request.json()
         session_token = body.get("session_token")
         context_id = body.get("context_id") # Get context_id to clean up
+        api_key = body.get("api_key")
+        
+        liveavatar_key = api_key if api_key else LIVEAVATAR_API_KEY
         
         if not session_token:
             return {"status": "ignored"}
@@ -155,12 +176,15 @@ async def stop_session(request: Request):
                 headers={"Authorization": f"Bearer {session_token}"}
             )
             
+            if active_sessions_count > 0:
+                active_sessions_count -= 1
+            
             # Clean up the dynamically created context if one was used
-            if context_id:
+            if context_id and liveavatar_key:
                 try:
                     await client.delete(
                         f"{LIVEAVATAR_BASE_URL}/contexts/{context_id}",
-                        headers={"X-API-KEY": LIVEAVATAR_API_KEY}
+                        headers={"X-API-KEY": liveavatar_key}
                     )
                 except Exception as e:
                     print(f"Failed to clean up context {context_id}: {e}")
@@ -182,4 +206,3 @@ async def fallback_to_index(request: Request, call_next):
 
 if os.path.isdir(frontend_dist):
     app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
-
