@@ -24,10 +24,12 @@ RUN cd backend && uv sync --frozen --no-dev
 # Copy built frontend from stage 1
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-# Run as a non-root user
-RUN addgroup --system app && adduser --system --ingroup app app \
+# Run as a non-root user with a real home directory (a homeless system user
+# defaults to HOME=/nonexistent, which breaks uv's cache directory at runtime)
+RUN addgroup --system app && adduser --system --ingroup app --home /home/app app \
     && chown -R app:app /app
 USER app
+ENV HOME=/home/app
 
 # Expose the port Cloud Run expects
 EXPOSE 8080
