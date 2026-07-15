@@ -58,9 +58,9 @@ If you look inside `/liveAvatar-demo/frontend/src/App.tsx`, here are the key con
 
 ---
 
-## 5. Deep Dive: Backend Mechanics (`server.py`)
+## 5. Deep Dive: Backend Mechanics (`app/`)
 
-Inside `/liveAvatar-demo/backend/server.py`, the logic is designed for resilience:
+Inside `/liveAvatar-demo/backend/app/` (routers + services, see `CLAUDE.md` for the module layout), the logic is designed for resilience:
 
 - **Concurrency Tracking**: We maintain a simple `active_sessions_count` variable. This helps us monitor if we are hitting LiveKit's concurrency limits.
 - **Garbage Collection (Contexts)**: When a session stops (in `/api/session/stop`), we don't just stop the video. We also send a `DELETE` request to LiveAvatar to destroy the `context_id` we created for that specific resume. If we didn't do this, our LiveAvatar workspace would eventually fill up with thousands of temporary resumes.

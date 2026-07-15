@@ -1,7 +1,7 @@
 #!/bin/bash
 PROJECT_ID=$(gcloud config get-value project 2>/dev/null | grep -v 'WARNING' | grep -v 'Updates' | grep -v 'To take' | tail -n 1)
 PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
-API_KEY="c0f7e525-7549-11f1-8d28-066a7fa2e369"
+API_KEY="${LIVEAVATAR_API_KEY:?Error: set LIVEAVATAR_API_KEY env var before running this script}"
 
 if gcloud secrets describe LIVEAVATAR_API_KEY >/dev/null 2>&1; then
     echo "Secret already exists. Adding new version..."

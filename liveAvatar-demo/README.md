@@ -11,9 +11,9 @@ This directory contains a Proof of Concept (POC) for an AI Engineering Interview
 
 1. Set up your `.env` variables in both frontend and backend directories.
 2. Ensure you have `uv` installed for the backend.
-3. Run the backend setup script (`python setup.py`) to provision your Gemini LLM integration and base context on LiveAvatar.
+3. Run the backend setup script (`uv run python scripts/setup_gemini_context.py`) to provision your Gemini LLM integration and base context on LiveAvatar.
 4. Start both servers:
-   - Backend: `uv run uvicorn server:app --port 3001 --reload`
+   - Backend: `uv run uvicorn app.main:app --port 3001 --reload`
    - Frontend: `npm run dev`
 
 ## Deployment

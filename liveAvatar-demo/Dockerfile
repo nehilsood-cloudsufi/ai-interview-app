@@ -14,22 +14,27 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies if required (e.g., for pymupdf or docx)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir uvicorn
+# Install uv for dependency management (project is uv-managed: pyproject.toml + uv.lock)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy backend code
 COPY backend/ ./backend/
+RUN cd backend && uv sync --frozen --no-dev
 
 # Copy built frontend from stage 1
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
+# Run as a non-root user
+RUN addgroup --system app && adduser --system --ingroup app app \
+    && chown -R app:app /app
+USER app
+
 # Expose the port Cloud Run expects
 EXPOSE 8080
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/api/concurrency', timeout=3).status==200 else 1)"
+
 # Command to run the application using uvicorn
-CMD ["uvicorn", "backend.server:app", "--host", "0.0.0.0", "--port", "8080"]
+WORKDIR /app/backend
+CMD ["uv", "run", "--no-sync", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
