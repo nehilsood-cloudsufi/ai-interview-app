@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository structure
 
-This repo currently holds one active POC, `liveAvatar-demo/`, for an AI-driven interview experience built on HeyGen's LiveAvatar **FULL Mode** SDK, where the LLM/conversation logic runs entirely on HeyGen's infrastructure. The local backend is just a secure proxy (session/token creation, resume parsing) — there is no separate agent worker process.
+This repo currently holds one active POC, `liveAvatar/`, for an AI-driven interview experience built on HeyGen's LiveAvatar **FULL Mode** SDK, where the LLM/conversation logic runs entirely on HeyGen's infrastructure. The local backend is just a secure proxy (session/token creation, resume parsing) — there is no separate agent worker process.
 
 It has its own `backend/` (Python/FastAPI, dependency-managed with `uv`) and `frontend/` (React 19 + Vite + TypeScript, `oxlint` for linting).
 
 (A second POC, `livekit-app/`, built directly on the LiveKit Agents framework, was removed — see git history if you need to resurrect it.)
 
-## `liveAvatar-demo/backend/`
+## `liveAvatar/backend/`
 
 Package layout: `app/main.py` wires up the FastAPI app (lifespan, CORS, routers, static/SPA mount) — no separate agent worker process. Routes live in `app/routers/` (`concurrency.py`, `resume.py`, `sessions.py`), each backed by `app/services/`:
 - `liveavatar_client.py` — the LiveAvatar HTTP calls (create/delete context, create session token with Gemini-fallback retry, stop session).
@@ -26,7 +26,7 @@ Known constraints (see `docs/KT.md` for full rationale/troubleshooting):
 - The `/api/upload-resume` route collapses every parsing error (including unsupported file type and PDF page-limit) to a generic "Failed to read {filename}" 400 — this is existing behavior, not a bug to fix blindly if you're touching that route.
 - Deployed as a **single** Cloud Run container: the multi-stage `Dockerfile` builds the frontend, then the FastAPI backend serves the compiled static files directly (avoids CORS). `.gcloudignore` must exclude `node_modules`/`.venv`/`.env` or Cloud Build fails on incompatible local binaries.
 
-Commands (run from `liveAvatar-demo/backend/`):
+Commands (run from `liveAvatar/backend/`):
 ```bash
 uv sync
 uv run python scripts/setup_gemini_context.py           # provisions Gemini LLM config + base LiveAvatar context
@@ -34,11 +34,11 @@ uv run uvicorn app.main:app --port 3001 --reload
 uv run python scripts/smoke_test_concurrency.py          # manual concurrency/session-lifecycle check (not pytest)
 ```
 
-## `liveAvatar-demo/frontend/`
+## `liveAvatar/frontend/`
 
 `App.tsx` is composition-only: it wires five hooks (`hooks/`) — `useLiveAvatarSession` (SDK session lifecycle, mic/camera, orphaned-session cleanup), `useResumeFiles`, `useNetworkQuality`, `useConcurrencyPoll`, `useSessionTimer` — into presentational `components/` (`ResumeUpload`, `AvatarVideoPanel`, `LocalVideoPanel`, `SessionControls`, etc.). `config.ts` holds `API_URL` and the fallback context/LLM IDs mentioned above.
 
-Commands (run from `liveAvatar-demo/frontend/`): `npm install`, `npm run dev`, `npm run build`, `npm run lint`.
+Commands (run from `liveAvatar/frontend/`): `npm install`, `npm run dev`, `npm run build`, `npm run lint`.
 
 Required env vars: `LIVEAVATAR_API_KEY`, `GEMINI_API_KEY` (`backend/.env.example`).
 

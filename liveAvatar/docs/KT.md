@@ -50,7 +50,7 @@ Let's follow the data flow when a user actually uses the app.
 
 ## 4. Deep Dive: Frontend Mechanics (`App.tsx`)
 
-If you look inside `/liveAvatar-demo/frontend/src/App.tsx`, here are the key concepts you need to understand:
+If you look inside `/liveAvatar/frontend/src/App.tsx`, here are the key concepts you need to understand:
 
 - **Environment Variables & Fallbacks**: During deployment, we intentionally exclude the local `.env` file for security. To prevent the app from breaking when it can't find `import.meta.env.VITE_CONTEXT_ID`, we've added hardcoded fallback IDs in the code.
 - **Event Listeners (VAD)**: Voice Activity Detection (VAD) is how the system knows who is talking. The `LiveAvatarSession` object emits events like `AgentEventsEnum.AVATAR_SPEAK_STARTED` and `USER_SPEAK_STARTED`. We listen to these events to change our React state (`speakingState`), which animates the little audio bars on the screen.
@@ -60,7 +60,7 @@ If you look inside `/liveAvatar-demo/frontend/src/App.tsx`, here are the key con
 
 ## 5. Deep Dive: Backend Mechanics (`app/`)
 
-Inside `/liveAvatar-demo/backend/app/` (routers + services, see `CLAUDE.md` for the module layout), the logic is designed for resilience:
+Inside `/liveAvatar/backend/app/` (routers + services, see `CLAUDE.md` for the module layout), the logic is designed for resilience:
 
 - **Concurrency Tracking**: We maintain a simple `active_sessions_count` variable. This helps us monitor if we are hitting LiveKit's concurrency limits.
 - **Garbage Collection (Contexts)**: When a session stops (in `/api/session/stop`), we don't just stop the video. We also send a `DELETE` request to LiveAvatar to destroy the `context_id` we created for that specific resume. If we didn't do this, our LiveAvatar workspace would eventually fill up with thousands of temporary resumes.
