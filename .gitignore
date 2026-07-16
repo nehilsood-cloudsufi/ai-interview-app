@@ -5,6 +5,10 @@ venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+
+# Claude Code local session/plan artifacts
+.claude/
 
 # Local transcript store (dev fallback when GCS_BUCKET is unset)
 transcripts/

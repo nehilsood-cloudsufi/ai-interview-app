@@ -48,7 +48,8 @@ frontend_dist = os.path.join(os.path.dirname(__file__), "../../frontend/dist")
 @app.middleware("http")
 async def fallback_to_index(request: Request, call_next):
     response = await call_next(request)
-    if response.status_code == 404 and not request.url.path.startswith("/api/"):
+    if response.status_code == 404 and not request.url.path.startswith("/api/"):  # pragma: no cover
+        # Unreachable in CI: frontend/dist doesn't exist until the frontend is built.
         return FileResponse(os.path.join(frontend_dist, "index.html"))
     return response
 
