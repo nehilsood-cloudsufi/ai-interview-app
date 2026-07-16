@@ -1,0 +1,9 @@
+# Code owners for this repository.
+# These owners are automatically requested for review on any pull request
+# that changes matching files. See:
+# https://docs.github.com/en/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Sole owner for the whole repo. The last matching pattern wins, so add more
+# specific path rules below this line if ownership is ever split.
+
+*       @nehilsood-cloudsufi
