@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -30,3 +32,20 @@ class UploadResumeResponse(BaseModel):
 
 class ConcurrencyResponse(BaseModel):
     active_sessions: int
+
+
+class TranscriptTurn(BaseModel):
+    role: Literal["interviewer", "candidate"]
+    text: str
+    timestamp: float | None = None
+
+
+class FinalizeTranscriptRequest(BaseModel):
+    session_id: str
+    turns: list[TranscriptTurn]
+
+
+class FinalizeTranscriptResponse(BaseModel):
+    summary: str
+    # False when summary generation failed but the transcript was still saved.
+    summary_ok: bool = True

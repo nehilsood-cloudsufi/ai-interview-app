@@ -5,3 +5,6 @@ venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Local transcript store (dev fallback when GCS_BUCKET is unset)
+transcripts/

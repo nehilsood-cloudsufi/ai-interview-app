@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.139.0",
+    "google-cloud-storage>=2.18.0",
     "httpx>=0.28.1",
     "pymupdf>=1.28.0",
     "python-docx>=1.2.0",

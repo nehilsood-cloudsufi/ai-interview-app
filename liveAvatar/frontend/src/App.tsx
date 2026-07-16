@@ -4,12 +4,15 @@ import { useNetworkQuality } from './hooks/useNetworkQuality';
 import { useConcurrencyPoll } from './hooks/useConcurrencyPoll';
 import { useSessionTimer } from './hooks/useSessionTimer';
 import { useResumeFiles } from './hooks/useResumeFiles';
+import { useInterviewSummary } from './hooks/useInterviewSummary';
 import { ResumeUpload } from './components/ResumeUpload';
 import { NetworkIndicator } from './components/NetworkIndicator';
 import { ConcurrencyBadge } from './components/ConcurrencyBadge';
 import { SpeakingIndicator } from './components/SpeakingIndicator';
 import { AvatarVideoPanel } from './components/AvatarVideoPanel';
 import { LocalVideoPanel } from './components/LocalVideoPanel';
+import { TranscriptPanel } from './components/TranscriptPanel';
+import { SummaryPanel } from './components/SummaryPanel';
 import { SessionControls } from './components/SessionControls';
 import { ErrorToast } from './components/ErrorToast';
 import { formatTime } from './utils/formatTime';
@@ -21,6 +24,7 @@ function App() {
   const { files, handleFileChange, removeFile } = useResumeFiles(setError);
   const networkQuality = useNetworkQuality();
   const concurrencyCount = useConcurrencyPoll();
+  const summary = useInterviewSummary();
 
   const {
     status,
@@ -28,13 +32,14 @@ function App() {
     micEnabled,
     cameraEnabled,
     isUploading,
+    transcript,
     videoRef,
     localVideoRef,
     startSession,
     stopSession,
     toggleMic,
     toggleCamera,
-  } = useLiveAvatarSession({ apiKey, files, onError: setError });
+  } = useLiveAvatarSession({ apiKey, files, onError: setError, onSessionEnd: summary.finalize });
 
   const sessionDuration = useSessionTimer(status);
 
@@ -77,6 +82,8 @@ function App() {
                       <AvatarVideoPanel status={status} speakingState={speakingState} isUploading={isUploading} videoRef={videoRef} />
                       <LocalVideoPanel status={status} speakingState={speakingState} cameraEnabled={cameraEnabled} micEnabled={micEnabled} localVideoRef={localVideoRef} />
 
+                      {status === 'connected' && <TranscriptPanel turns={transcript} />}
+
                   <SpeakingIndicator visible={status === 'connected'} speakingState={speakingState} />
                 </div>
             </div>
@@ -97,6 +104,16 @@ function App() {
 
             <ErrorToast error={error} onDismiss={() => setError(null)} />
         </div>
+
+        <SummaryPanel
+            visible={summary.visible}
+            isGenerating={summary.isGenerating}
+            summary={summary.summary}
+            turns={summary.turns}
+            sessionId={summary.sessionId}
+            error={summary.error}
+            onDismiss={summary.dismiss}
+        />
     </div>
   );
 }

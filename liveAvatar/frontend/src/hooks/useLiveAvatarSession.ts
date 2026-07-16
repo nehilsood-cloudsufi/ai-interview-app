@@ -1,31 +1,58 @@
 import { useEffect, useRef, useState } from 'react';
 import { LiveAvatarSession, SessionEvent, AgentEventsEnum } from '@heygen/liveavatar-web-sdk';
 import { API_URL, DEFAULT_CONTEXT_ID, DEFAULT_LLM_CONFIG_ID } from '../config';
-import type { SessionStatus, SpeakingState } from '../types';
+import type { SessionStatus, SpeakingState, TranscriptTurn } from '../types';
 
 interface UseLiveAvatarSessionOptions {
   apiKey: string;
   files: File[];
   onError: (message: string | null) => void;
+  // Called once when a session ends (stop button or server disconnect), before
+  // local state is reset — receives the full transcript and the session id.
+  onSessionEnd?: (turns: TranscriptTurn[], sessionId: string | null) => void;
 }
 
-export function useLiveAvatarSession({ apiKey, files, onError }: UseLiveAvatarSessionOptions) {
+export function useLiveAvatarSession({ apiKey, files, onError, onSessionEnd }: UseLiveAvatarSessionOptions) {
   const [session, setSession] = useState<LiveAvatarSession | null>(null);
   const [status, setStatus] = useState<SessionStatus>('disconnected');
   const [speakingState, setSpeakingState] = useState<SpeakingState>('idle');
   const [micEnabled, setMicEnabled] = useState(false);
   const [cameraEnabled, setCameraEnabled] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
+  const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
 
   const apiKeyRef = useRef(apiKey);
   useEffect(() => { apiKeyRef.current = apiKey; }, [apiKey]);
+
+  // Latest onSessionEnd without re-subscribing the event handlers on every render.
+  const onSessionEndRef = useRef(onSessionEnd);
+  useEffect(() => { onSessionEndRef.current = onSessionEnd; }, [onSessionEnd]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
 
+  // Ref mirror of the transcript so it survives state resets during cleanup.
+  const turnsRef = useRef<TranscriptTurn[]>([]);
+  const sessionIdRef = useRef<string | null>(null);
+
+  const addTurn = (turn: TranscriptTurn) => {
+    turnsRef.current = [...turnsRef.current, turn];
+    setTranscript(turnsRef.current);
+  };
+
   const cleanupSession = (s: LiveAvatarSession) => {
     s.removeAllListeners();
+
+    // Hand off the captured transcript before we wipe local state. Fires on both
+    // the stop-button path and the server-side SESSION_DISCONNECTED path.
+    if (turnsRef.current.length > 0) {
+      onSessionEndRef.current?.(turnsRef.current, sessionIdRef.current);
+    }
+    turnsRef.current = [];
+    sessionIdRef.current = null;
+    setTranscript([]);
+
     setSession(null);
     setStatus('disconnected');
     setSpeakingState('idle');
@@ -44,6 +71,9 @@ export function useLiveAvatarSession({ apiKey, files, onError }: UseLiveAvatarSe
       setStatus('connecting');
       onError(null);
       setIsUploading(true);
+      turnsRef.current = [];
+      sessionIdRef.current = null;
+      setTranscript([]);
 
       let currentContextId = DEFAULT_CONTEXT_ID;
 
@@ -82,7 +112,8 @@ export function useLiveAvatarSession({ apiKey, files, onError }: UseLiveAvatarSe
         throw new Error(errData?.detail || 'Failed to create session on backend');
       }
 
-      const { session_token } = await response.json();
+      const { session_token, session_id } = await response.json();
+      sessionIdRef.current = session_id ?? null;
       localStorage.setItem('liveavatar_session_token', session_token);
 
       const newSession = new LiveAvatarSession(session_token);
@@ -108,6 +139,14 @@ export function useLiveAvatarSession({ apiKey, files, onError }: UseLiveAvatarSe
       newSession.on(AgentEventsEnum.AVATAR_SPEAK_ENDED, () => setSpeakingState('idle'));
       newSession.on(AgentEventsEnum.USER_SPEAK_STARTED, () => setSpeakingState('user_speaking'));
       newSession.on(AgentEventsEnum.USER_SPEAK_ENDED, () => setSpeakingState('processing'));
+
+      // Transcript capture: final (non-chunk) transcription events, one per completed turn.
+      newSession.on(AgentEventsEnum.AVATAR_TRANSCRIPTION, (e) => {
+        if (e.text?.trim()) addTurn({ role: 'interviewer', text: e.text.trim(), timestamp: Date.now() });
+      });
+      newSession.on(AgentEventsEnum.USER_TRANSCRIPTION, (e) => {
+        if (e.text?.trim()) addTurn({ role: 'candidate', text: e.text.trim(), timestamp: Date.now() });
+      });
 
       await newSession.start();
       setSession(newSession);
@@ -207,6 +246,7 @@ export function useLiveAvatarSession({ apiKey, files, onError }: UseLiveAvatarSe
     micEnabled,
     cameraEnabled,
     isUploading,
+    transcript,
     videoRef,
     localVideoRef,
     startSession,
