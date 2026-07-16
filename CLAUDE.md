@@ -12,13 +12,19 @@ It has its own `backend/` (Python/FastAPI, dependency-managed with `uv`) and `fr
 
 ## `liveAvatar/backend/`
 
-Package layout: `app/main.py` wires up the FastAPI app (lifespan, CORS, routers, static/SPA mount) — no separate agent worker process. Routes live in `app/routers/` (`concurrency.py`, `resume.py`, `sessions.py`), each backed by `app/services/`:
+Package layout: `app/main.py` wires up the FastAPI app (lifespan, CORS, routers, static/SPA mount) — no separate agent worker process. Routes live in `app/routers/` (`concurrency.py`, `resume.py`, `sessions.py`, `transcripts.py`), each backed by `app/services/`:
 - `liveavatar_client.py` — the LiveAvatar HTTP calls (create/delete context, create session token with Gemini-fallback retry, stop session).
 - `gemini_provisioning.py` — on app startup, auto-provisions a Gemini LLM configuration against the LiveAvatar API if `GEMINI_API_KEY` + `LIVEAVATAR_API_KEY` are set (falls back to HeyGen's own AI silently on any failure — check logs, not exceptions, if Gemini isn't being used); tears it down on shutdown.
 - `resume_parser.py` — PDF/DOCX/TXT text extraction.
 - `session_state.py` — in-memory active-session counter. It only decrements on an explicit `/api/session/stop` call (user clicks stop, or the frontend's orphaned-session cleanup). When LiveAvatar's server ends a session on its own (e.g. `MAX_DURATION_REACHED`), the frontend's `SESSION_DISCONNECTED` handler resets local UI state but never calls `/api/session/stop` — so the counter drifts upward over repeated sessions and only resets on backend restart. Verified live; this is original behavior, not introduced by the `app/` restructure.
+- `transcript_store.py` — persists finalized interview records. Uses **Google Cloud Storage** when `GCS_BUCKET` is set (blob `transcripts/{session_id}.json`), otherwise writes local JSON to `transcripts_local_dir` (dev fallback, gitignored). Sync GCS/file work is offloaded via `asyncio.to_thread`; `google.cloud.storage` is imported lazily inside the functions. No try/except here — failures propagate to the router, which returns 500.
+- `summary_service.py` — generates the interview summary by calling Gemini's OpenAI-compatible chat endpoint over raw `httpx` (no SDK). Deliberately raises on every failure path; the `transcripts` router is responsible for soft-failing so a summary failure never loses the transcript.
 
-`app/config.py` centralizes all env vars and constants (API keys, base URL, avatar id, prompt). `app/models.py` has the Pydantic request/response models. One-off ops scripts (Gemini/context setup, account inspection, cleanup polling, a manual concurrency smoke test) live in `scripts/`, not part of the served app.
+The transcript flow: the `POST /api/transcript/finalize` route calls `summary_service.generate_summary(...)` inside a try/except (on failure → `summary=""`, `summary_ok=False`, logged as a warning, transcript still saved), then `transcript_store.save(...)` (on failure → 500). `GET /api/transcript/{session_id}` reads a saved record back (404 if absent).
+
+`app/config.py` centralizes all env vars and constants (API keys, base URL, avatar id, prompt). Transcript/summary config also lives here: `gcs_bucket` (`GCS_BUCKET` env — GCS vs local backend switch), `transcripts_local_dir`, `gemini_base_url`, `gemini_model`, and `interview_summary_prompt` (the Markdown summary system prompt). `app/models.py` has the Pydantic request/response models (incl. `TranscriptTurn`, `FinalizeTranscriptRequest`/`Response`). One-off ops scripts (Gemini/context setup, account inspection, cleanup polling, a manual concurrency smoke test) live in `scripts/`, not part of the served app.
+
+`tests/` holds a pytest suite with 1:1 coverage of every `app/` module (respx for HTTP mocking, hand-rolled in-memory GCS fakes in `tests/fakes.py`, shared fixtures in `tests/conftest.py`). pytest/coverage config is in `pyproject.toml` (`dev` dependency group, `asyncio_mode=auto`, branch coverage on `app`). `.github/workflows/ci.yml` runs this suite on push/PR.
 
 Known constraints (see `docs/KT.md` for full rationale/troubleshooting):
 - `is_sandbox` must stay `True` while using the default sandbox avatar ID — pairing a sandbox avatar with `is_sandbox: False` causes LiveKit to time out.
@@ -28,18 +34,20 @@ Known constraints (see `docs/KT.md` for full rationale/troubleshooting):
 
 Commands (run from `liveAvatar/backend/`):
 ```bash
-uv sync
+uv sync                                                  # installs runtime + dev deps (pytest, respx, ...)
 uv run python scripts/setup_gemini_context.py           # provisions Gemini LLM config + base LiveAvatar context
 uv run uvicorn app.main:app --port 3001 --reload
+uv run pytest                                            # run the test suite (config in pyproject.toml)
+uv run pytest --cov                                      # with coverage report
 uv run python scripts/smoke_test_concurrency.py          # manual concurrency/session-lifecycle check (not pytest)
 ```
 
 ## `liveAvatar/frontend/`
 
-`App.tsx` is composition-only: it wires five hooks (`hooks/`) — `useLiveAvatarSession` (SDK session lifecycle, mic/camera, orphaned-session cleanup), `useResumeFiles`, `useNetworkQuality`, `useConcurrencyPoll`, `useSessionTimer` — into presentational `components/` (`ResumeUpload`, `AvatarVideoPanel`, `LocalVideoPanel`, `SessionControls`, etc.). `config.ts` holds `API_URL` and the fallback context/LLM IDs mentioned above.
+`App.tsx` is composition-only: it wires six hooks (`hooks/`) — `useLiveAvatarSession` (SDK session lifecycle, mic/camera, orphaned-session cleanup, and transcript capture via the SDK's `USER_TRANSCRIPTION`/`AVATAR_TRANSCRIPTION` events into a ref that survives cleanup), `useResumeFiles`, `useNetworkQuality`, `useConcurrencyPoll`, `useSessionTimer`, and `useInterviewSummary` — into presentational `components/` (`ResumeUpload`, `AvatarVideoPanel`, `LocalVideoPanel`, `SessionControls`, `TranscriptPanel`, `SummaryPanel`, etc.). When a session ends (user-stopped or server-ended), `useLiveAvatarSession`'s `onSessionEnd` hands the captured turns to `useInterviewSummary.finalize`, which POSTs to `/api/transcript/finalize`; `SummaryPanel` renders the returned summary and `utils/downloadTranscript.ts` builds a downloadable Markdown record. `config.ts` holds `API_URL` and the fallback context/LLM IDs mentioned above.
 
 Commands (run from `liveAvatar/frontend/`): `npm install`, `npm run dev`, `npm run build`, `npm run lint`.
 
-Required env vars: `LIVEAVATAR_API_KEY`, `GEMINI_API_KEY` (`backend/.env.example`).
+Required env vars: `LIVEAVATAR_API_KEY`, `GEMINI_API_KEY` (`backend/.env.example`). Optional: `GCS_BUCKET` (enables the GCS transcript backend; local JSON files are used when unset).
 
-Deployment: `deploy_setup.sh` provisions the `LIVEAVATAR_API_KEY` secret in Google Cloud Secret Manager and binds IAM so Cloud Run can read it (reads the key from `$LIVEAVATAR_API_KEY`, does not hardcode it) — run this before `gcloud run deploy`. `.github/workflows/ci.yml` runs frontend lint/build and a backend import-sanity check on push/PR.
+Deployment: `deploy_setup.sh` provisions the `LIVEAVATAR_API_KEY` secret in Google Cloud Secret Manager and binds IAM so Cloud Run can read it (reads the key from `$LIVEAVATAR_API_KEY`, does not hardcode it) — run this before `gcloud run deploy`. `.github/workflows/ci.yml` runs frontend lint/build and, for the backend, an import-sanity check plus the full pytest suite on push/PR.

@@ -4,8 +4,8 @@ This directory contains a Proof of Concept (POC) for an AI Engineering Interview
 
 ## Architecture
 
-- **Backend (`/backend`)**: A Python FastAPI server managed with `uv`. It handles session token generation, stopping sessions safely to avoid concurrency issues, and processing resume uploads (PDF/DOCX/TXT) to dynamically inject context into the LLM.
-- **Frontend (`/frontend`)**: A React application built with Vite and Tailwind CSS. It uses `@heygen/liveavatar-web-sdk` to render the interactive avatar and provides a professional dashboard layout, network quality monitoring, and a document upload interface.
+- **Backend (`/backend`)**: A Python FastAPI server managed with `uv`. It handles session token generation, stopping sessions safely to avoid concurrency issues, processing resume uploads (PDF/DOCX/TXT) to dynamically inject context into the LLM, and finalizing interview transcripts — generating an AI summary (via Gemini) and persisting the record to Google Cloud Storage (or local JSON when no bucket is configured). It ships with a pytest suite (`tests/`) covering every module.
+- **Frontend (`/frontend`)**: A React application built with Vite and Tailwind CSS. It uses `@heygen/liveavatar-web-sdk` to render the interactive avatar and provides a professional dashboard layout, network quality monitoring, a document upload interface, a live transcript panel, and an end-of-session summary with a downloadable interview record.
 
 ## Getting Started
 
@@ -15,6 +15,9 @@ This directory contains a Proof of Concept (POC) for an AI Engineering Interview
 4. Start both servers:
    - Backend: `uv run uvicorn app.main:app --port 3001 --reload`
    - Frontend: `npm run dev`
+5. (Optional) Run the backend tests: `uv run pytest` (or `uv run pytest --cov` for coverage).
+
+> **Transcript storage:** Set `GCS_BUCKET` in the backend `.env` to persist finalized transcripts + summaries to Google Cloud Storage (uses Application Default Credentials). If unset, records are written as local JSON under `backend/transcripts/` (dev fallback, gitignored).
 
 ## Deployment
 
@@ -31,3 +34,6 @@ The application is configured for a Single Unified Cloud Run Service deployment.
 - **Voice Activity Detection (VAD) Visuals:** Animated audio bars provide feedback on speaking states (Listening, Thinking, Speaking).
 - **Network Quality Indicator:** Real-time feedback on connection strength to the server.
 - **Safe Session Cleanup:** Ensures active tokens are properly terminated upon closing the tab to prevent "Active session exists" errors.
+- **Live Transcript:** Captures each interviewer/candidate turn in real time from the SDK's transcription events and displays them in a transcript panel.
+- **AI Interview Summary:** When the session ends (whether the user stops it or the server does), the transcript is finalized — the backend generates a structured Markdown summary via Gemini and persists the full record (to GCS or local JSON). A summary failure never loses the transcript.
+- **Downloadable Record:** Users can download the summary + full transcript as a Markdown file.
