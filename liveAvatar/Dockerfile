@@ -10,7 +10,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Stage 2: Build the Python backend and serve
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
