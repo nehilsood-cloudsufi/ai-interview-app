@@ -6,8 +6,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .coverage
+htmlcov/
 
-# Claude Code local session/plan artifacts
+# Local Claude Code tooling (settings + agent worktrees)
 .claude/
 
 # Local transcript store (dev fallback when GCS_BUCKET is unset)

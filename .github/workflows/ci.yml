@@ -30,3 +30,4 @@ jobs:
       - uses: astral-sh/setup-uv@v3
       - run: uv sync --frozen
       - run: uv run python -c "import app.main"
+      - run: uv run pytest -q
