@@ -25,7 +25,7 @@ To make this happen seamlessly, we divided the application into two main parts: 
 - **`@heygen/liveavatar-web-sdk`**: This is the secret sauce. It handles the extremely complex WebRTC (real-time communication) connection between the user's browser and HeyGen's video streaming servers. We are using **FULL Mode**, which means HeyGen's servers handle the LLM (AI brain) connection for us.
 
 ### The Backend (The Secure Middleman)
-- **Python 3.11 & FastAPI**: Python is the standard for AI applications. FastAPI is incredibly fast and easy to use for building APIs. 
+- **Python 3.13 & FastAPI**: Python is the standard for AI applications. FastAPI is incredibly fast and easy to use for building APIs. 
 - **`uv`**: A modern, extremely fast Python package manager that replaces `pip` and `virtualenv`.
 - **`pymupdf` & `python-docx`**: These libraries allow us to read the text inside PDFs and Word documents that the user uploads.
 - **`httpx`**: An async HTTP client. We use it both to talk to the LiveAvatar API and to call Gemini's OpenAI-compatible chat endpoint when generating the interview summary.
