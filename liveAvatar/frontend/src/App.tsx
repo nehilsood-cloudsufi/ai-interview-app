@@ -5,6 +5,7 @@ import { useConcurrencyPoll } from './hooks/useConcurrencyPoll';
 import { useSessionTimer } from './hooks/useSessionTimer';
 import { useResumeFiles } from './hooks/useResumeFiles';
 import { useInterviewSummary } from './hooks/useInterviewSummary';
+import { useInterviewStatePoll } from './hooks/useInterviewStatePoll';
 import { ResumeUpload } from './components/ResumeUpload';
 import { VendorIntakeForm } from './components/VendorIntakeForm';
 import { NetworkIndicator } from './components/NetworkIndicator';
@@ -14,6 +15,7 @@ import { AvatarVideoPanel } from './components/AvatarVideoPanel';
 import { LocalVideoPanel } from './components/LocalVideoPanel';
 import { TranscriptPanel } from './components/TranscriptPanel';
 import { SummaryPanel } from './components/SummaryPanel';
+import { ScorecardPanel } from './components/ScorecardPanel';
 import { SessionControls } from './components/SessionControls';
 import { ErrorToast } from './components/ErrorToast';
 import { formatTime } from './utils/formatTime';
@@ -47,6 +49,9 @@ function App() {
   } = useLiveAvatarSession({ apiKey, files, interviewId, onError: setError, onSessionEnd: summary.finalize });
 
   const sessionDuration = useSessionTimer(status);
+
+  // Gateway mode only: live scorecard polling while the session is connected.
+  const { interviewState } = useInterviewStatePoll(interviewId, status === 'connected');
 
   return (
     <div className="min-h-screen bg-slate-950 text-white flex flex-col md:flex-row overflow-hidden">
@@ -99,6 +104,7 @@ function App() {
                       <LocalVideoPanel status={status} speakingState={speakingState} cameraEnabled={cameraEnabled} micEnabled={micEnabled} localVideoRef={localVideoRef} />
 
                       {status === 'connected' && <TranscriptPanel turns={transcript} />}
+                      {status === 'connected' && interviewId && <ScorecardPanel state={interviewState} />}
 
                   <SpeakingIndicator visible={status === 'connected'} speakingState={speakingState} />
                 </div>
