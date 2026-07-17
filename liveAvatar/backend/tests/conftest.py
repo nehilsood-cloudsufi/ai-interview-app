@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.config import settings as _original_settings
 from app.main import app
-from app.services import session_state
+from app.services import interview_state, session_state
 
 # Every module (besides app.config itself) that did
 # `from app.config import settings` at import time. A bound-reference import
@@ -65,6 +65,13 @@ def reset_session_counter():
     session_state.active_sessions._count = 0
     yield
     session_state.active_sessions._count = 0
+
+
+@pytest.fixture(autouse=True)
+def reset_interview_state():
+    interview_state._interviews.clear()
+    yield
+    interview_state._interviews.clear()
 
 
 @pytest.fixture
