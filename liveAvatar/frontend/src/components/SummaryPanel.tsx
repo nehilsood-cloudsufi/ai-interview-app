@@ -1,5 +1,5 @@
 import { X, Download, Loader2, AlertTriangle } from 'lucide-react';
-import type { TranscriptTurn } from '../types';
+import type { ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
 import { downloadTranscript } from '../utils/downloadTranscript';
 
 interface SummaryPanelProps {
@@ -9,6 +9,10 @@ interface SummaryPanelProps {
   turns: TranscriptTurn[];
   sessionId: string | null;
   error: string | null;
+  // Gateway mode only: final values from the finalize response, included in
+  // the downloadable Markdown record.
+  scorecard?: ScorecardData | null;
+  insights?: ScoutFinding[] | null;
   onDismiss: () => void;
 }
 
@@ -19,6 +23,8 @@ export function SummaryPanel({
   turns,
   sessionId,
   error,
+  scorecard,
+  insights,
   onDismiss,
 }: SummaryPanelProps) {
   if (!visible) return null;
@@ -31,7 +37,7 @@ export function SummaryPanel({
           <h2 className="text-lg font-bold text-white">Interview Summary</h2>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => downloadTranscript(summary, turns, sessionId)}
+              onClick={() => downloadTranscript(summary, turns, sessionId, { scorecard, insights })}
               disabled={isGenerating}
               className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 text-sm font-semibold px-3 py-1.5 rounded-lg border border-slate-700/50 transition-colors"
             >

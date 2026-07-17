@@ -53,12 +53,9 @@ class TranscriptTurn(BaseModel):
 class FinalizeTranscriptRequest(BaseModel):
     session_id: str
     turns: list[TranscriptTurn]
-
-
-class FinalizeTranscriptResponse(BaseModel):
-    summary: str
-    # False when summary generation failed but the transcript was still saved.
-    summary_ok: bool = True
+    # Gateway mode: when this resolves to a live interview, the saved record is
+    # enriched with the vendor profile, scorecard, and Scout findings.
+    interview_id: str | None = None
 
 
 class CategoryScoreModel(BaseModel):
@@ -79,6 +76,16 @@ class ScoutFindingModel(BaseModel):
     topic: str
     summary: str
     source_url: str | None
+
+
+class FinalizeTranscriptResponse(BaseModel):
+    summary: str
+    # False when summary generation failed but the transcript was still saved.
+    summary_ok: bool = True
+    # Present only in gateway mode (interview_id resolved to a live interview);
+    # the final values so the UI needs no extra state poll.
+    scorecard: ScorecardModel | None = None
+    insights: list[ScoutFindingModel] | None = None
 
 
 class InterviewStateResponse(BaseModel):

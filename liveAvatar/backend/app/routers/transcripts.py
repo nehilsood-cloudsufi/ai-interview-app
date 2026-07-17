@@ -1,10 +1,12 @@
+import dataclasses
 import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
 from app.models import FinalizeTranscriptRequest, FinalizeTranscriptResponse
-from app.services import summary_service, transcript_store
+from app.services import appraiser_agent, interview_state, summary_service, transcript_store
+from app.services.interview_config import get_rubric
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +35,40 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
         "summary_ok": summary_ok,
     }
 
+    # Gateway mode: when the interview is still live in memory, enrich the
+    # record with the vendor profile, final scorecard, and Scout findings.
+    # Legacy finalize (no/unknown interview_id) keeps the exact shape above.
+    scorecard_dict = None
+    insights = None
+    state = interview_state.get(body.interview_id) if body.interview_id else None
+    if state is not None:
+        profile = state.vendor_profile
+        scorecard = appraiser_agent.compute_scorecard(state.scores, get_rubric())
+        scorecard_dict = dataclasses.asdict(scorecard)
+        insights = [dataclasses.asdict(finding) for finding in state.scout_findings]
+        payload["vendor_profile"] = {
+            # Deliberately excludes doc_text - it can be huge.
+            "company_name": profile.company_name,
+            "website": profile.website,
+            "contact_name": profile.contact_name,
+            "contact_role": profile.contact_role,
+        }
+        payload["scorecard"] = scorecard_dict
+        payload["scout_findings"] = insights
+        state.status = "finished"
+
     try:
         await transcript_store.save(body.session_id, payload)
     except Exception as e:
         logger.error("Failed to persist transcript %s: %s", body.session_id, e)
         raise HTTPException(status_code=500, detail="Failed to save transcript")
 
-    return {"summary": summary, "summary_ok": summary_ok}
+    return {
+        "summary": summary,
+        "summary_ok": summary_ok,
+        "scorecard": scorecard_dict,
+        "insights": insights,
+    }
 
 
 @router.get("/api/transcript/{session_id}")

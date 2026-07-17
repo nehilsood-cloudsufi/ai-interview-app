@@ -34,7 +34,7 @@ function App() {
   const vendorDocs = useResumeFiles(setError);
   const networkQuality = useNetworkQuality();
   const concurrencyCount = useConcurrencyPoll();
-  const summary = useInterviewSummary();
+  const summary = useInterviewSummary(interviewId);
 
   const {
     status,
@@ -167,6 +167,8 @@ function App() {
         turns={summary.turns}
         sessionId={summary.sessionId}
         error={summary.error}
+        scorecard={summary.scorecard}
+        insights={summary.insights}
         onDismiss={summary.dismiss}
       />
     </div>

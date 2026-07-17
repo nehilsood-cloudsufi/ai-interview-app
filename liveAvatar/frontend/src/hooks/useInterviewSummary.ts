@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { API_URL } from '../config';
-import type { TranscriptTurn } from '../types';
+import type { FinalizeTranscriptResponse, ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
 
 interface SummaryState {
   visible: boolean;
@@ -11,6 +11,10 @@ interface SummaryState {
   sessionId: string | null;
   // Set when the transcript was saved but the summary could not be generated.
   error: string | null;
+  // Final scorecard + research insights from the finalize response (gateway
+  // mode only; null in legacy mode or on failure).
+  scorecard: ScorecardData | null;
+  insights: ScoutFinding[] | null;
 }
 
 const INITIAL: SummaryState = {
@@ -20,37 +24,44 @@ const INITIAL: SummaryState = {
   turns: [],
   sessionId: null,
   error: null,
+  scorecard: null,
+  insights: null,
 };
 
-export function useInterviewSummary() {
+export function useInterviewSummary(interviewId: string | null = null) {
   const [state, setState] = useState<SummaryState>(INITIAL);
 
   const finalize = useCallback(async (turns: TranscriptTurn[], sessionId: string | null) => {
     if (turns.length === 0) return;
 
     setState({
+      ...INITIAL,
       visible: true,
       isGenerating: true,
-      summary: '',
       turns,
       sessionId,
-      error: null,
     });
 
     try {
       const res = await fetch(`${API_URL}/api/transcript/finalize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId ?? 'unknown', turns }),
+        body: JSON.stringify({
+          session_id: sessionId ?? 'unknown',
+          turns,
+          interview_id: interviewId ?? undefined,
+        }),
       });
 
       if (!res.ok) throw new Error('Failed to finalize transcript');
 
-      const data = await res.json();
+      const data: FinalizeTranscriptResponse = await res.json();
       setState(prev => ({
         ...prev,
         isGenerating: false,
         summary: data.summary ?? '',
+        scorecard: data.scorecard ?? null,
+        insights: data.insights ?? null,
         error: data.summary_ok === false ? 'Summary could not be generated, but the transcript was saved.' : null,
       }));
     } catch (err) {
@@ -62,7 +73,7 @@ export function useInterviewSummary() {
         error: 'Could not reach the server to generate the summary. The transcript below is still available to download.',
       }));
     }
-  }, []);
+  }, [interviewId]);
 
   const dismiss = useCallback(() => setState(INITIAL), []);
 

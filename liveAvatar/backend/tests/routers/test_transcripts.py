@@ -1,7 +1,29 @@
 import httpx
 import respx
 
+from app.services import interview_state
+from app.services.interview_state import AnswerScore, ScoutFinding, VendorProfile
+
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+# Keys of a legacy (non-gateway) finalize record - the saved shape must stay
+# byte-compatible when no interview_id is involved.
+LEGACY_RECORD_KEYS = {"session_id", "created_at", "turns", "summary", "summary_ok"}
+
+
+def _seed_interview(scores=None, findings=None):
+    state = interview_state.create(
+        VendorProfile(
+            company_name="Acme Corp",
+            website="https://acme.example",
+            contact_name="Jane Doe",
+            contact_role="CTO",
+            doc_text="a huge vendor document that must never be persisted",
+        )
+    )
+    state.scores.extend(scores or [])
+    state.scout_findings.extend(findings or [])
+    return state
 
 
 def test_finalize_empty_turns_returns_400(client, tmp_transcripts_dir):
@@ -119,6 +141,128 @@ def test_finalize_save_failure_returns_500(client, patch_settings, monkeypatch):
 
     assert response.status_code == 500
     assert response.json()["detail"] == "Failed to save transcript"
+
+
+@respx.mock
+def test_finalize_with_interview_embeds_enrichment(client, patch_settings, tmp_transcripts_dir):
+    patch_settings(
+        gemini_api_key="gem-key",
+        gemini_base_url=GEMINI_BASE_URL,
+        transcripts_local_dir=str(tmp_transcripts_dir),
+        gcs_bucket=None,
+    )
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(
+            200, json={"choices": [{"message": {"content": "Nice summary"}}]}
+        )
+    )
+    state = _seed_interview(
+        scores=[
+            AnswerScore(question_id="company_overview", category_scores={"experience": 4}, evidence="ev1", rationale="r1"),
+        ],
+        findings=[ScoutFinding(topic="news", summary="No recent press.", source_url=None)],
+    )
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={
+            "session_id": "e1",
+            "interview_id": state.interview_id,
+            "turns": [{"role": "candidate", "text": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+
+    saved = client.get("/api/transcript/e1").json()
+    # Vendor profile is embedded WITHOUT the (potentially huge) doc_text.
+    assert saved["vendor_profile"] == {
+        "company_name": "Acme Corp",
+        "website": "https://acme.example",
+        "contact_name": "Jane Doe",
+        "contact_role": "CTO",
+    }
+    scorecard = saved["scorecard"]
+    by_id = {c["id"]: c for c in scorecard["categories"]}
+    assert by_id["experience"]["score"] == 4.0
+    assert by_id["experience"]["evidence"] == ["ev1"]
+    assert scorecard["overall"] == 4.0
+    assert scorecard["answered_questions"] == 1
+    assert saved["scout_findings"] == [
+        {"topic": "news", "summary": "No recent press.", "source_url": None}
+    ]
+    # Legacy fields are untouched.
+    assert saved["summary"] == "Nice summary"
+    assert saved["summary_ok"] is True
+
+    # The interview is marked finished.
+    assert state.status == "finished"
+
+    # The response carries the final scorecard + insights for the UI.
+    body = response.json()
+    assert body["scorecard"]["overall"] == 4.0
+    assert body["insights"] == saved["scout_findings"]
+
+
+def test_finalize_without_interview_id_keeps_legacy_shape(client, patch_settings, tmp_transcripts_dir):
+    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={"session_id": "leg1", "turns": [{"role": "candidate", "text": "hi"}]},
+    )
+
+    assert response.status_code == 200
+    saved = client.get("/api/transcript/leg1").json()
+    assert set(saved) == LEGACY_RECORD_KEYS
+
+
+def test_finalize_unknown_interview_id_treated_as_legacy(client, patch_settings, tmp_transcripts_dir):
+    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={
+            "session_id": "leg2",
+            "interview_id": "does-not-exist",
+            "turns": [{"role": "candidate", "text": "hi"}],
+        },
+    )
+
+    assert response.status_code == 200
+    saved = client.get("/api/transcript/leg2").json()
+    assert set(saved) == LEGACY_RECORD_KEYS
+
+
+def test_finalize_summary_failure_still_saves_enriched_record(client, patch_settings, tmp_transcripts_dir):
+    # No Gemini key -> generate_summary raises -> summary soft-fails, but the
+    # enriched record (vendor profile, scorecard, findings) must still be saved.
+    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+    state = _seed_interview(
+        scores=[
+            AnswerScore(question_id="company_overview", category_scores={"experience": 3}, evidence="ev", rationale="r"),
+        ],
+    )
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={
+            "session_id": "e2",
+            "interview_id": state.interview_id,
+            "turns": [{"role": "candidate", "text": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary_ok"] is False
+
+    saved = client.get("/api/transcript/e2").json()
+    assert saved["summary_ok"] is False
+    assert saved["vendor_profile"]["company_name"] == "Acme Corp"
+    assert saved["scorecard"]["overall"] == 3.0
+    assert saved["scout_findings"] == []
+    assert state.status == "finished"
 
 
 def test_get_transcript_not_found_returns_404(client, tmp_transcripts_dir):

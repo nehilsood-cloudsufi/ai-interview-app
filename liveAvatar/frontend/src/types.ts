@@ -51,3 +51,12 @@ export interface InterviewStateResponse {
   insights: ScoutFinding[];
   updated_at: string;
 }
+
+// POST /api/transcript/finalize response. The enriched fields are only
+// present in gateway mode (a live interview_id was sent with the request).
+export interface FinalizeTranscriptResponse {
+  summary: string;
+  summary_ok: boolean;
+  scorecard?: ScorecardData | null;
+  insights?: ScoutFinding[] | null;
+}
