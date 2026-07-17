@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.logging_config import configure_logging
-from app.routers import concurrency, resume, sessions, spike_llm_gateway, transcripts, vendor
+from app.routers import concurrency, llm_gateway, resume, sessions, transcripts, vendor
 from app.services import gemini_provisioning
 
 configure_logging()
@@ -41,9 +41,7 @@ app.include_router(resume.router)
 app.include_router(sessions.router)
 app.include_router(transcripts.router)
 app.include_router(vendor.router)
-# SPIKE — Phase 0 of the Resonance plan. Delete once docs/llm-gateway-notes.md
-# is written and Task B2 replaces it with the real gateway route.
-app.include_router(spike_llm_gateway.router)
+app.include_router(llm_gateway.router)
 
 # Serve React Frontend in production
 frontend_dist = os.path.join(os.path.dirname(__file__), "../../frontend/dist")
@@ -52,7 +50,7 @@ frontend_dist = os.path.join(os.path.dirname(__file__), "../../frontend/dist")
 @app.middleware("http")
 async def fallback_to_index(request: Request, call_next):
     response = await call_next(request)
-    if response.status_code == 404 and not request.url.path.startswith("/api/"):  # pragma: no cover
+    if response.status_code == 404 and not request.url.path.startswith(("/api/", "/llm/")):  # pragma: no cover
         # Unreachable in CI: frontend/dist doesn't exist until the frontend is built.
         return FileResponse(os.path.join(frontend_dist, "index.html"))
     return response

@@ -1,7 +1,14 @@
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import yaml
+
+from app.config import settings
+
+# Backend package root (liveAvatar/backend/), so the relative default
+# questionnaire/rubric paths resolve regardless of the process CWD.
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
@@ -84,3 +91,22 @@ def _validate_rubric(categories: dict[str, RubricCategory]) -> None:
     total_weight = sum(category.weight for category in categories.values())
     if abs(total_weight - 1.0) > 0.01:
         raise ValueError(f"rubric weights must sum to 1.0 (got {total_weight})")
+
+
+def _resolve_path(path_str: str) -> Path:
+    path = Path(path_str)
+    return path if path.is_absolute() else _BACKEND_ROOT / path
+
+
+# Lazy module-level singletons (no app.state: tests use TestClient without
+# lifespan). Loaded on first use, cached for the life of the process.
+
+
+@lru_cache(maxsize=1)
+def get_questionnaire() -> dict[str, QuestionNode]:
+    return load_questionnaire(_resolve_path(settings.questionnaire_path))
+
+
+@lru_cache(maxsize=1)
+def get_rubric() -> dict[str, RubricCategory]:
+    return load_rubric(_resolve_path(settings.rubric_path))
