@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.logging_config import configure_logging
-from app.routers import concurrency, resume, sessions, transcripts, vendor
+from app.routers import concurrency, resume, sessions, spike_llm_gateway, transcripts, vendor
 from app.services import gemini_provisioning
 
 configure_logging()
@@ -41,6 +41,9 @@ app.include_router(resume.router)
 app.include_router(sessions.router)
 app.include_router(transcripts.router)
 app.include_router(vendor.router)
+# SPIKE — Phase 0 of the Resonance plan. Delete once docs/llm-gateway-notes.md
+# is written and Task B2 replaces it with the real gateway route.
+app.include_router(spike_llm_gateway.router)
 
 # Serve React Frontend in production
 frontend_dist = os.path.join(os.path.dirname(__file__), "../../frontend/dist")
