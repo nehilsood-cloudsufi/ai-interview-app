@@ -32,6 +32,58 @@ async def delete_context(api_key: str, context_id: str) -> None:
         )
 
 
+async def create_llm_secret(api_key: str, value: str) -> str:
+    async with httpx.AsyncClient() as client:
+        secret_res = await client.post(
+            f"{settings.liveavatar_base_url}/secrets",
+            json={
+                # The Secrets API has no LLM_API_KEY type - custom
+                # OpenAI-compatible endpoints must use OPENAI_API_KEY
+                # (Phase 0 spike finding, see docs/llm-gateway-notes.md).
+                "secret_type": "OPENAI_API_KEY",
+                "secret_value": value,
+                "secret_name": f"Resonance Gateway {uuid.uuid4().hex[:8]}",
+            },
+            headers={"X-API-KEY": api_key},
+        )
+        secret_res.raise_for_status()
+        return secret_res.json()["data"]["id"]
+
+
+async def create_llm_configuration(api_key: str, secret_id: str, base_url: str) -> str:
+    async with httpx.AsyncClient() as client:
+        llm_res = await client.post(
+            f"{settings.liveavatar_base_url}/llm-configurations",
+            json={
+                "display_name": f"Resonance Host {uuid.uuid4().hex[:8]}",
+                "model_name": "resonance-host",
+                "secret_id": secret_id,
+                "base_url": base_url,
+            },
+            headers={"X-API-KEY": api_key},
+        )
+        llm_res.raise_for_status()
+        data = llm_res.json()["data"]
+        # Use "id" or fallback if "llm_configuration_id" isn't present
+        return data.get("id") or data.get("llm_configuration_id")
+
+
+async def delete_llm_configuration(api_key: str, config_id: str) -> None:
+    async with httpx.AsyncClient() as client:
+        await client.delete(
+            f"{settings.liveavatar_base_url}/llm-configurations/{config_id}",
+            headers={"X-API-KEY": api_key},
+        )
+
+
+async def delete_secret(api_key: str, secret_id: str) -> None:
+    async with httpx.AsyncClient() as client:
+        await client.delete(
+            f"{settings.liveavatar_base_url}/secrets/{secret_id}",
+            headers={"X-API-KEY": api_key},
+        )
+
+
 async def create_session_token(
     api_key: str,
     llm_configuration_id: str | None,

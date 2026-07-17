@@ -20,6 +20,7 @@ _SETTINGS_IMPORTERS = [
     "app.main",
     "app.dependencies",
     "app.routers.resume",
+    "app.routers.sessions",
     "app.routers.vendor",
     "app.services.resume_parser",
     "app.services.liveavatar_client",

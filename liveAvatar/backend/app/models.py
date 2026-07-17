@@ -8,6 +8,9 @@ class CreateSessionRequest(BaseModel):
     llm_configuration_id: str | None = None
     avatar_id: str | None = None
     api_key: str | None = None
+    # Set (with PUBLIC_BASE_URL configured) to run in gateway mode: the session
+    # gets a per-interview Custom LLM pointing back at our /llm/{id}/v1 gateway.
+    interview_id: str | None = None
 
 
 class CreateSessionResponse(BaseModel):
@@ -19,6 +22,9 @@ class StopSessionRequest(BaseModel):
     session_token: str | None = None
     context_id: str | None = None
     api_key: str | None = None
+    # Gateway mode: identifies the interview whose LLM config/secret/context
+    # should be torn down best-effort on stop.
+    interview_id: str | None = None
 
 
 class StopSessionResponse(BaseModel):
