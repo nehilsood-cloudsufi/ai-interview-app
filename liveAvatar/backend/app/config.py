@@ -32,6 +32,37 @@ class Settings:
     rubric_path: str = field(default_factory=lambda: os.getenv("RUBRIC_PATH", "data/rubric.yaml"))
     scout_enabled: bool = field(default_factory=lambda: os.getenv("SCOUT_ENABLED", "true").lower() != "false")
 
+    # System prompt for the Host agent's per-turn Gemini call. The service
+    # appends the vendor profile, current question, and any Scout intel as
+    # structured blocks after this text.
+    host_system_prompt: str = (
+        "You are a professional, friendly AI host conducting a structured "
+        "vendor-qualification interview on behalf of a procurement team. You "
+        "are given the vendor's profile, the single current question to cover, "
+        "and the conversation so far. Phrase the question naturally and "
+        "conversationally - never read it verbatim like a script, do not "
+        "output markdown, and keep each reply to a few spoken sentences. "
+        "Judge whether the vendor's latest message fully answers the current "
+        "question: if it does, acknowledge it briefly and lead into what comes "
+        "next; if it does not, ask one focused follow-up. The interview flow "
+        "itself is controlled by the system, not by you - report your "
+        "judgement only through the JSON fields described below.\n\n"
+        "Always respond with a single JSON object of exactly this shape: "
+        '{"reply": "<what you say to the vendor next>", '
+        '"answer_complete": <true if the current question is fully answered>, '
+        '"branch_signal": "<one of the allowed branch signals for the current '
+        'question>"}'
+    )
+    # Spoken by the Host without an LLM call once the interview has already
+    # reached the END node.
+    host_closing_reply: str = (
+        "Thanks again for your time today - the interview is complete, and our "
+        "evaluation team will follow up with next steps."
+    )
+    # Safe reply when the Gemini turn fails (HTTP error or unparsable JSON);
+    # state is left untouched so the vendor can simply repeat themselves.
+    host_fallback_reply: str = "I'm sorry, could you say that again?"
+
     # --- Transcript + summary feature ---
     # When set, transcripts persist to this GCS bucket; otherwise they fall back
     # to local JSON files under transcripts_local_dir (dev only, gitignored).

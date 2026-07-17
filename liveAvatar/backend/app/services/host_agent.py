@@ -1,0 +1,212 @@
+"""Host agent core: a deterministic interview state machine around one
+structured Gemini turn.
+
+Per user utterance, `handle_turn` makes a single call to Gemini's
+OpenAI-compatible chat endpoint (same raw-httpx pattern as
+`summary_service`) asking for JSON `{"reply", "answer_complete",
+"branch_signal"}`. The LLM only phrases the reply and reports its
+judgement - all state mutation (appending turns, resolving branches,
+advancing `current_node_id`, follow-up accounting) is done here in code.
+
+Answer-text collection: `state.followup_count` counts the follow-up rounds
+already exchanged for the current question, and each round appended exactly
+one candidate turn and one interviewer turn to `state.turns`. So the user's
+prior partial answers for the current question are the candidate-role
+entries among the last `2 * followup_count` turns; when a question
+completes, `answer_text` is those texts plus the new utterance.
+
+On any HTTP or parse failure the turn soft-fails: a generic "say that
+again" reply is returned and the state is left completely unchanged.
+"""
+
+import json
+import logging
+from dataclasses import dataclass
+
+import httpx
+
+from app.config import settings
+from app.models import TranscriptTurn
+from app.services.interview_config import QuestionNode, RubricCategory
+from app.services.interview_state import InterviewState
+
+logger = logging.getLogger(__name__)
+
+END_NODE_ID = "END"
+DEFAULT_SIGNAL = "default"
+
+_ROLE_LABELS = {"interviewer": "Interviewer", "candidate": "Candidate"}
+# How many trailing entries of state.turns are replayed to Gemini as context.
+_TRANSCRIPT_WINDOW = 10
+
+
+@dataclass
+class TurnResult:
+    reply: str  # what the avatar says next
+    answer_complete: bool  # True -> current question answered; state advanced
+    completed_question: QuestionNode | None  # set when answer_complete (Appraiser hook)
+    answer_text: str  # user's full answer for the completed question ("" if not complete)
+
+
+def _render_transcript(turns: list[TranscriptTurn]) -> str:
+    lines = []
+    for turn in turns:
+        label = _ROLE_LABELS.get(turn.role, turn.role.title())
+        text = turn.text.strip()
+        if text:
+            lines.append(f"{label}: {text}")
+    return "\n".join(lines)
+
+
+def _render_system_content(state: InterviewState, node: QuestionNode) -> str:
+    profile = state.vendor_profile
+    contact = profile.contact_name
+    if profile.contact_role:
+        contact += f" ({profile.contact_role})"
+
+    lines = [
+        settings.host_system_prompt,
+        "",
+        "Vendor profile:",
+        f"- Company: {profile.company_name}",
+        f"- Contact: {contact}",
+    ]
+    if profile.website:
+        lines.append(f"- Website: {profile.website}")
+
+    signals = ", ".join(branch.signal for branch in node.branches)
+    lines += [
+        "",
+        "Current question:",
+        f"- Topic: {node.topic}",
+        f"- Ask: {node.ask}",
+        f"- Allowed branch signals: {signals}",
+    ]
+
+    if state.scout_findings:
+        lines += ["", "Known vendor intel:"]
+        for finding in state.scout_findings:
+            bullet = f"- {finding.topic}: {finding.summary}"
+            if finding.source_url:
+                bullet += f" (source: {finding.source_url})"
+            lines.append(bullet)
+
+    return "\n".join(lines)
+
+
+def _render_user_content(state: InterviewState, user_text: str) -> str:
+    transcript = _render_transcript(state.turns[-_TRANSCRIPT_WINDOW:])
+    latest = f"{_ROLE_LABELS['candidate']}: {user_text.strip()}"
+    return f"{transcript}\n{latest}" if transcript else latest
+
+
+def _resolve_branch(node: QuestionNode, signal: str | None) -> str:
+    for branch in node.branches:
+        if branch.signal == signal:
+            return branch.next
+    for branch in node.branches:
+        if branch.signal == DEFAULT_SIGNAL:
+            return branch.next
+    # Questionnaire validation guarantees a node without a default branch has
+    # every branch pointing at END.
+    return node.branches[0].next
+
+
+async def _call_gemini(state: InterviewState, node: QuestionNode, user_text: str) -> dict:
+    payload = {
+        "model": settings.gemini_model,
+        "messages": [
+            {"role": "system", "content": _render_system_content(state, node)},
+            {"role": "user", "content": _render_user_content(state, user_text)},
+        ],
+        "response_format": {"type": "json_object"},
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{settings.gemini_base_url}chat/completions",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {settings.gemini_api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    return json.loads(data["choices"][0]["message"]["content"])
+
+
+async def handle_turn(
+    state: InterviewState,
+    user_text: str,
+    questionnaire: dict[str, QuestionNode],
+    rubric: dict[str, RubricCategory] | None,
+) -> TurnResult:
+    """Process one user utterance: one Gemini call, then code-driven state
+    mutation. `rubric` is accepted for interface parity with the Appraiser
+    flow; the Host itself does not score answers."""
+    if state.current_node_id == END_NODE_ID:
+        return TurnResult(
+            reply=settings.host_closing_reply,
+            answer_complete=False,
+            completed_question=None,
+            answer_text="",
+        )
+
+    if not settings.gemini_api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured; cannot run the host agent.")
+
+    node = questionnaire[state.current_node_id]
+
+    try:
+        parsed = await _call_gemini(state, node, user_text)
+        reply = str(parsed["reply"])
+        answer_complete = bool(parsed.get("answer_complete"))
+        branch_signal = parsed.get("branch_signal")
+    except Exception:
+        logger.warning(
+            "Host turn failed for interview %s at node %s; returning fallback reply.",
+            state.interview_id,
+            state.current_node_id,
+            exc_info=True,
+        )
+        return TurnResult(
+            reply=settings.host_fallback_reply,
+            answer_complete=False,
+            completed_question=None,
+            answer_text="",
+        )
+
+    # Candidate texts already given for this node (see module docstring),
+    # captured before the new turns are appended.
+    prior_answer_texts = [
+        turn.text
+        for turn in state.turns[max(0, len(state.turns) - 2 * state.followup_count) :]
+        if turn.role == "candidate"
+    ]
+
+    state.turns.append(TranscriptTurn(role="candidate", text=user_text))
+    state.turns.append(TranscriptTurn(role="interviewer", text=reply))
+
+    if not answer_complete:
+        state.followup_count += 1
+        if state.followup_count <= node.max_followups:
+            return TurnResult(
+                reply=reply,
+                answer_complete=False,
+                completed_question=None,
+                answer_text="",
+            )
+        # Follow-up budget exhausted: force-advance as if complete, via the
+        # default branch, still speaking the LLM's reply.
+        branch_signal = DEFAULT_SIGNAL
+
+    state.current_node_id = _resolve_branch(node, branch_signal)
+    state.followup_count = 0
+    return TurnResult(
+        reply=reply,
+        answer_complete=True,
+        completed_question=node,
+        answer_text="\n".join([*prior_answer_texts, user_text]),
+    )
