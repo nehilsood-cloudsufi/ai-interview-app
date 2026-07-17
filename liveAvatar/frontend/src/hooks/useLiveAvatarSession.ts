@@ -6,13 +6,17 @@ import type { SessionStatus, SpeakingState, TranscriptTurn } from '../types';
 interface UseLiveAvatarSessionOptions {
   apiKey: string;
   files: File[];
+  // Gateway mode: id returned by /api/vendor-profile. Sent on /api/session so the
+  // backend provisions the per-interview Custom LLM, and on every
+  // /api/session/stop so those resources get torn down.
+  interviewId?: string | null;
   onError: (message: string | null) => void;
   // Called once when a session ends (stop button or server disconnect), before
   // local state is reset — receives the full transcript and the session id.
   onSessionEnd?: (turns: TranscriptTurn[], sessionId: string | null) => void;
 }
 
-export function useLiveAvatarSession({ apiKey, files, onError, onSessionEnd }: UseLiveAvatarSessionOptions) {
+export function useLiveAvatarSession({ apiKey, files, interviewId, onError, onSessionEnd }: UseLiveAvatarSessionOptions) {
   const [session, setSession] = useState<LiveAvatarSession | null>(null);
   const [status, setStatus] = useState<SessionStatus>('disconnected');
   const [speakingState, setSpeakingState] = useState<SpeakingState>('idle');
@@ -23,6 +27,18 @@ export function useLiveAvatarSession({ apiKey, files, onError, onSessionEnd }: U
 
   const apiKeyRef = useRef(apiKey);
   useEffect(() => { apiKeyRef.current = apiKey; }, [apiKey]);
+
+  const interviewIdRef = useRef(interviewId);
+  useEffect(() => { interviewIdRef.current = interviewId; }, [interviewId]);
+
+  // Shared body for every /api/session/stop call site. The interview id is also
+  // persisted to localStorage alongside the session token so orphaned-session
+  // cleanup (after a crash/reload) can still tear down gateway resources.
+  const buildStopBody = (sessionToken: string) => JSON.stringify({
+    session_token: sessionToken,
+    api_key: apiKeyRef.current || undefined,
+    interview_id: localStorage.getItem('liveavatar_interview_id') || interviewIdRef.current || undefined,
+  });
 
   // Latest onSessionEnd without re-subscribing the event handlers on every render.
   const onSessionEndRef = useRef(onSessionEnd);
@@ -59,6 +75,7 @@ export function useLiveAvatarSession({ apiKey, files, onError, onSessionEnd }: U
     setMicEnabled(false);
     setCameraEnabled(true);
     localStorage.removeItem('liveavatar_session_token');
+    localStorage.removeItem('liveavatar_interview_id');
 
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
@@ -104,6 +121,7 @@ export function useLiveAvatarSession({ apiKey, files, onError, onSessionEnd }: U
           context_id: currentContextId,
           llm_configuration_id: DEFAULT_LLM_CONFIG_ID,
           api_key: apiKey || undefined,
+          interview_id: interviewId || undefined,
         }),
       });
 
@@ -115,6 +133,11 @@ export function useLiveAvatarSession({ apiKey, files, onError, onSessionEnd }: U
       const { session_token, session_id } = await response.json();
       sessionIdRef.current = session_id ?? null;
       localStorage.setItem('liveavatar_session_token', session_token);
+      if (interviewId) {
+        localStorage.setItem('liveavatar_interview_id', interviewId);
+      } else {
+        localStorage.removeItem('liveavatar_interview_id');
+      }
 
       const newSession = new LiveAvatarSession(session_token);
 
@@ -161,8 +184,11 @@ export function useLiveAvatarSession({ apiKey, files, onError, onSessionEnd }: U
         fetch(`${API_URL}/api/session/stop`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_token: orphanedToken, api_key: apiKeyRef.current || undefined }),
-        }).catch(console.error).finally(() => localStorage.removeItem('liveavatar_session_token'));
+          body: buildStopBody(orphanedToken),
+        }).catch(console.error).finally(() => {
+          localStorage.removeItem('liveavatar_session_token');
+          localStorage.removeItem('liveavatar_interview_id');
+        });
       }
     }
   };
@@ -217,7 +243,7 @@ export function useLiveAvatarSession({ apiKey, files, onError, onSessionEnd }: U
         fetch(`${API_URL}/api/session/stop`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_token: activeToken, api_key: apiKeyRef.current || undefined }),
+          body: buildStopBody(activeToken),
           keepalive: true,
         });
       }
@@ -232,7 +258,7 @@ export function useLiveAvatarSession({ apiKey, files, onError, onSessionEnd }: U
           fetch(`${API_URL}/api/session/stop`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ session_token: activeToken, api_key: apiKeyRef.current || undefined }),
+            body: buildStopBody(activeToken),
           }).catch(console.error);
         }
       }

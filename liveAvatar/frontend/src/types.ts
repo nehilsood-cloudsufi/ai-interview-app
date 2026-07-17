@@ -9,3 +9,15 @@ export interface TranscriptTurn {
   text: string;
   timestamp: number;
 }
+
+// Vendor intake form fields (POSTed as multipart to /api/vendor-profile).
+export interface VendorProfile {
+  companyName: string;
+  website: string;
+  contactName: string;
+  contactRole: string;
+}
+
+export interface VendorProfileResponse {
+  interview_id: string;
+}
