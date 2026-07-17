@@ -265,6 +265,114 @@ def test_finalize_summary_failure_still_saves_enriched_record(client, patch_sett
     assert state.status == "finished"
 
 
+def test_finalize_high_scores_includes_followup(client, patch_settings, tmp_transcripts_dir, monkeypatch):
+    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+
+    from app.services import coordinator_agent
+    from app.services.coordinator_agent import FollowupProposal
+
+    async def _fake_draft(state, rec, rubric):
+        return FollowupProposal(
+            recommendation=rec,
+            title="Deep dive with Acme Corp",
+            agenda=["Technical Capability", "Delivery & Team"],
+            duration_minutes=45,
+            email_draft="Dear Jane,\n\nLet's schedule a deep dive.",
+        )
+
+    monkeypatch.setattr(coordinator_agent, "draft_followup", _fake_draft)
+
+    # experience 5 -> overall 5.0 >= advance threshold (3.5) -> "advance".
+    state = _seed_interview(
+        scores=[
+            AnswerScore(question_id="company_overview", category_scores={"experience": 5}, evidence="ev", rationale="r"),
+        ],
+    )
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={
+            "session_id": "f1",
+            "interview_id": state.interview_id,
+            "turns": [{"role": "candidate", "text": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    followup = response.json()["followup"]
+    assert followup["recommendation"]["kind"] == "advance"
+    assert followup["recommendation"]["reason"]
+    assert followup["title"] == "Deep dive with Acme Corp"
+    assert followup["agenda"] == ["Technical Capability", "Delivery & Team"]
+    assert followup["duration_minutes"] == 45
+    assert followup["email_draft"].startswith("Dear Jane,")
+
+    saved = client.get("/api/transcript/f1").json()
+    assert saved["followup"] == followup
+
+
+def test_finalize_low_scores_has_null_followup(client, patch_settings, tmp_transcripts_dir):
+    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+
+    # experience 1 -> overall 1.0 < clarify floor (2.5) -> no recommendation.
+    state = _seed_interview(
+        scores=[
+            AnswerScore(question_id="company_overview", category_scores={"experience": 1}, evidence="ev", rationale="r"),
+        ],
+    )
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={
+            "session_id": "f2",
+            "interview_id": state.interview_id,
+            "turns": [{"role": "candidate", "text": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["followup"] is None
+
+    saved = client.get("/api/transcript/f2").json()
+    assert saved["followup"] is None
+    # The rest of the enrichment is unaffected.
+    assert saved["scorecard"]["overall"] == 1.0
+
+
+def test_finalize_coordinator_crash_never_blocks_save(client, patch_settings, tmp_transcripts_dir, monkeypatch):
+    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+
+    from app.services import coordinator_agent
+
+    def _boom(scorecard, rubric):
+        raise RuntimeError("coordinator exploded")
+
+    monkeypatch.setattr(coordinator_agent, "evaluate_followup", _boom)
+
+    state = _seed_interview(
+        scores=[
+            AnswerScore(question_id="company_overview", category_scores={"experience": 5}, evidence="ev", rationale="r"),
+        ],
+    )
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={
+            "session_id": "f3",
+            "interview_id": state.interview_id,
+            "turns": [{"role": "candidate", "text": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["followup"] is None
+
+    saved = client.get("/api/transcript/f3").json()
+    assert saved["followup"] is None
+    assert saved["scorecard"]["overall"] == 5.0
+    assert state.status == "finished"
+
+
 def test_get_transcript_not_found_returns_404(client, tmp_transcripts_dir):
     response = client.get("/api/transcript/does-not-exist")
     assert response.status_code == 404

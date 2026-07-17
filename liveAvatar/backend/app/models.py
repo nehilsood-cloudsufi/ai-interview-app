@@ -78,6 +78,20 @@ class ScoutFindingModel(BaseModel):
     source_url: str | None
 
 
+class FollowupRecommendationModel(BaseModel):
+    kind: Literal["advance", "clarify"]
+    reason: str
+    focus_categories: list[str]
+
+
+class FollowupProposalModel(BaseModel):
+    recommendation: FollowupRecommendationModel
+    title: str
+    agenda: list[str]
+    duration_minutes: int
+    email_draft: str
+
+
 class FinalizeTranscriptResponse(BaseModel):
     summary: str
     # False when summary generation failed but the transcript was still saved.
@@ -86,6 +100,9 @@ class FinalizeTranscriptResponse(BaseModel):
     # the final values so the UI needs no extra state poll.
     scorecard: ScorecardModel | None = None
     insights: list[ScoutFindingModel] | None = None
+    # Coordinator follow-up proposal; None when nothing is recommended, the
+    # coordinator failed (soft-fail), or in legacy mode.
+    followup: FollowupProposalModel | None = None
 
 
 class InterviewStateResponse(BaseModel):

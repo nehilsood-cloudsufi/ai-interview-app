@@ -5,7 +5,13 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 
 from app.models import FinalizeTranscriptRequest, FinalizeTranscriptResponse
-from app.services import appraiser_agent, interview_state, summary_service, transcript_store
+from app.services import (
+    appraiser_agent,
+    coordinator_agent,
+    interview_state,
+    summary_service,
+    transcript_store,
+)
 from app.services.interview_config import get_rubric
 
 logger = logging.getLogger(__name__)
@@ -40,10 +46,12 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
     # Legacy finalize (no/unknown interview_id) keeps the exact shape above.
     scorecard_dict = None
     insights = None
+    followup = None
     state = interview_state.get(body.interview_id) if body.interview_id else None
     if state is not None:
         profile = state.vendor_profile
-        scorecard = appraiser_agent.compute_scorecard(state.scores, get_rubric())
+        rubric = get_rubric()
+        scorecard = appraiser_agent.compute_scorecard(state.scores, rubric)
         scorecard_dict = dataclasses.asdict(scorecard)
         insights = [dataclasses.asdict(finding) for finding in state.scout_findings]
         payload["vendor_profile"] = {
@@ -55,6 +63,19 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
         }
         payload["scorecard"] = scorecard_dict
         payload["scout_findings"] = insights
+
+        # Coordinator follow-up: like the summary, a crash here must never
+        # block saving the transcript - soft-fail to a null followup.
+        try:
+            if state.scores:
+                rec = coordinator_agent.evaluate_followup(scorecard, rubric)
+                if rec is not None:
+                    proposal = await coordinator_agent.draft_followup(state, rec, rubric)
+                    followup = dataclasses.asdict(proposal)
+        except Exception as e:
+            logger.warning("Coordinator follow-up failed for session %s: %s", body.session_id, e)
+        payload["followup"] = followup
+
         state.status = "finished"
 
     try:
@@ -68,6 +89,7 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
         "summary_ok": summary_ok,
         "scorecard": scorecard_dict,
         "insights": insights,
+        "followup": followup,
     }
 
 

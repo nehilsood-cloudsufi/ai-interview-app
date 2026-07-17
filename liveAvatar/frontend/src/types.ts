@@ -52,6 +52,21 @@ export interface InterviewStateResponse {
   updated_at: string;
 }
 
+// Coordinator follow-up recommendation attached to the finalize response.
+export interface FollowupRecommendation {
+  kind: 'advance' | 'clarify';
+  reason: string;
+  focus_categories: string[];
+}
+
+export interface FollowupProposal {
+  recommendation: FollowupRecommendation;
+  title: string;
+  agenda: string[];
+  duration_minutes: number;
+  email_draft: string;
+}
+
 // POST /api/transcript/finalize response. The enriched fields are only
 // present in gateway mode (a live interview_id was sent with the request).
 export interface FinalizeTranscriptResponse {
@@ -59,4 +74,5 @@ export interface FinalizeTranscriptResponse {
   summary_ok: boolean;
   scorecard?: ScorecardData | null;
   insights?: ScoutFinding[] | null;
+  followup?: FollowupProposal | null;
 }

@@ -169,6 +169,7 @@ function App() {
         error={summary.error}
         scorecard={summary.scorecard}
         insights={summary.insights}
+        followup={summary.followup}
         onDismiss={summary.dismiss}
       />
     </div>

@@ -1,6 +1,7 @@
 import { X, Download, Loader2, AlertTriangle } from 'lucide-react';
-import type { ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
+import type { FollowupProposal, ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
 import { downloadTranscript } from '../utils/downloadTranscript';
+import { FollowupPanel } from './FollowupPanel';
 
 interface SummaryPanelProps {
   visible: boolean;
@@ -13,6 +14,7 @@ interface SummaryPanelProps {
   // the downloadable Markdown record.
   scorecard?: ScorecardData | null;
   insights?: ScoutFinding[] | null;
+  followup?: FollowupProposal | null;
   onDismiss: () => void;
 }
 
@@ -25,6 +27,7 @@ export function SummaryPanel({
   error,
   scorecard,
   insights,
+  followup,
   onDismiss,
 }: SummaryPanelProps) {
   if (!visible) return null;
@@ -37,7 +40,7 @@ export function SummaryPanel({
           <h2 className="text-lg font-bold text-white">Interview Summary</h2>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => downloadTranscript(summary, turns, sessionId, { scorecard, insights })}
+              onClick={() => downloadTranscript(summary, turns, sessionId, { scorecard, insights, followup })}
               disabled={isGenerating}
               className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 text-sm font-semibold px-3 py-1.5 rounded-lg border border-slate-700/50 transition-colors"
             >
@@ -79,6 +82,9 @@ export function SummaryPanel({
               </>
             )}
           </section>
+
+          {/* Coordinator follow-up card (only when a follow-up was recommended) */}
+          {!isGenerating && <FollowupPanel followup={followup} />}
 
           {/* Full transcript section */}
           <section>

@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { API_URL } from '../config';
-import type { FinalizeTranscriptResponse, ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
+import type { FinalizeTranscriptResponse, FollowupProposal, ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
 
 interface SummaryState {
   visible: boolean;
@@ -15,6 +15,8 @@ interface SummaryState {
   // mode only; null in legacy mode or on failure).
   scorecard: ScorecardData | null;
   insights: ScoutFinding[] | null;
+  // Coordinator follow-up proposal; null when nothing was recommended.
+  followup: FollowupProposal | null;
 }
 
 const INITIAL: SummaryState = {
@@ -26,6 +28,7 @@ const INITIAL: SummaryState = {
   error: null,
   scorecard: null,
   insights: null,
+  followup: null,
 };
 
 export function useInterviewSummary(interviewId: string | null = null) {
@@ -62,6 +65,7 @@ export function useInterviewSummary(interviewId: string | null = null) {
         summary: data.summary ?? '',
         scorecard: data.scorecard ?? null,
         insights: data.insights ?? null,
+        followup: data.followup ?? null,
         error: data.summary_ok === false ? 'Summary could not be generated, but the transcript was saved.' : null,
       }));
     } catch (err) {
