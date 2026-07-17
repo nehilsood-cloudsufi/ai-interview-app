@@ -4,7 +4,7 @@ import pytest
 import yaml
 
 from app.config import settings
-from app.services.interview_config import load_questionnaire, load_rubric
+from app.services.interview_config import get_questionnaire, get_rubric, load_questionnaire, load_rubric
 
 
 def _write_yaml(path: Path, data: dict) -> Path:
@@ -145,3 +145,31 @@ def test_shipped_questionnaire_loads_and_validates():
 def test_shipped_rubric_loads_and_weights_sum_to_one():
     categories = load_rubric(Path(settings.rubric_path))
     assert abs(sum(c.weight for c in categories.values()) - 1.0) < 0.01
+
+
+@pytest.fixture
+def clear_config_cache():
+    get_questionnaire.cache_clear()
+    get_rubric.cache_clear()
+    yield
+    get_questionnaire.cache_clear()
+    get_rubric.cache_clear()
+
+
+def test_get_questionnaire_and_rubric_are_cached_singletons(clear_config_cache):
+    questionnaire = get_questionnaire()
+    rubric = get_rubric()
+
+    assert "verify_identity" in questionnaire
+    assert abs(sum(c.weight for c in rubric.values()) - 1.0) < 0.01
+    assert get_questionnaire() is questionnaire
+    assert get_rubric() is rubric
+
+
+def test_get_questionnaire_resolves_relative_to_backend_root(clear_config_cache, tmp_path, monkeypatch):
+    # The default paths are relative ("data/questionnaire.yaml"); loading must
+    # not depend on the process CWD.
+    monkeypatch.chdir(tmp_path)
+
+    assert "verify_identity" in get_questionnaire()
+    assert get_rubric()
