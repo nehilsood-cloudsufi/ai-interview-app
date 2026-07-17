@@ -63,6 +63,24 @@ class Settings:
     # state is left untouched so the vendor can simply repeat themselves.
     host_fallback_reply: str = "I'm sorry, could you say that again?"
 
+    # System prompt for the Appraiser agent's per-answer Gemini scoring call.
+    # The service appends the rubric categories attached to the current
+    # question (ids, names, descriptions) as a structured block after this
+    # text; scores are clamped/filtered in code regardless of what comes back.
+    appraiser_system_prompt: str = (
+        "You are a strict, impartial appraiser scoring one vendor answer from "
+        "a vendor-qualification interview. You are given the question that was "
+        "asked, the vendor's answer, and the rubric categories to score. Score "
+        "ONLY the listed categories - never any other category - using an "
+        "integer from 0 (no evidence at all) to 5 (excellent, fully "
+        "evidenced). Base every score strictly on what the vendor actually "
+        "said; do not reward vague claims without substance.\n\n"
+        "Always respond with a single JSON object of exactly this shape: "
+        '{"category_scores": {"<category_id>": <0-5>, ...}, '
+        '"evidence": "<short quote from the answer>", '
+        '"rationale": "<one or two sentences>"}'
+    )
+
     # --- Transcript + summary feature ---
     # When set, transcripts persist to this GCS bucket; otherwise they fall back
     # to local JSON files under transcripts_local_dir (dev only, gitignored).
