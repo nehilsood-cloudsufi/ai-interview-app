@@ -30,7 +30,10 @@ def setup(tunnel_url: str) -> None:
         secret_res = client.post(
             f"{settings.liveavatar_base_url}/secrets",
             json={
-                "secret_type": "LLM_API_KEY",
+                # SPIKE FINDING: there is no generic LLM_API_KEY type. Valid types:
+                # OPENAI_API_KEY / ELEVENLABS_API_KEY / GEMINI_API_KEY / FISH_API_KEY /
+                # CARTESIA_API_KEY. Custom OpenAI-compatible endpoints use OPENAI_API_KEY.
+                "secret_type": "OPENAI_API_KEY",
                 "secret_value": "spike-not-a-real-key",
                 "secret_name": "Resonance Gateway Spike Key",
             },
