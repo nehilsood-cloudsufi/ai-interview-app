@@ -1,0 +1,100 @@
+# Resonance vendor-interview question tree.
+#
+# Each node is walked deterministically by app/services/host_agent.py - the
+# LLM only phrases the "ask" naturally and reports which branch signal fired.
+# Every node needs a "default" branch (the else-branch when no specific
+# signal matches) unless its only branch already points straight to "END".
+questions:
+  - id: verify_identity
+    topic: identity_verification
+    ask: >
+      Greet the vendor warmly by name and company. Verbally confirm that
+      their company name, contact name, and role match what they entered
+      at intake, and ask them to correct anything that's wrong.
+    rubric_categories: []
+    max_followups: 1
+    branches:
+      - signal: default
+        next: company_overview
+
+  - id: company_overview
+    topic: company_overview
+    ask: >
+      Ask the vendor for a brief overview of their company: what they do,
+      how long they've been operating, and which industries they serve.
+    rubric_categories: [experience]
+    max_followups: 1
+    branches:
+      - signal: mentions_ai_ml
+        next: ai_ml_depth
+      - signal: default
+        next: services_offered
+
+  - id: ai_ml_depth
+    topic: ai_ml_capability
+    ask: >
+      The vendor mentioned AI/ML - go deeper: ask what specific
+      techniques, models, or platforms they use, and for a concrete
+      example of a project they delivered with them.
+    rubric_categories: [capability]
+    max_followups: 1
+    branches:
+      - signal: default
+        next: services_offered
+
+  - id: services_offered
+    topic: services_offered
+    ask: >
+      Ask what specific services or products they're proposing for this
+      engagement, and how that fits their company's core strengths.
+    rubric_categories: [capability]
+    max_followups: 1
+    branches:
+      - signal: default
+        next: delivery_team
+
+  - id: delivery_team
+    topic: delivery_and_team
+    ask: >
+      Ask about the team that would deliver this engagement: its size,
+      seniority, and how they typically structure delivery (onsite,
+      remote, hybrid) and project management.
+    rubric_categories: [delivery]
+    max_followups: 1
+    branches:
+      - signal: default
+        next: references
+
+  - id: references
+    topic: references_and_track_record
+    ask: >
+      Ask for one or two reference clients or case studies relevant to
+      this kind of engagement, and what outcomes were achieved.
+    rubric_categories: [experience, credibility]
+    max_followups: 1
+    branches:
+      - signal: default
+        next: security_posture
+
+  - id: security_posture
+    topic: security_and_compliance
+    ask: >
+      Ask about their security posture and any relevant compliance
+      certifications (for example SOC 2 or ISO 27001) relevant to
+      handling company data.
+    rubric_categories: [credibility]
+    max_followups: 1
+    branches:
+      - signal: default
+        next: closing
+
+  - id: closing
+    topic: closing
+    ask: >
+      Thank the vendor for their time and let them know the evaluation
+      team will follow up with next steps.
+    rubric_categories: []
+    max_followups: 0
+    branches:
+      - signal: finished
+        next: END

@@ -23,6 +23,15 @@ class Settings:
         "Do not output markdown, speak naturally."
     )
 
+    # --- Resonance multi-agent interview ---
+    # Externally reachable base URL of this backend (Cloud Run URL or a dev
+    # tunnel). Unset -> legacy mode: sessions fall back to today's
+    # Gemini-provisioned behavior so local dev without a tunnel still works.
+    public_base_url: str | None = field(default_factory=lambda: os.getenv("PUBLIC_BASE_URL"))
+    questionnaire_path: str = field(default_factory=lambda: os.getenv("QUESTIONNAIRE_PATH", "data/questionnaire.yaml"))
+    rubric_path: str = field(default_factory=lambda: os.getenv("RUBRIC_PATH", "data/rubric.yaml"))
+    scout_enabled: bool = field(default_factory=lambda: os.getenv("SCOUT_ENABLED", "true").lower() != "false")
+
     # --- Transcript + summary feature ---
     # When set, transcripts persist to this GCS bucket; otherwise they fall back
     # to local JSON files under transcripts_local_dir (dev only, gitignored).
