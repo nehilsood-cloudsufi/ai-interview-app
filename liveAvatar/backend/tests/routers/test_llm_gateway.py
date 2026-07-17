@@ -6,9 +6,9 @@ import respx
 
 from app.config import settings
 from app.routers import llm_gateway
-from app.services import host_agent, interview_state
+from app.services import appraiser_agent, host_agent, interview_state
 from app.services.host_agent import TurnResult
-from app.services.interview_config import Branch, QuestionNode
+from app.services.interview_config import Branch, QuestionNode, get_rubric
 from app.services.interview_state import VendorProfile
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -311,9 +311,53 @@ async def test_incomplete_answer_does_not_fire_hook(async_client, monkeypatch):
     assert hook_calls == []
 
 
-async def test_default_hook_placeholder_is_a_noop():
-    # Task C2 replaces the body; until then it must exist and do nothing.
-    assert await llm_gateway._on_answer_complete(None, None, "") is None
+async def test_hook_awaits_appraiser_score_and_store(async_client, monkeypatch):
+    # The real hook body: one score_and_store call per completed answer,
+    # with the live state, the completed question, and the rubric singleton.
+    state = _seed_interview()
+    node = _completed_node()
+    _fake_handle_turn(
+        monkeypatch,
+        _turn_result(reply="Thanks!", answer_complete=True, completed_question=node, answer_text="Full answer."),
+    )
+
+    calls = []
+
+    async def fake_score_and_store(hook_state, question, answer_text, rubric):
+        calls.append((hook_state, question, answer_text, rubric))
+
+    monkeypatch.setattr(appraiser_agent, "score_and_store", fake_score_and_store)
+
+    response = await async_client.post(_url(state.interview_id), json=_openai_body(), headers=_auth(state))
+
+    assert response.status_code == 200
+    for _ in range(3):  # let the created task run
+        await asyncio.sleep(0)
+    assert calls == [(state, node, "Full answer.", get_rubric())]
+
+
+async def test_score_and_store_failure_does_not_affect_reply(async_client, monkeypatch, caplog):
+    # score_and_store normally swallows its own failures; even if it raises,
+    # the hook's outer try/except keeps the gateway reply intact.
+    state = _seed_interview()
+    _fake_handle_turn(
+        monkeypatch,
+        _turn_result(reply="Thanks!", answer_complete=True, completed_question=_completed_node(), answer_text="A."),
+    )
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("appraiser exploded")
+
+    monkeypatch.setattr(appraiser_agent, "score_and_store", boom)
+
+    with caplog.at_level("WARNING", logger="app.routers.llm_gateway"):
+        response = await async_client.post(_url(state.interview_id), json=_openai_body(), headers=_auth(state))
+        assert response.status_code == 200
+        assert response.json()["choices"][0]["message"]["content"] == "Thanks!"
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+    assert any("answer-complete hook failed" in record.message for record in caplog.records)
 
 
 # --- end-to-end through the real host agent (Gemini mocked) -------------------

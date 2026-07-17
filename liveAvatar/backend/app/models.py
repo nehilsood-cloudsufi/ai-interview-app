@@ -59,3 +59,33 @@ class FinalizeTranscriptResponse(BaseModel):
     summary: str
     # False when summary generation failed but the transcript was still saved.
     summary_ok: bool = True
+
+
+class CategoryScoreModel(BaseModel):
+    id: str
+    name: str
+    weight: float
+    score: float | None
+    evidence: list[str]
+
+
+class ScorecardModel(BaseModel):
+    categories: list[CategoryScoreModel]
+    overall: float | None
+    answered_questions: int
+
+
+class ScoutFindingModel(BaseModel):
+    topic: str
+    summary: str
+    source_url: str | None
+
+
+class InterviewStateResponse(BaseModel):
+    status: Literal["created", "active", "finished"]
+    # Topic of the current questionnaire node; None when the interview has
+    # reached END (or the node id is unknown).
+    current_topic: str | None
+    scorecard: ScorecardModel
+    insights: list[ScoutFindingModel]
+    updated_at: str  # ISO-8601 UTC timestamp of this snapshot
