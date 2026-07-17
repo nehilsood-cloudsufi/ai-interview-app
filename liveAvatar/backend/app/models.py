@@ -30,6 +30,10 @@ class UploadResumeResponse(BaseModel):
     context_id: str
 
 
+class VendorProfileResponse(BaseModel):
+    interview_id: str
+
+
 class ConcurrencyResponse(BaseModel):
     active_sessions: int
 

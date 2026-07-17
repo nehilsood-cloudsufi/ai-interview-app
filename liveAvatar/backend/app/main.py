@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.logging_config import configure_logging
-from app.routers import concurrency, resume, sessions, transcripts
+from app.routers import concurrency, resume, sessions, transcripts, vendor
 from app.services import gemini_provisioning
 
 configure_logging()
@@ -40,6 +40,7 @@ app.include_router(concurrency.router)
 app.include_router(resume.router)
 app.include_router(sessions.router)
 app.include_router(transcripts.router)
+app.include_router(vendor.router)
 
 # Serve React Frontend in production
 frontend_dist = os.path.join(os.path.dirname(__file__), "../../frontend/dist")
