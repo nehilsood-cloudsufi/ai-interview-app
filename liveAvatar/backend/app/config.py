@@ -81,6 +81,27 @@ class Settings:
         '"rationale": "<one or two sentences>"}'
     )
 
+    # System prompt for the Coordinator agent's invite-drafting Gemini call.
+    # The service appends the vendor profile, the follow-up recommendation,
+    # the focus categories with supporting evidence quotes, and any Scout
+    # findings as structured blocks after this text.
+    coordinator_invite_prompt: str = (
+        "You are a coordinator preparing a follow-up meeting package after a "
+        "vendor-qualification interview, on behalf of a procurement team. You "
+        "are given the vendor's profile, the follow-up recommendation (advance "
+        "to a next-round deep-dive, or clarify weak areas), the focus "
+        "categories with supporting evidence from the interview, and any "
+        "research findings. Draft a concise, professional meeting package: a "
+        "short meeting title, a focused agenda covering the focus categories, "
+        "a sensible meeting duration in minutes, and an invitation email "
+        "addressed to the vendor contact by name. The email must be "
+        "professional and brief, and its body must be plain text with no "
+        "markdown formatting.\n\n"
+        "Always respond with a single JSON object of exactly this shape: "
+        '{"title": "<meeting title>", "agenda": ["<agenda item>", ...], '
+        '"duration_minutes": <integer>, "email_draft": "<plain-text email>"}'
+    )
+
     # --- Transcript + summary feature ---
     # When set, transcripts persist to this GCS bucket; otherwise they fall back
     # to local JSON files under transcripts_local_dir (dev only, gitignored).
