@@ -6,6 +6,7 @@ import { useSessionTimer } from './hooks/useSessionTimer';
 import { useResumeFiles } from './hooks/useResumeFiles';
 import { useInterviewSummary } from './hooks/useInterviewSummary';
 import { ResumeUpload } from './components/ResumeUpload';
+import { VendorIntakeForm } from './components/VendorIntakeForm';
 import { NetworkIndicator } from './components/NetworkIndicator';
 import { ConcurrencyBadge } from './components/ConcurrencyBadge';
 import { SpeakingIndicator } from './components/SpeakingIndicator';
@@ -20,8 +21,12 @@ import { formatTime } from './utils/formatTime';
 function App() {
   const [error, setError] = useState<string | null>(null);
   const [apiKey, setApiKey] = useState('');
+  // Gateway mode: set once the vendor profile is saved; passed to the session
+  // hook so /api/session and /api/session/stop carry the interview_id.
+  const [interviewId, setInterviewId] = useState<string | null>(null);
 
   const { files, handleFileChange, removeFile } = useResumeFiles(setError);
+  const vendorDocs = useResumeFiles(setError);
   const networkQuality = useNetworkQuality();
   const concurrencyCount = useConcurrencyPoll();
   const summary = useInterviewSummary();
@@ -39,13 +44,24 @@ function App() {
     stopSession,
     toggleMic,
     toggleCamera,
-  } = useLiveAvatarSession({ apiKey, files, onError: setError, onSessionEnd: summary.finalize });
+  } = useLiveAvatarSession({ apiKey, files, interviewId, onError: setError, onSessionEnd: summary.finalize });
 
   const sessionDuration = useSessionTimer(status);
 
   return (
     <div className="min-h-screen bg-slate-950 text-white flex flex-col md:flex-row overflow-hidden">
 
+        <VendorIntakeForm
+            files={vendorDocs.files}
+            onFileChange={vendorDocs.handleFileChange}
+            onRemoveFile={vendorDocs.removeFile}
+            status={status}
+            interviewId={interviewId}
+            onSubmitted={setInterviewId}
+            onError={setError}
+        />
+
+        {/* Legacy mode: direct document upload when no vendor profile is used */}
         <ResumeUpload
             files={files}
             onFileChange={handleFileChange}
