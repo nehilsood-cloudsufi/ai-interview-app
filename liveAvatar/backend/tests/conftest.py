@@ -29,6 +29,7 @@ _SETTINGS_IMPORTERS = [
     "app.services.gemini_provisioning",
     "app.services.host_agent",
     "app.services.appraiser_agent",
+    "app.services.coordinator_agent",
     "app.services.transcript_store",
     "app.services.summary_service",
 ]
