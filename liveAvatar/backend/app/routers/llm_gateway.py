@@ -112,8 +112,10 @@ async def chat_completions(interview_id: str, request: Request):
 
     # Never-fail zone: HeyGen does not retry and the avatar must always have
     # something to say, so any failure below becomes the canned reply.
+    started = time.monotonic()
     stream = True  # safe default when the body itself is unparsable (HeyGen always streams)
     model = "resonance-host"
+    answer_complete = False
     try:
         body = await request.json()
         stream = bool(body.get("stream"))
@@ -124,11 +126,22 @@ async def chat_completions(interview_id: str, request: Request):
         else:
             result = await host_agent.handle_turn(state, user_text, get_questionnaire(), get_rubric())
             reply = result.reply
+            answer_complete = result.answer_complete
             if result.answer_complete:
                 _fire_answer_complete_hook(state, result.completed_question, result.answer_text)
     except Exception:
         logger.warning("LLM gateway turn failed for interview %s; returning canned reply.", interview_id, exc_info=True)
         reply = settings.host_fallback_reply
+
+    # Per-turn latency evidence: this measures only our server time; the rest
+    # of the perceived turn-around (HeyGen STT, tunnel, TTS) lives outside it.
+    logger.info(
+        "Gateway turn: interview=%s node=%s answer_complete=%s elapsed_ms=%d",
+        interview_id,
+        state.current_node_id,
+        answer_complete,
+        int((time.monotonic() - started) * 1000),
+    )
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
     created = int(time.time())

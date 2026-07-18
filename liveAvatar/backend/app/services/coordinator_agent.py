@@ -13,7 +13,6 @@ unparsable JSON) logs a warning and falls back to a deterministic template
 proposal, so a drafting hiccup can never suppress the recommendation.
 """
 
-import json
 import logging
 from dataclasses import dataclass
 from typing import Literal
@@ -24,8 +23,22 @@ from app.config import settings
 from app.services.appraiser_agent import Scorecard
 from app.services.interview_config import RubricCategory
 from app.services.interview_state import InterviewState
+from app.services.llm_json import parse_llm_json
 
 logger = logging.getLogger(__name__)
+
+# Strict structured output for the invite-drafting call (same rationale as
+# host_agent._TURN_SCHEMA: prevents malformed-JSON completions).
+_PROPOSAL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "agenda": {"type": "array", "items": {"type": "string"}},
+        "duration_minutes": {"type": "integer"},
+        "email_draft": {"type": "string"},
+    },
+    "required": ["title", "agenda", "duration_minutes", "email_draft"],
+}
 
 # Decision thresholds for evaluate_followup. These are logic constants, not
 # deployment configuration, so they live here rather than in app.config.
@@ -174,7 +187,11 @@ async def draft_followup(
                 {"role": "system", "content": settings.coordinator_invite_prompt},
                 {"role": "user", "content": _render_user_content(state, rec, rubric)},
             ],
-            "response_format": {"type": "json_object"},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "followup_proposal", "strict": True, "schema": _PROPOSAL_SCHEMA},
+            },
+            "reasoning_effort": "low",
         }
 
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -189,7 +206,7 @@ async def draft_followup(
             response.raise_for_status()
             data = response.json()
 
-        parsed = json.loads(data["choices"][0]["message"]["content"])
+        parsed = parse_llm_json(data["choices"][0]["message"]["content"])
         return FollowupProposal(
             recommendation=rec,
             title=str(parsed["title"]),

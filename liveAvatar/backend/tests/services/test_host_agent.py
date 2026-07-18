@@ -118,7 +118,15 @@ async def test_advances_on_complete_answer(patch_settings):
     assert request.headers["authorization"] == "Bearer gem-key"
     body = json.loads(request.content)
     assert body["model"] == "gemini-3.5-flash"
-    assert body["response_format"] == {"type": "json_object"}
+    # Strict structured output + low reasoning + bounded reply: the fixes for
+    # the malformed-JSON and thinking-latency issues from the 2026-07-18 live test.
+    assert body["response_format"]["type"] == "json_schema"
+    schema_spec = body["response_format"]["json_schema"]
+    assert schema_spec["name"] == "host_turn"
+    assert schema_spec["strict"] is True
+    assert set(schema_spec["schema"]["required"]) == {"reply", "answer_complete", "branch_signal"}
+    assert body["reasoning_effort"] == "low"
+    assert body["max_tokens"] == 500
     assert body["messages"][0]["role"] == "system"
     system_content = body["messages"][0]["content"]
     assert "Acme Corp" in system_content
@@ -188,15 +196,17 @@ async def test_unknown_branch_signal_falls_to_default(patch_settings):
 
 
 @respx.mock
-async def test_malformed_gemini_json_leaves_state_unchanged(patch_settings):
+async def test_malformed_gemini_json_retried_then_falls_back(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
-    respx.post(CHAT_URL).mock(
+    route = respx.post(CHAT_URL).mock(
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": "not json at all"}}]})
     )
     state = make_state(followup_count=1)
 
     result = await handle_turn(state, "Hello?", make_questionnaire(), make_rubric())
 
+    # One retry on a parse failure, then the soft-fail path.
+    assert route.call_count == 2
     assert result.reply == "I'm sorry, could you say that again?"
     assert result.answer_complete is False
     assert result.completed_question is None
@@ -204,6 +214,55 @@ async def test_malformed_gemini_json_leaves_state_unchanged(patch_settings):
     assert state.turns == []
     assert state.current_node_id == "company_overview"
     assert state.followup_count == 1
+
+
+@respx.mock
+async def test_malformed_gemini_json_recovers_on_retry(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(200, json={"choices": [{"message": {"content": '{"broken":'}}]}),
+            gemini_response(reply="Sorry - could you tell me more?", answer_complete=False),
+        ]
+    )
+    state = make_state()
+
+    result = await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    assert route.call_count == 2
+    assert result.reply == "Sorry - could you tell me more?"
+    assert state.followup_count == 1
+    assert [turn.role for turn in state.turns] == ["candidate", "interviewer"]
+
+
+@respx.mock
+async def test_fenced_json_content_is_parsed(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    content = '```json\n{"reply": "Got it, thanks!", "answer_complete": true, "branch_signal": "default"}\n```'
+    route = respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+    )
+    state = make_state()
+
+    result = await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    assert route.call_count == 1
+    assert result.reply == "Got it, thanks!"
+    assert result.answer_complete is True
+    assert state.current_node_id == "closing"
+
+
+@respx.mock
+async def test_http_error_is_not_retried(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=httpx.Response(500))
+    state = make_state()
+
+    result = await handle_turn(state, "Hello?", make_questionnaire(), make_rubric())
+
+    # HTTP failures fall back immediately - no retry inside HeyGen's timeout window.
+    assert route.call_count == 1
+    assert result.reply == "I'm sorry, could you say that again?"
 
 
 @respx.mock

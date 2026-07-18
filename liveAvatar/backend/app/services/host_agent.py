@@ -19,7 +19,6 @@ On any HTTP or parse failure the turn soft-fails: a generic "say that
 again" reply is returned and the state is left completely unchanged.
 """
 
-import json
 import logging
 from dataclasses import dataclass
 
@@ -29,6 +28,7 @@ from app.config import settings
 from app.models import TranscriptTurn
 from app.services.interview_config import QuestionNode, RubricCategory
 from app.services.interview_state import InterviewState
+from app.services.llm_json import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,28 @@ DEFAULT_SIGNAL = "default"
 _ROLE_LABELS = {"interviewer": "Interviewer", "candidate": "Candidate"}
 # How many trailing entries of state.turns are replayed to Gemini as context.
 _TRANSCRIPT_WINDOW = 10
+
+# HeyGen's LiveKit agent gives our gateway a 10s read timeout (see
+# docs/llm-gateway-notes.md); Gemini must answer well inside that so a slow
+# call becomes our fallback reply instead of HeyGen timing out to silence.
+_GEMINI_TIMEOUT_SECONDS = 8.0
+# Bounds the spoken reply. Gemini counts thinking tokens against this cap
+# (~150 at low effort, measured live), so keep enough headroom that the JSON
+# never truncates mid-object - a truncated turn is worse than a long one.
+_MAX_TOKENS = 500
+
+# Strict structured output: the compat endpoint constrains decoding to this
+# schema, which (with parse_llm_json as the belt) prevents the malformed-JSON
+# turns observed in the 2026-07-18 live test.
+_TURN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reply": {"type": "string"},
+        "answer_complete": {"type": "boolean"},
+        "branch_signal": {"type": "string"},
+    },
+    "required": ["reply", "answer_complete", "branch_signal"],
+}
 
 
 @dataclass
@@ -119,22 +141,42 @@ async def _call_gemini(state: InterviewState, node: QuestionNode, user_text: str
             {"role": "system", "content": _render_system_content(state, node)},
             {"role": "user", "content": _render_user_content(state, user_text)},
         ],
-        "response_format": {"type": "json_object"},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "host_turn", "strict": True, "schema": _TURN_SCHEMA},
+        },
+        "reasoning_effort": "low",
+        "max_tokens": _MAX_TOKENS,
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            f"{settings.gemini_base_url}chat/completions",
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {settings.gemini_api_key}",
-                "Content-Type": "application/json",
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-
-    return json.loads(data["choices"][0]["message"]["content"])
+    async with httpx.AsyncClient(timeout=_GEMINI_TIMEOUT_SECONDS) as client:
+        # Parse failures get one retry (fresh sample, fast); HTTP failures
+        # don't - a Gemini outage should fall back immediately, not double
+        # the wait inside HeyGen's timeout window.
+        for attempt in (1, 2):
+            response = await client.post(
+                f"{settings.gemini_base_url}chat/completions",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {settings.gemini_api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            try:
+                return parse_llm_json(content)
+            except ValueError:
+                if attempt == 2:
+                    raise
+                logger.warning(
+                    "Unparsable host turn for interview %s at node %s; retrying once. Content: %.500r",
+                    state.interview_id,
+                    state.current_node_id,
+                    content,
+                )
+    raise AssertionError("unreachable")
 
 
 async def handle_turn(

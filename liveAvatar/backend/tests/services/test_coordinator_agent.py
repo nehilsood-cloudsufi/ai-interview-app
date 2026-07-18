@@ -212,7 +212,12 @@ async def test_draft_followup_happy_path(patch_settings):
     assert request.headers["authorization"] == "Bearer gem-key"
     body = json.loads(request.content)
     assert body["model"] == "gemini-3.5-flash"
-    assert body["response_format"] == {"type": "json_object"}
+    assert body["response_format"]["type"] == "json_schema"
+    schema_spec = body["response_format"]["json_schema"]
+    assert schema_spec["name"] == "followup_proposal"
+    assert schema_spec["strict"] is True
+    assert set(schema_spec["schema"]["required"]) == {"title", "agenda", "duration_minutes", "email_draft"}
+    assert body["reasoning_effort"] == "low"
     assert body["messages"][0] == {"role": "system", "content": patched.coordinator_invite_prompt}
     user_content = body["messages"][-1]["content"]
     assert "Acme Corp" in user_content

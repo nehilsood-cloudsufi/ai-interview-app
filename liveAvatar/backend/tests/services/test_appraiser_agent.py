@@ -70,6 +70,21 @@ def gemini_response(
 
 
 @respx.mock
+async def test_score_answer_parses_fenced_json(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    content = '```json\n{"category_scores": {"experience": 5}, "evidence": "quote", "rationale": "why"}\n```'
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+    )
+    state = make_state()
+
+    result = await score_answer(state, make_question(), "Answer.", make_rubric())
+
+    assert result.category_scores == {"experience": 5}
+    assert result.evidence == "quote"
+
+
+@respx.mock
 async def test_score_answer_happy_path(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL, gemini_model="gemini-3.5-flash")
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
@@ -90,7 +105,12 @@ async def test_score_answer_happy_path(patch_settings):
     assert request.headers["authorization"] == "Bearer gem-key"
     body = json.loads(request.content)
     assert body["model"] == "gemini-3.5-flash"
-    assert body["response_format"] == {"type": "json_object"}
+    assert body["response_format"]["type"] == "json_schema"
+    schema_spec = body["response_format"]["json_schema"]
+    assert schema_spec["name"] == "answer_score"
+    assert schema_spec["strict"] is True
+    assert set(schema_spec["schema"]["required"]) == {"category_scores", "evidence", "rationale"}
+    assert body["reasoning_effort"] == "low"
     assert body["messages"][0]["role"] == "system"
     system_content = body["messages"][0]["content"]
     # Only the question's rubric categories are offered for scoring.
@@ -173,7 +193,7 @@ async def test_malformed_json_raises(patch_settings):
     )
     state = make_state()
 
-    with pytest.raises(json.JSONDecodeError):
+    with pytest.raises(ValueError, match="No JSON object"):
         await score_answer(state, make_question(), "An answer.", make_rubric())
 
     assert state.scores == []

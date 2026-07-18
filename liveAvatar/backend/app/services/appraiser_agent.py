@@ -16,7 +16,6 @@ weights only the categories with data, with their rubric weights
 renormalized to sum to 1.0.
 """
 
-import json
 import logging
 from dataclasses import dataclass
 
@@ -25,11 +24,26 @@ import httpx
 from app.config import settings
 from app.services.interview_config import QuestionNode, RubricCategory
 from app.services.interview_state import AnswerScore, InterviewState
+from app.services.llm_json import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
 MIN_SCORE = 0
 MAX_SCORE = 5
+
+# Strict structured output for the scoring call (same rationale as
+# host_agent._TURN_SCHEMA: prevents the malformed-JSON completions observed
+# live). category_scores keys are validated in code against the question's
+# rubric_categories, so the schema only pins the value type.
+_SCORE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "category_scores": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "evidence": {"type": "string"},
+        "rationale": {"type": "string"},
+    },
+    "required": ["category_scores", "evidence", "rationale"],
+}
 
 
 @dataclass
@@ -86,7 +100,11 @@ async def score_answer(
             {"role": "system", "content": _render_system_content(question, rubric)},
             {"role": "user", "content": _render_user_content(question, answer_text)},
         ],
-        "response_format": {"type": "json_object"},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "answer_score", "strict": True, "schema": _SCORE_SCHEMA},
+        },
+        "reasoning_effort": "low",
     }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
@@ -101,7 +119,7 @@ async def score_answer(
         response.raise_for_status()
         data = response.json()
 
-    parsed = json.loads(data["choices"][0]["message"]["content"])
+    parsed = parse_llm_json(data["choices"][0]["message"]["content"])
 
     category_scores = {
         category_id: _clamp_score(value)
