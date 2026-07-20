@@ -35,6 +35,20 @@ def test_settings_env_overrides(monkeypatch):
     assert fresh.gcs_bucket == "my-bucket"
 
 
+def test_host_streaming_disabled_by_default():
+    fresh = Settings(liveavatar_api_key=None, gemini_api_key=None, gcs_bucket=None)
+    assert fresh.host_streaming_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("true", True), ("True", True), ("1", True), ("false", False), ("0", False), ("", False)],
+)
+def test_host_streaming_env_override(monkeypatch, value, expected):
+    monkeypatch.setenv("HOST_STREAMING_ENABLED", value)
+    assert Settings().host_streaming_enabled is expected
+
+
 def test_settings_prompt_content():
     assert "Topics Covered" in settings.interview_summary_prompt
     assert "AI Engineering role" in settings.interview_base_prompt

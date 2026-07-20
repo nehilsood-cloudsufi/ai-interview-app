@@ -4,6 +4,7 @@ import httpx
 import pytest
 import respx
 
+from app.config import settings
 from app.models import TranscriptTurn
 from app.services import host_agent
 from app.services.host_agent import TurnResult, handle_turn
@@ -397,6 +398,137 @@ async def test_transcript_window_limits_history(patch_settings):
     assert "turn-4" in user_content
     assert "turn-3" not in user_content
     assert "Latest answer." in user_content
+
+
+# --- streaming turn ----------------------------------------------------------
+
+
+def _sse(*deltas: str) -> str:
+    frames = [f"data: {json.dumps({'choices': [{'delta': {'content': d}}]})}\n\n" for d in deltas]
+    return "".join(frames) + "data: [DONE]\n\n"
+
+
+def stream_response(reply="Thanks!", answer_complete=True, branch_signal="default", *, chunk_size=None) -> httpx.Response:
+    content = json.dumps({"reply": reply, "answer_complete": answer_complete, "branch_signal": branch_signal})
+    if chunk_size is None:
+        deltas = [content]
+    else:
+        deltas = [content[i : i + chunk_size] for i in range(0, len(content), chunk_size)]
+    return httpx.Response(200, text=_sse(*deltas))
+
+
+async def _collect_stream(state, user_text, questionnaire, rubric):
+    outcome = host_agent.StreamedTurn()
+    deltas = [d async for d in host_agent.stream_turn(state, user_text, questionnaire, rubric, outcome)]
+    return deltas, outcome
+
+
+@respx.mock
+async def test_stream_turn_streams_reply_and_advances(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL, gemini_model="gemini-3.5-flash")
+    respx.post(CHAT_URL).mock(
+        return_value=stream_response(
+            reply="Great, tell me more about your AI work.", branch_signal="mentions_ai_ml", chunk_size=5
+        )
+    )
+    state = make_state()
+    questionnaire = make_questionnaire()
+
+    deltas, outcome = await _collect_stream(state, "We build ML pipelines.", questionnaire, make_rubric())
+
+    # Reply arrived in multiple chunks and reassembles to the full spoken line.
+    assert len(deltas) > 1
+    assert "".join(deltas) == "Great, tell me more about your AI work."
+    # State advanced exactly as the non-streaming path would.
+    assert outcome.result.answer_complete is True
+    assert outcome.result.completed_question is questionnaire["company_overview"]
+    assert state.current_node_id == "ai_ml_depth"
+    assert state.followup_count == 0
+    assert [turn.role for turn in state.turns] == ["candidate", "interviewer"]
+    assert state.turns[1].text == "Great, tell me more about your AI work."
+
+
+@respx.mock
+async def test_stream_turn_followup_on_incomplete(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=stream_response(reply="Could you expand on that?", answer_complete=False)
+    )
+    state = make_state()
+
+    deltas, outcome = await _collect_stream(state, "We do stuff.", make_questionnaire(), make_rubric())
+
+    assert "".join(deltas) == "Could you expand on that?"
+    assert outcome.result.answer_complete is False
+    assert state.current_node_id == "company_overview"
+    assert state.followup_count == 1
+
+
+@respx.mock
+async def test_stream_turn_sends_stream_flag_and_schema(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=stream_response())
+    state = make_state()
+
+    await _collect_stream(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    body = json.loads(route.calls[0].request.content)
+    assert body["stream"] is True
+    # reply must be the first schema property so it streams first.
+    assert list(body["response_format"]["json_schema"]["schema"]["properties"])[0] == "reply"
+    assert body["reasoning_effort"] == "low"
+
+
+async def test_stream_turn_end_node_yields_closing_without_call(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    state = make_state(node_id="END")
+    with respx.mock:
+        deltas, outcome = await _collect_stream(state, "Anything else?", make_questionnaire(), make_rubric())
+        assert len(respx.calls) == 0
+
+    assert "".join(deltas) == settings.host_closing_reply
+    assert state.turns == []
+    assert state.current_node_id == "END"
+
+
+async def test_stream_turn_missing_key_raises(patch_settings):
+    patch_settings(gemini_api_key=None)
+    state = make_state()
+    with respx.mock:
+        with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
+            await _collect_stream(state, "Hi.", make_questionnaire(), make_rubric())
+        assert len(respx.calls) == 0
+
+
+@respx.mock
+async def test_stream_turn_http_error_before_emit_yields_fallback(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(return_value=httpx.Response(500))
+    state = make_state()
+
+    deltas, outcome = await _collect_stream(state, "Hello?", make_questionnaire(), make_rubric())
+
+    # Nothing spoken yet -> soft-fall to the canned reply, state untouched.
+    assert "".join(deltas) == settings.host_fallback_reply
+    assert outcome.result.reply == settings.host_fallback_reply
+    assert state.turns == []
+    assert state.current_node_id == "company_overview"
+
+
+@respx.mock
+async def test_stream_turn_truncated_trailing_json_keeps_spoken_reply(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    # Reply string completes, but the object is cut off before the routing
+    # fields parse. The reply is already spoken; state is left unchanged.
+    truncated = '{"reply": "All good, moving on.", "answer_complete": tru'
+    respx.post(CHAT_URL).mock(return_value=httpx.Response(200, text=_sse(truncated)))
+    state = make_state()
+
+    deltas, outcome = await _collect_stream(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    assert "".join(deltas) == "All good, moving on."
+    assert state.current_node_id == "company_overview"  # not advanced
+    assert state.turns == []
 
 
 # host_agent must be listed in conftest._SETTINGS_IMPORTERS or patch_settings

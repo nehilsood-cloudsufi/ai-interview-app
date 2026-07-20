@@ -6,7 +6,7 @@ import pytest
 import respx
 
 from app.services import gemini_client
-from app.services.gemini_client import chat_completion
+from app.services.gemini_client import chat_completion, stream_chat_completion
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 CHAT_URL = f"{GEMINI_BASE_URL}chat/completions"
@@ -127,6 +127,114 @@ async def test_fallback_equal_to_primary_not_retried(patch_settings):
         )
 
     assert route.call_count == 1
+
+
+# --- streaming ---------------------------------------------------------------
+
+
+def sse(*contents: str, done: bool = True) -> str:
+    lines = [f"data: {json.dumps({'choices': [{'delta': {'content': c}}]})}\n\n" for c in contents]
+    if done:
+        lines.append("data: [DONE]\n\n")
+    return "".join(lines)
+
+
+async def _collect(payload: dict, **kwargs) -> list[str]:
+    return [delta async for delta in stream_chat_completion(payload, **kwargs)]
+
+
+@respx.mock
+async def test_stream_yields_content_deltas(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=httpx.Response(200, text=sse("Hello", " there", " friend")))
+
+    deltas = await _collect(make_payload(), timeout=8.0, fallback_model="gemini-3.5-flash")
+
+    assert deltas == ["Hello", " there", " friend"]
+    assert route.call_count == 1
+    body = json.loads(route.calls[0].request.content)
+    assert body["stream"] is True
+    assert route.calls[0].request.headers["authorization"] == "Bearer gem-key"
+
+
+@respx.mock
+async def test_stream_stops_at_done_sentinel(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    # Content after [DONE] must be ignored.
+    body = sse("A", "B") + sse("C")
+    respx.post(CHAT_URL).mock(return_value=httpx.Response(200, text=body))
+
+    deltas = await _collect(make_payload(), timeout=8.0)
+
+    assert deltas == ["A", "B"]
+
+
+@respx.mock
+async def test_stream_skips_blank_and_keepalive_lines(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    body = ": keepalive\n\n" + "\n\n" + sse("only")
+    respx.post(CHAT_URL).mock(return_value=httpx.Response(200, text=body))
+
+    deltas = await _collect(make_payload(), timeout=8.0)
+
+    assert deltas == ["only"]
+
+
+@respx.mock
+async def test_stream_model_404_retries_once_with_fallback(patch_settings, caplog):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(404, json={"error": {"message": "models/gemini-flash-latest is not found"}}),
+            httpx.Response(200, text=sse("recovered")),
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.services.gemini_client"):
+        deltas = await _collect(make_payload(), timeout=8.0, fallback_model="gemini-3.5-flash")
+
+    assert deltas == ["recovered"]
+    assert route.call_count == 2
+    assert json.loads(route.calls[1].request.content)["model"] == "gemini-3.5-flash"
+    assert json.loads(route.calls[1].request.content)["stream"] is True
+
+
+@respx.mock
+async def test_stream_400_mentioning_model_triggers_fallback(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(400, json={"error": {"message": "unknown model requested"}}),
+            httpx.Response(200, text=sse("ok")),
+        ]
+    )
+
+    deltas = await _collect(make_payload(), timeout=8.0, fallback_model="gemini-3.5-flash")
+
+    assert deltas == ["ok"]
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_stream_400_not_model_raises_before_yielding(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(400, json={"error": {"message": "invalid temperature"}})
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await _collect(make_payload(), timeout=8.0, fallback_model="gemini-3.5-flash")
+
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_stream_5xx_raises(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(return_value=httpx.Response(500))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await _collect(make_payload(), timeout=8.0, fallback_model="gemini-3.5-flash")
 
 
 # gemini_client must be listed in conftest._SETTINGS_IMPORTERS or

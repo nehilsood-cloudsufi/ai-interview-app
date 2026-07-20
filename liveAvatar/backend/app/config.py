@@ -31,6 +31,13 @@ class Settings:
     questionnaire_path: str = field(default_factory=lambda: os.getenv("QUESTIONNAIRE_PATH", "data/questionnaire.yaml"))
     rubric_path: str = field(default_factory=lambda: os.getenv("RUBRIC_PATH", "data/rubric.yaml"))
     scout_enabled: bool = field(default_factory=lambda: os.getenv("SCOUT_ENABLED", "true").lower() != "false")
+    # Optional latency polish: when enabled, the gateway streams the Host's
+    # reply to HeyGen token-by-token (avatar starts speaking sooner) instead of
+    # emitting the whole reply in one chunk. Default off so production behavior
+    # is unchanged until explicitly turned on.
+    host_streaming_enabled: bool = field(
+        default_factory=lambda: os.getenv("HOST_STREAMING_ENABLED", "false").lower() in ("1", "true", "yes")
+    )
 
     # System prompt for the Host agent's per-turn Gemini call. The service
     # appends the vendor profile, current question, and any Scout intel as

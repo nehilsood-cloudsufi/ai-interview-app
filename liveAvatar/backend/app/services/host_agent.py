@@ -20,6 +20,7 @@ again" reply is returned and the state is left completely unchanged.
 """
 
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from app.config import settings
@@ -28,6 +29,7 @@ from app.services import gemini_client
 from app.services.interview_config import QuestionNode, RubricCategory
 from app.services.interview_state import InterviewState
 from app.services.llm_json import parse_llm_json
+from app.services.reply_stream import ReplyStreamExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -149,13 +151,16 @@ def _resolve_branch(node: QuestionNode, signal: str | None) -> str:
     return node.branches[0].next
 
 
-async def _call_gemini(
+def _build_payload(
     state: InterviewState,
     node: QuestionNode,
     user_text: str,
     questionnaire: dict[str, QuestionNode],
 ) -> dict:
-    payload = {
+    """The per-turn Gemini request, shared by the buffered and streaming paths.
+    `reply` is first in `_TURN_SCHEMA` so the streaming path can speak it before
+    the trailing routing fields arrive."""
+    return {
         "model": settings.gemini_model,
         "messages": [
             {"role": "system", "content": _render_system_content(state, node, questionnaire)},
@@ -168,6 +173,15 @@ async def _call_gemini(
         "reasoning_effort": "low",
         "max_tokens": _MAX_TOKENS,
     }
+
+
+async def _call_gemini(
+    state: InterviewState,
+    node: QuestionNode,
+    user_text: str,
+    questionnaire: dict[str, QuestionNode],
+) -> dict:
+    payload = _build_payload(state, node, user_text, questionnaire)
 
     # Parse failures get one retry (fresh sample, fast); HTTP failures don't -
     # a Gemini outage should fall back immediately, not double the wait inside
@@ -233,6 +247,20 @@ async def handle_turn(
             answer_text="",
         )
 
+    return _apply_outcome(state, node, user_text, reply, answer_complete, branch_signal)
+
+
+def _apply_outcome(
+    state: InterviewState,
+    node: QuestionNode,
+    user_text: str,
+    reply: str,
+    answer_complete: bool,
+    branch_signal: str | None,
+) -> TurnResult:
+    """Deterministic state mutation once the reply and judgement are in hand.
+    Shared by `handle_turn` and `stream_turn` so both drive the state machine
+    identically."""
     # Candidate texts already given for this node (see module docstring),
     # captured before the new turns are appended.
     prior_answer_texts = [
@@ -264,4 +292,90 @@ async def handle_turn(
         answer_complete=True,
         completed_question=node,
         answer_text="\n".join([*prior_answer_texts, user_text]),
+    )
+
+
+@dataclass
+class StreamedTurn:
+    """Holder for the final outcome of a streaming turn. `stream_turn` yields
+    reply text and, once the object is complete, sets `result` (a `TurnResult`)
+    so the caller can log the same fields the buffered path reports."""
+
+    result: TurnResult | None = None
+
+
+async def stream_turn(
+    state: InterviewState,
+    user_text: str,
+    questionnaire: dict[str, QuestionNode],
+    rubric: dict[str, RubricCategory] | None,
+    outcome: StreamedTurn,
+) -> AsyncIterator[str]:
+    """Streaming counterpart to `handle_turn`: yields the spoken reply in
+    fragments as Gemini emits them, then applies the same code-driven state
+    mutation from the trailing routing fields.
+
+    Soft-fail contract mirrors `handle_turn`: if the call fails before any
+    reply character is spoken, the canned fallback reply is yielded and state
+    is left unchanged. If it fails after the reply is (partly) spoken - e.g.
+    the trailing JSON is malformed - the spoken text stands and state is left
+    unchanged rather than half-advanced."""
+    if state.current_node_id == END_NODE_ID:
+        outcome.result = TurnResult(
+            reply=settings.host_closing_reply,
+            answer_complete=False,
+            completed_question=None,
+            answer_text="",
+        )
+        yield settings.host_closing_reply
+        return
+
+    if not settings.gemini_api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured; cannot run the host agent.")
+
+    node = questionnaire[state.current_node_id]
+    payload = _build_payload(state, node, user_text, questionnaire)
+    extractor = ReplyStreamExtractor()
+
+    try:
+        async for delta in gemini_client.stream_chat_completion(
+            payload, timeout=_GEMINI_TIMEOUT_SECONDS, fallback_model=settings.gemini_model_fallback
+        ):
+            chunk = extractor.feed(delta)
+            if chunk:
+                yield chunk
+        parsed, remaining = extractor.finalize()
+    except Exception:
+        logger.warning(
+            "Streaming host turn failed for interview %s at node %s.",
+            state.interview_id,
+            state.current_node_id,
+            exc_info=True,
+        )
+        if not extractor.emitted:
+            outcome.result = TurnResult(
+                reply=settings.host_fallback_reply,
+                answer_complete=False,
+                completed_question=None,
+                answer_text="",
+            )
+            yield settings.host_fallback_reply
+        else:
+            outcome.result = TurnResult(
+                reply=extractor.emitted,
+                answer_complete=False,
+                completed_question=None,
+                answer_text="",
+            )
+        return
+
+    if remaining:
+        yield remaining
+    outcome.result = _apply_outcome(
+        state,
+        node,
+        user_text,
+        extractor.emitted + remaining,
+        bool(parsed.get("answer_complete")),
+        parsed.get("branch_signal"),
     )

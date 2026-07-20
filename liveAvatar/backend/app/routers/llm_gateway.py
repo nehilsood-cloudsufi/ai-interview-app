@@ -53,21 +53,70 @@ def _completion_response(completion_id: str, created: int, model: str, reply: st
     }
 
 
+def _chunk(completion_id: str, created: int, model: str, delta: dict, finish_reason: str | None) -> str:
+    payload = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
+    return f"data: {json.dumps(payload)}\n\n"
+
+
 def _stream_response(completion_id: str, created: int, model: str, reply: str) -> StreamingResponse:
-    def chunk(delta: dict, finish_reason: str | None) -> str:
-        payload = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": model,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
-        }
-        return f"data: {json.dumps(payload)}\n\n"
+    async def sse():
+        yield _chunk(completion_id, created, model, {"content": reply}, None)
+        yield _chunk(completion_id, created, model, {}, "stop")
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+def _streaming_host_response(
+    state, interview_id: str, user_text: str, completion_id: str, created: int, model: str, started: float
+) -> StreamingResponse:
+    """True token-by-token path: forward the Host's reply fragments to HeyGen as
+    Gemini produces them. Never-fail: a failure before the first fragment is
+    spoken falls back to the canned reply; a failure after leaves the partial
+    reply standing (the avatar is already talking)."""
 
     async def sse():
-        yield chunk({"content": reply}, None)
-        yield chunk({}, "stop")
+        outcome = host_agent.StreamedTurn()
+        spoke = False
+        ttft_ms: int | None = None
+        try:
+            async for text in host_agent.stream_turn(
+                state, user_text, get_questionnaire(), get_rubric(), outcome
+            ):
+                if not text:
+                    continue
+                if not spoke:
+                    ttft_ms = int((time.monotonic() - started) * 1000)
+                    spoke = True
+                yield _chunk(completion_id, created, model, {"content": text}, None)
+        except Exception:
+            logger.warning(
+                "LLM gateway streaming turn failed for interview %s; returning canned reply.",
+                interview_id,
+                exc_info=True,
+            )
+            if not spoke:
+                yield _chunk(completion_id, created, model, {"content": settings.host_fallback_reply}, None)
+        yield _chunk(completion_id, created, model, {}, "stop")
         yield "data: [DONE]\n\n"
+
+        answer_complete = outcome.result.answer_complete if outcome.result else False
+        # ttft_ms is the metric this path exists to improve: server time until
+        # the avatar's first spoken word, vs elapsed_ms for the whole turn.
+        logger.info(
+            "Gateway turn (stream): interview=%s node=%s answer_complete=%s ttft_ms=%s elapsed_ms=%d",
+            interview_id,
+            state.current_node_id,
+            answer_complete,
+            ttft_ms if ttft_ms is not None else "n/a",
+            int((time.monotonic() - started) * 1000),
+        )
 
     return StreamingResponse(sse(), media_type="text/event-stream")
 
@@ -85,14 +134,27 @@ async def chat_completions(interview_id: str, request: Request):
     # Never-fail zone: HeyGen does not retry and the avatar must always have
     # something to say, so any failure below becomes the canned reply.
     started = time.monotonic()
-    stream = True  # safe default when the body itself is unparsable (HeyGen always streams)
-    model = "resonance-host"
-    answer_complete = False
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+    created = int(time.time())
+
+    # An unparsable body can't tell us the requested format, so default to a
+    # streamed canned reply (HeyGen always streams).
     try:
         body = await request.json()
         stream = bool(body.get("stream"))
-        model = body.get("model") or model
+        model = body.get("model") or "resonance-host"
         user_text = _last_user_text(body)
+    except Exception:
+        logger.warning("LLM gateway body unparsable for interview %s; returning canned reply.", interview_id, exc_info=True)
+        return _stream_response(completion_id, created, "resonance-host", settings.host_fallback_reply)
+
+    # Opt-in token-by-token path: only for a real user utterance HeyGen wants
+    # streamed. Greeting/non-stream turns keep the buffered path below.
+    if settings.host_streaming_enabled and stream and user_text is not None:
+        return _streaming_host_response(state, interview_id, user_text, completion_id, created, model, started)
+
+    answer_complete = False
+    try:
         if user_text is None:
             reply = _GREETING_REPLY
         else:
@@ -115,8 +177,6 @@ async def chat_completions(interview_id: str, request: Request):
         int((time.monotonic() - started) * 1000),
     )
 
-    completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-    created = int(time.time())
     if stream:
         return _stream_response(completion_id, created, model, reply)
     return _completion_response(completion_id, created, model, reply)
