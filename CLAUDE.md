@@ -45,8 +45,7 @@ Known constraints (see `docs/KT.md` for full rationale/troubleshooting):
 Commands (run from `liveAvatar/backend/`):
 ```bash
 uv sync                                                  # installs runtime + dev deps (pytest, respx, ...)
-uv run python scripts/setup_gemini_context.py           # provisions Gemini LLM config + base LiveAvatar context
-uv run uvicorn app.main:app --port 3001 --reload
+PUBLIC_BASE_URL=https://<tunnel> uv run uvicorn app.main:app --port 3001 --reload   # gateway needs a public callback URL (e.g. cloudflared)
 uv run pytest                                            # run the test suite (config in pyproject.toml)
 uv run pytest --cov                                      # with coverage report
 uv run python scripts/smoke_test_concurrency.py          # manual concurrency/session-lifecycle check (not pytest)
@@ -58,6 +57,6 @@ uv run python scripts/smoke_test_concurrency.py          # manual concurrency/se
 
 Commands (run from `liveAvatar/frontend/`): `npm install`, `npm run dev`, `npm run build`, `npm run lint`.
 
-Required env vars: `LIVEAVATAR_API_KEY`, `GEMINI_API_KEY` (`backend/.env.example`), plus `PUBLIC_BASE_URL` (not in `.env.example`, but required at runtime — gateway mode is the only mode, and session creation 503s without it) resolving to a URL HeyGen can reach. Optional: `GCS_BUCKET` (enables the GCS transcript backend; local JSON files are used when unset).
+Required env vars: `LIVEAVATAR_API_KEY`, `GEMINI_API_KEY`, and `PUBLIC_BASE_URL` (all in `backend/.env.example`; gateway mode is the only mode and session creation 503s without a `PUBLIC_BASE_URL` HeyGen can reach). Optional: `GCS_BUCKET` (GCS transcript backend; local JSON when unset), `SCOUT_ENABLED` (default true), `HOST_STREAMING_ENABLED`. Frontend build-time flags live in `frontend/.env.example`.
 
 Deployment: `deploy_setup.sh` provisions the `LIVEAVATAR_API_KEY` secret in Google Cloud Secret Manager and binds IAM so Cloud Run can read it (reads the key from `$LIVEAVATAR_API_KEY`, does not hardcode it) — run this before `gcloud run deploy`. `.github/workflows/ci.yml` runs frontend lint/build and, for the backend, an import-sanity check plus the full pytest suite on push/PR.
