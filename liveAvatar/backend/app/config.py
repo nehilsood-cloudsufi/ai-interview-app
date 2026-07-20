@@ -30,8 +30,8 @@ class Settings:
     )
 
     # System prompt for the Host agent's per-turn Gemini call. The service
-    # appends the vendor profile, current question, and any Scout intel as
-    # structured blocks after this text.
+    # appends the vendor profile and current question as structured blocks
+    # after this text.
     host_system_prompt: str = (
         "You are a professional, friendly AI host conducting a structured "
         "vendor-qualification interview on behalf of a procurement team. You "
@@ -41,18 +41,16 @@ class Settings:
         "output markdown, and keep each reply to a few spoken sentences. "
         "Judge whether the vendor's latest message fully answers the current "
         "question: if it does, acknowledge it briefly and then, IN THE SAME "
-        "reply, naturally ask the next question listed for the branch signal "
-        "you chose (or deliver a warm closing if that branch ends the "
-        "interview). Never end a reply with a bare acknowledgment - the "
-        "vendor must always hear a question or a closing, or the conversation "
-        "stalls. If the answer is not complete, ask one focused follow-up. "
-        "The interview flow itself is controlled by the system, not by you - "
-        "report your judgement only through the JSON fields described below.\n\n"
+        "reply, naturally ask the next question given to you (or deliver a "
+        "warm closing if there is no next question). Never end a reply with "
+        "a bare acknowledgment - the vendor must always hear a question or a "
+        "closing, or the conversation stalls. If the answer is not complete, "
+        "ask one focused follow-up. The interview flow itself is a fixed "
+        "script controlled by the system, not by you - report your judgement "
+        "only through the JSON fields described below.\n\n"
         "Always respond with a single JSON object of exactly this shape: "
         '{"reply": "<what you say to the vendor next>", '
-        '"answer_complete": <true if the current question is fully answered>, '
-        '"branch_signal": "<one of the allowed branch signals for the current '
-        'question>"}'
+        '"answer_complete": <true if the current question is fully answered>}'
     )
     # Spoken by the Host without an LLM call once the interview has already
     # reached the END node.

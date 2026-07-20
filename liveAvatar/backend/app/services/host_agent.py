@@ -3,10 +3,10 @@ structured Gemini turn.
 
 Per user utterance, `handle_turn` makes a single call to Gemini's
 OpenAI-compatible chat endpoint (same raw-httpx pattern as
-`summary_service`) asking for JSON `{"reply", "answer_complete",
-"branch_signal"}`. The LLM only phrases the reply and reports its
-judgement - all state mutation (appending turns, resolving branches,
-advancing `current_node_id`, follow-up accounting) is done here in code.
+`summary_service`) asking for JSON `{"reply", "answer_complete"}`. The LLM
+only phrases the reply and judges whether the current question is fully
+answered - all state mutation (appending turns, advancing `current_node_id`
+along the fixed linear script, follow-up accounting) is done here in code.
 
 Answer-text collection: `state.followup_count` counts the follow-up rounds
 already exchanged for the current question, and each round appended exactly
@@ -34,7 +34,6 @@ from app.services.reply_stream import ReplyStreamExtractor
 logger = logging.getLogger(__name__)
 
 END_NODE_ID = "END"
-DEFAULT_SIGNAL = "default"
 
 _ROLE_LABELS = {"interviewer": "Interviewer", "candidate": "Candidate"}
 # How many trailing entries of state.turns are replayed to Gemini as context.
@@ -59,9 +58,8 @@ _TURN_SCHEMA = {
     "properties": {
         "reply": {"type": "string"},
         "answer_complete": {"type": "boolean"},
-        "branch_signal": {"type": "string"},
     },
-    "required": ["reply", "answer_complete", "branch_signal"],
+    "required": ["reply", "answer_complete"],
 }
 
 
@@ -101,34 +99,26 @@ def _render_system_content(
     if profile.website:
         lines.append(f"- Website: {profile.website}")
 
-    signals = ", ".join(branch.signal for branch in node.branches)
+    next_node = questionnaire.get(node.next)  # None only for the literal END
+    if next_node is None:
+        next_line = "- no further questions - thank them and close the interview."
+    else:
+        next_line = f"- {next_node.ask}"
+
     lines += [
         "",
         "Current question:",
         f"- Topic: {node.topic}",
         f"- Ask: {node.ask}",
-        f"- Allowed branch signals: {signals}",
         "",
-        # The LLM never mutates the tree, but it must SPEAK the next question
-        # in the same reply that closes the current one - HeyGen only calls us
-        # when the vendor talks, so a reply that ends on a bare acknowledgment
-        # leaves the avatar waiting in silence (observed live 2026-07-20).
-        "If the answer is complete, the next question by branch signal:",
+        # The LLM never advances the script itself, but it must SPEAK the next
+        # question in the same reply that closes the current one - HeyGen only
+        # calls us when the vendor talks, so a reply that ends on a bare
+        # acknowledgment leaves the avatar waiting in silence (observed live
+        # 2026-07-20).
+        "If the answer is complete, the next question to ask in the same reply:",
+        next_line,
     ]
-    for branch in node.branches:
-        next_node = questionnaire.get(branch.next)
-        if next_node is None:  # END: questionnaire validation guarantees only END is absent
-            lines.append(f"- {branch.signal}: no further questions - thank them and close the interview.")
-        else:
-            lines.append(f"- {branch.signal}: {next_node.ask}")
-
-    if state.scout_findings:
-        lines += ["", "Known vendor intel:"]
-        for finding in state.scout_findings:
-            bullet = f"- {finding.topic}: {finding.summary}"
-            if finding.source_url:
-                bullet += f" (source: {finding.source_url})"
-            lines.append(bullet)
 
     return "\n".join(lines)
 
@@ -137,18 +127,6 @@ def _render_user_content(state: InterviewState, user_text: str) -> str:
     transcript = _render_transcript(state.turns[-_TRANSCRIPT_WINDOW:])
     latest = f"{_ROLE_LABELS['candidate']}: {user_text.strip()}"
     return f"{transcript}\n{latest}" if transcript else latest
-
-
-def _resolve_branch(node: QuestionNode, signal: str | None) -> str:
-    for branch in node.branches:
-        if branch.signal == signal:
-            return branch.next
-    for branch in node.branches:
-        if branch.signal == DEFAULT_SIGNAL:
-            return branch.next
-    # Questionnaire validation guarantees a node without a default branch has
-    # every branch pointing at END.
-    return node.branches[0].next
 
 
 def _build_payload(
@@ -232,7 +210,6 @@ async def handle_turn(
         parsed = await _call_gemini(state, node, user_text, questionnaire)
         reply = str(parsed["reply"])
         answer_complete = bool(parsed.get("answer_complete"))
-        branch_signal = parsed.get("branch_signal")
     except Exception:
         logger.warning(
             "Host turn failed for interview %s at node %s; returning fallback reply.",
@@ -247,7 +224,7 @@ async def handle_turn(
             answer_text="",
         )
 
-    return _apply_outcome(state, node, user_text, reply, answer_complete, branch_signal)
+    return _apply_outcome(state, node, user_text, reply, answer_complete)
 
 
 def _apply_outcome(
@@ -256,7 +233,6 @@ def _apply_outcome(
     user_text: str,
     reply: str,
     answer_complete: bool,
-    branch_signal: str | None,
 ) -> TurnResult:
     """Deterministic state mutation once the reply and judgement are in hand.
     Shared by `handle_turn` and `stream_turn` so both drive the state machine
@@ -281,11 +257,10 @@ def _apply_outcome(
                 completed_question=None,
                 answer_text="",
             )
-        # Follow-up budget exhausted: force-advance as if complete, via the
-        # default branch, still speaking the LLM's reply.
-        branch_signal = DEFAULT_SIGNAL
+        # Follow-up budget exhausted: force-advance as if complete, still
+        # speaking the LLM's reply.
 
-    state.current_node_id = _resolve_branch(node, branch_signal)
+    state.current_node_id = node.next
     state.followup_count = 0
     return TurnResult(
         reply=reply,
@@ -377,5 +352,4 @@ async def stream_turn(
         user_text,
         extractor.emitted + remaining,
         bool(parsed.get("answer_complete")),
-        parsed.get("branch_signal"),
     )

@@ -8,7 +8,7 @@ from app.config import settings
 from app.routers import llm_gateway
 from app.services import appraiser_agent, gemini_client, host_agent, interview_state
 from app.services.host_agent import TurnResult
-from app.services.interview_config import Branch, QuestionNode
+from app.services.interview_config import QuestionNode
 from app.services.interview_state import VendorProfile
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -337,7 +337,7 @@ async def test_streaming_end_to_end_through_host_and_extractor(async_client, mon
     # in multiple chunks, and drive the real state mutation.
     patch_settings(host_streaming_enabled=True, gemini_api_key="k")
     state = _seed_interview()
-    obj = '{"reply": "Thanks! Now, tell me about your AI work.", "answer_complete": true, "branch_signal": "default"}'
+    obj = '{"reply": "Thanks! Now, tell me about your AI work.", "answer_complete": true}'
 
     async def fake_stream(payload, *, timeout, fallback_model=None):
         for i in range(0, len(obj), 7):
@@ -388,7 +388,7 @@ def _completed_node() -> QuestionNode:
         topic="company_overview",
         ask="Ask for an overview.",
         rubric_categories=["experience"],
-        branches=[Branch(signal="default", next="END")],
+        next="END",
     )
 
 

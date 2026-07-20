@@ -8,8 +8,8 @@ from app.config import settings
 from app.models import TranscriptTurn
 from app.services import host_agent
 from app.services.host_agent import TurnResult, handle_turn
-from app.services.interview_config import Branch, QuestionNode, RubricCategory
-from app.services.interview_state import InterviewState, ScoutFinding, VendorProfile
+from app.services.interview_config import QuestionNode, RubricCategory
+from app.services.interview_state import InterviewState, VendorProfile
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 CHAT_URL = f"{GEMINI_BASE_URL}chat/completions"
@@ -22,7 +22,7 @@ def make_questionnaire() -> dict[str, QuestionNode]:
             topic="identity_verification",
             ask="Confirm the vendor's company, contact name, and role.",
             rubric_categories=[],
-            branches=[Branch(signal="default", next="company_overview")],
+            next="company_overview",
             max_followups=1,
         ),
         QuestionNode(
@@ -30,18 +30,15 @@ def make_questionnaire() -> dict[str, QuestionNode]:
             topic="company_overview",
             ask="Ask for a brief overview of the company.",
             rubric_categories=["experience"],
-            branches=[
-                Branch(signal="mentions_ai_ml", next="ai_ml_depth"),
-                Branch(signal="default", next="closing"),
-            ],
+            next="ai_ml_depth",
             max_followups=1,
         ),
         QuestionNode(
             id="ai_ml_depth",
             topic="ai_ml_capability",
-            ask="Go deeper on their AI/ML capabilities.",
+            ask="Ask about their AI/ML capabilities.",
             rubric_categories=["capability"],
-            branches=[Branch(signal="default", next="closing")],
+            next="closing",
             max_followups=1,
         ),
         QuestionNode(
@@ -49,7 +46,7 @@ def make_questionnaire() -> dict[str, QuestionNode]:
             topic="closing",
             ask="Thank the vendor and wrap up.",
             rubric_categories=[],
-            branches=[Branch(signal="finished", next="END")],
+            next="END",
             max_followups=0,
         ),
     ]
@@ -67,7 +64,6 @@ def make_state(
     node_id: str = "company_overview",
     followup_count: int = 0,
     turns: list[TranscriptTurn] | None = None,
-    scout_findings: list[ScoutFinding] | None = None,
 ) -> InterviewState:
     return InterviewState(
         interview_id="itest",
@@ -81,14 +77,11 @@ def make_state(
         current_node_id=node_id,
         followup_count=followup_count,
         turns=turns if turns is not None else [],
-        scout_findings=scout_findings if scout_findings is not None else [],
     )
 
 
-def gemini_response(reply: str = "Thanks!", answer_complete: bool = True, branch_signal: str = "default") -> httpx.Response:
-    content = json.dumps(
-        {"reply": reply, "answer_complete": answer_complete, "branch_signal": branch_signal}
-    )
+def gemini_response(reply: str = "Thanks!", answer_complete: bool = True) -> httpx.Response:
+    content = json.dumps({"reply": reply, "answer_complete": answer_complete})
     return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
 
@@ -96,7 +89,7 @@ def gemini_response(reply: str = "Thanks!", answer_complete: bool = True, branch
 async def test_advances_on_complete_answer(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL, gemini_model="gemini-3.5-flash")
     route = respx.post(CHAT_URL).mock(
-        return_value=gemini_response(reply="Great, tell me more about your AI work.", branch_signal="mentions_ai_ml")
+        return_value=gemini_response(reply="Great, tell me more about your AI work.")
     )
     state = make_state()
     questionnaire = make_questionnaire()
@@ -125,7 +118,7 @@ async def test_advances_on_complete_answer(patch_settings):
     schema_spec = body["response_format"]["json_schema"]
     assert schema_spec["name"] == "host_turn"
     assert schema_spec["strict"] is True
-    assert set(schema_spec["schema"]["required"]) == {"reply", "answer_complete", "branch_signal"}
+    assert set(schema_spec["schema"]["required"]) == {"reply", "answer_complete"}
     assert body["reasoning_effort"] == "low"
     assert body["max_tokens"] == 800
     assert body["messages"][0]["role"] == "system"
@@ -133,16 +126,15 @@ async def test_advances_on_complete_answer(patch_settings):
     assert "Acme Corp" in system_content
     assert "Jane Doe" in system_content
     assert "company_overview" in system_content
-    assert "mentions_ai_ml" in system_content
     assert body["messages"][-1]["role"] == "user"
     assert "We build ML pipelines for banks." in body["messages"][-1]["content"]
 
 
 @respx.mock
-async def test_system_content_includes_next_question_per_branch(patch_settings):
+async def test_system_content_includes_next_question(patch_settings):
     # The reply that closes a question must also ASK the next one (HeyGen only
     # calls the gateway when the vendor speaks - a bare acknowledgment stalls
-    # the conversation), so the prompt carries each branch's follow-on ask.
+    # the conversation), so the prompt carries the single next question.
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
     state = make_state()  # at company_overview
@@ -150,24 +142,20 @@ async def test_system_content_includes_next_question_per_branch(patch_settings):
     await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
 
     system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
-    assert "next question by branch signal" in system_content
-    # mentions_ai_ml branch -> ai_ml_depth's ask; default branch -> closing's ask.
-    assert "- mentions_ai_ml: Go deeper on their AI/ML capabilities." in system_content
-    assert "- default: Thank the vendor and wrap up." in system_content
+    assert "next question to ask in the same reply" in system_content
+    assert "- Ask about their AI/ML capabilities." in system_content
 
 
 @respx.mock
-async def test_system_content_marks_end_branch_as_closing(patch_settings):
+async def test_system_content_marks_end_as_closing(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
-    route = respx.post(CHAT_URL).mock(
-        return_value=gemini_response(reply="Thanks for your time!", branch_signal="finished")
-    )
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response(reply="Thanks for your time!"))
     state = make_state(node_id="closing")
 
     await handle_turn(state, "That's everything from me.", make_questionnaire(), make_rubric())
 
     system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
-    assert "- finished: no further questions - thank them and close the interview." in system_content
+    assert "- no further questions - thank them and close the interview." in system_content
 
 
 @respx.mock
@@ -204,28 +192,15 @@ async def test_force_advance_when_followups_exceed_max(patch_settings):
 
     result = await handle_turn(state, "Just, you know, stuff.", questionnaire, make_rubric())
 
-    # Advanced exactly as if complete, via the default branch.
+    # Advanced exactly as if complete, via node.next.
     assert result.reply == "Alright, let's move on."
     assert result.answer_complete is True
     assert result.completed_question is questionnaire["company_overview"]
     assert "We do stuff." in result.answer_text
     assert "Just, you know, stuff." in result.answer_text
-    assert state.current_node_id == "closing"
+    assert state.current_node_id == "ai_ml_depth"
     assert state.followup_count == 0
     assert len(state.turns) == 4
-
-
-@respx.mock
-async def test_unknown_branch_signal_falls_to_default(patch_settings):
-    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
-    respx.post(CHAT_URL).mock(
-        return_value=gemini_response(branch_signal="totally_made_up")
-    )
-    state = make_state()
-
-    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
-
-    assert state.current_node_id == "closing"
 
 
 @respx.mock
@@ -271,7 +246,7 @@ async def test_malformed_gemini_json_recovers_on_retry(patch_settings):
 @respx.mock
 async def test_fenced_json_content_is_parsed(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
-    content = '```json\n{"reply": "Got it, thanks!", "answer_complete": true, "branch_signal": "default"}\n```'
+    content = '```json\n{"reply": "Got it, thanks!", "answer_complete": true}\n```'
     route = respx.post(CHAT_URL).mock(
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
     )
@@ -282,7 +257,7 @@ async def test_fenced_json_content_is_parsed(patch_settings):
     assert route.call_count == 1
     assert result.reply == "Got it, thanks!"
     assert result.answer_complete is True
-    assert state.current_node_id == "closing"
+    assert state.current_node_id == "ai_ml_depth"
 
 
 @respx.mock
@@ -321,33 +296,23 @@ async def test_missing_gemini_key_raises(patch_settings):
 
 
 @respx.mock
-async def test_scout_findings_rendered_into_system_prompt(patch_settings):
+async def test_scout_findings_not_rendered_into_system_prompt(patch_settings):
+    # Unbiased-interview rule: the Scout runs strictly AFTER the interview, so
+    # its findings must never reach the Host's prompt even if present on state.
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
-    findings = [
+    from app.services.interview_state import ScoutFinding
+
+    state = make_state()
+    state.scout_findings = [
         ScoutFinding(topic="funding", summary="Raised a Series B in 2025.", source_url="https://news.example/acme"),
-        ScoutFinding(topic="clients", summary="Lists two Fortune 500 clients.", source_url=None),
     ]
-    state = make_state(scout_findings=findings)
-
-    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
-
-    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
-    assert "Known vendor intel" in system_content
-    assert "- funding: Raised a Series B in 2025." in system_content
-    assert "- clients: Lists two Fortune 500 clients." in system_content
-
-
-@respx.mock
-async def test_no_scout_findings_omits_intel_block(patch_settings):
-    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
-    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
-    state = make_state(scout_findings=[])
 
     await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
 
     system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
     assert "Known vendor intel" not in system_content
+    assert "funding" not in system_content
 
 
 async def test_end_node_returns_closing_reply_without_gemini_call(patch_settings):
@@ -369,7 +334,7 @@ async def test_end_node_returns_closing_reply_without_gemini_call(patch_settings
 async def test_advancing_into_end_uses_llm_reply(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     respx.post(CHAT_URL).mock(
-        return_value=gemini_response(reply="Thanks so much - we'll be in touch!", branch_signal="finished")
+        return_value=gemini_response(reply="Thanks so much - we'll be in touch!")
     )
     state = make_state(node_id="closing")
     questionnaire = make_questionnaire()
@@ -408,8 +373,8 @@ def _sse(*deltas: str) -> str:
     return "".join(frames) + "data: [DONE]\n\n"
 
 
-def stream_response(reply="Thanks!", answer_complete=True, branch_signal="default", *, chunk_size=None) -> httpx.Response:
-    content = json.dumps({"reply": reply, "answer_complete": answer_complete, "branch_signal": branch_signal})
+def stream_response(reply="Thanks!", answer_complete=True, *, chunk_size=None) -> httpx.Response:
+    content = json.dumps({"reply": reply, "answer_complete": answer_complete})
     if chunk_size is None:
         deltas = [content]
     else:
@@ -427,9 +392,7 @@ async def _collect_stream(state, user_text, questionnaire, rubric):
 async def test_stream_turn_streams_reply_and_advances(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL, gemini_model="gemini-3.5-flash")
     respx.post(CHAT_URL).mock(
-        return_value=stream_response(
-            reply="Great, tell me more about your AI work.", branch_signal="mentions_ai_ml", chunk_size=5
-        )
+        return_value=stream_response(reply="Great, tell me more about your AI work.", chunk_size=5)
     )
     state = make_state()
     questionnaire = make_questionnaire()

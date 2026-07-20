@@ -12,18 +12,12 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
-class Branch:
-    signal: str  # "default" is reserved as the else-branch signal
-    next: str  # question id, or "END"
-
-
-@dataclass(frozen=True)
 class QuestionNode:
     id: str
     topic: str
     ask: str
     rubric_categories: list[str]
-    branches: list[Branch]
+    next: str  # question id, or "END"
     max_followups: int = 1
 
 
@@ -39,13 +33,12 @@ def load_questionnaire(path: Path) -> dict[str, QuestionNode]:
     raw = yaml.safe_load(Path(path).read_text())
     nodes: dict[str, QuestionNode] = {}
     for entry in raw["questions"]:
-        branches = [Branch(signal=b["signal"], next=b["next"]) for b in entry["branches"]]
         node = QuestionNode(
             id=entry["id"],
             topic=entry["topic"],
             ask=entry["ask"].strip(),
             rubric_categories=entry.get("rubric_categories", []),
-            branches=branches,
+            next=entry["next"],
             max_followups=entry.get("max_followups", 1),
         )
         nodes[node.id] = node
@@ -59,17 +52,23 @@ def _validate_questionnaire(nodes: dict[str, QuestionNode]) -> None:
         raise ValueError("questionnaire must define at least one question")
 
     for node in nodes.values():
-        if not node.branches:
-            raise ValueError(f"question '{node.id}' has no branches")
+        if node.next != "END" and node.next not in nodes:
+            raise ValueError(f"question '{node.id}' points to unknown question '{node.next}'")
 
-        signals = {branch.signal for branch in node.branches}
-        all_end = all(branch.next == "END" for branch in node.branches)
-        if "default" not in signals and not all_end:
-            raise ValueError(f"question '{node.id}' is missing a 'default' branch")
+    # The chain from the start node must reach END with no cycles/orphans -
+    # a fixed linear script has exactly one path through every node.
+    start_id = next(iter(nodes))
+    visited: set[str] = set()
+    current = start_id
+    while current != "END":
+        if current in visited:
+            raise ValueError(f"questionnaire has a cycle involving question '{current}'")
+        visited.add(current)
+        current = nodes[current].next
 
-        for branch in node.branches:
-            if branch.next != "END" and branch.next not in nodes:
-                raise ValueError(f"question '{node.id}' branches to unknown question '{branch.next}'")
+    if visited != set(nodes):
+        orphans = set(nodes) - visited
+        raise ValueError(f"questionnaire has unreachable question(s): {sorted(orphans)}")
 
 
 def load_rubric(path: Path) -> dict[str, RubricCategory]:

@@ -16,11 +16,11 @@ def _valid_questionnaire_data() -> dict:
     return {
         "questions": [
             {
-                "id": "verify_identity",
-                "topic": "identity_verification",
-                "ask": "Confirm the vendor's details.",
+                "id": "company_overview",
+                "topic": "company_overview",
+                "ask": "Ask for a brief overview of the company.",
                 "rubric_categories": [],
-                "branches": [{"signal": "default", "next": "closing"}],
+                "next": "closing",
             },
             {
                 "id": "closing",
@@ -28,7 +28,7 @@ def _valid_questionnaire_data() -> dict:
                 "ask": "Thank the vendor for their time.",
                 "rubric_categories": [],
                 "max_followups": 0,
-                "branches": [{"signal": "finished", "next": "END"}],
+                "next": "END",
             },
         ]
     }
@@ -48,10 +48,10 @@ def test_load_questionnaire_valid(tmp_path):
 
     nodes = load_questionnaire(path)
 
-    assert set(nodes) == {"verify_identity", "closing"}
-    assert nodes["verify_identity"].branches[0].next == "closing"
+    assert set(nodes) == {"company_overview", "closing"}
+    assert nodes["company_overview"].next == "closing"
     assert nodes["closing"].max_followups == 0
-    assert nodes["closing"].branches[0].next == "END"
+    assert nodes["closing"].next == "END"
 
 
 def test_load_questionnaire_empty_raises(tmp_path):
@@ -63,46 +63,41 @@ def test_load_questionnaire_empty_raises(tmp_path):
         load_questionnaire(path)
 
 
-def test_load_questionnaire_unknown_branch_target_raises(tmp_path):
+def test_load_questionnaire_unknown_next_target_raises(tmp_path):
     data = _valid_questionnaire_data()
-    data["questions"][0]["branches"] = [{"signal": "default", "next": "nonexistent_question"}]
+    data["questions"][0]["next"] = "nonexistent_question"
     path = _write_yaml(tmp_path / "q.yaml", data)
 
     with pytest.raises(ValueError, match="unknown question"):
         load_questionnaire(path)
 
 
-def test_load_questionnaire_missing_default_branch_raises(tmp_path):
+def test_load_questionnaire_orphan_node_raises(tmp_path):
+    # A third node exists but nothing in the chain from the start node ever
+    # points to it - unreachable, which a fixed linear script must not allow.
     data = _valid_questionnaire_data()
-    # Real branching (more than one live signal) without a "default" catch-all.
-    data["questions"][0]["branches"] = [
-        {"signal": "mentions_ai_ml", "next": "closing"},
-        {"signal": "mentions_security", "next": "closing"},
-    ]
+    data["questions"].append(
+        {
+            "id": "orphan",
+            "topic": "orphan",
+            "ask": "Never reached.",
+            "rubric_categories": [],
+            "next": "END",
+        }
+    )
     path = _write_yaml(tmp_path / "q.yaml", data)
 
-    with pytest.raises(ValueError, match="default"):
+    with pytest.raises(ValueError, match="unreachable"):
         load_questionnaire(path)
 
 
-def test_load_questionnaire_terminal_node_without_default_signal_name_is_allowed(tmp_path):
-    # A node whose only branch points straight to END doesn't need the
-    # literal signal name "default" - there's nowhere else it could go.
+def test_load_questionnaire_cycle_raises(tmp_path):
     data = _valid_questionnaire_data()
+    # closing now points back at company_overview instead of END - a cycle.
+    data["questions"][1]["next"] = "company_overview"
     path = _write_yaml(tmp_path / "q.yaml", data)
 
-    nodes = load_questionnaire(path)
-
-    assert nodes["closing"].branches[0].signal == "finished"
-    assert nodes["closing"].branches[0].next == "END"
-
-
-def test_load_questionnaire_node_with_no_branches_raises(tmp_path):
-    data = _valid_questionnaire_data()
-    data["questions"][1]["branches"] = []
-    path = _write_yaml(tmp_path / "q.yaml", data)
-
-    with pytest.raises(ValueError, match="no branches"):
+    with pytest.raises(ValueError, match="cycle"):
         load_questionnaire(path)
 
 
@@ -142,7 +137,7 @@ def test_shipped_questionnaire_loads_and_validates():
     # deliberately removed (the intake form is the source of truth).
     assert "verify_identity" not in nodes
     assert next(iter(nodes)) == "company_overview"
-    assert nodes["company_overview"].branches
+    assert nodes["company_overview"].next == "ai_ml_depth"
 
 
 def test_shipped_rubric_loads_and_weights_sum_to_one():

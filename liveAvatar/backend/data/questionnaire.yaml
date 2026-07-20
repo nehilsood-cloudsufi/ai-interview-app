@@ -1,10 +1,12 @@
 # Resonance vendor-interview question tree.
 #
-# Each node is walked deterministically by app/services/host_agent.py - the
-# LLM only phrases the "ask" naturally and reports which branch signal fired.
-# The FIRST question in this file is the interview's start node.
-# Every node needs a "default" branch (the else-branch when no specific
-# signal matches) unless its only branch already points straight to "END".
+# The interview is a FIXED linear script - no branching, no adaptive
+# machinery - so every vendor is asked the same questions in the same order.
+# Each node is walked deterministically by app/services/host_agent.py: the
+# LLM only phrases the "ask" naturally and judges whether the answer is
+# complete; advancing is a plain `next` hop to the following node id.
+# The FIRST question in this file is the interview's start node. The last
+# node's `next` must be the literal "END".
 #
 # There is deliberately no identity-verification question: the vendor typed
 # their own details into the intake form moments earlier, so asking them to
@@ -19,23 +21,16 @@ questions:
       which industries they serve.
     rubric_categories: [experience]
     max_followups: 1
-    branches:
-      - signal: mentions_ai_ml
-        next: ai_ml_depth
-      - signal: default
-        next: services_offered
+    next: ai_ml_depth
 
   - id: ai_ml_depth
     topic: ai_ml_capability
     ask: >
-      The vendor mentioned AI/ML - go deeper: ask what specific
-      techniques, models, or platforms they use, and for a concrete
-      example of a project they delivered with them.
+      Ask what AI/ML techniques, models, or platforms they use (if any),
+      and for a concrete example of a project they delivered with them.
     rubric_categories: [capability]
     max_followups: 1
-    branches:
-      - signal: default
-        next: services_offered
+    next: services_offered
 
   - id: services_offered
     topic: services_offered
@@ -44,9 +39,7 @@ questions:
       engagement, and how that fits their company's core strengths.
     rubric_categories: [capability]
     max_followups: 1
-    branches:
-      - signal: default
-        next: delivery_team
+    next: delivery_team
 
   - id: delivery_team
     topic: delivery_and_team
@@ -56,9 +49,7 @@ questions:
       remote, hybrid) and project management.
     rubric_categories: [delivery]
     max_followups: 1
-    branches:
-      - signal: default
-        next: references
+    next: references
 
   - id: references
     topic: references_and_track_record
@@ -67,9 +58,7 @@ questions:
       this kind of engagement, and what outcomes were achieved.
     rubric_categories: [experience, credibility]
     max_followups: 1
-    branches:
-      - signal: default
-        next: security_posture
+    next: security_posture
 
   - id: security_posture
     topic: security_and_compliance
@@ -79,9 +68,7 @@ questions:
       handling company data.
     rubric_categories: [credibility]
     max_followups: 1
-    branches:
-      - signal: default
-        next: closing
+    next: closing
 
   - id: closing
     topic: closing
@@ -90,6 +77,4 @@ questions:
       team will follow up with next steps.
     rubric_categories: []
     max_followups: 0
-    branches:
-      - signal: finished
-        next: END
+    next: END

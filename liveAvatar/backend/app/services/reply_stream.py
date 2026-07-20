@@ -1,20 +1,20 @@
 """Incremental extraction of the Host's spoken `reply` from a streamed Gemini
 turn.
 
-The Host asks Gemini for a JSON object `{"reply", "answer_complete",
-"branch_signal"}` with `reply` declared first, so under the strict schema the
-`reply` string is the first value emitted. Streaming lets the avatar start
-speaking as soon as those characters arrive, but they land wrapped in JSON and
-chopped at arbitrary byte boundaries. `ReplyStreamExtractor` is fed the content
-deltas and returns the decoded characters of the `reply` value as soon as they
-are unambiguously available, buffering the raw text so `finalize()` can parse
-the trailing routing fields once the object is complete.
+The Host asks Gemini for a JSON object `{"reply", "answer_complete"}` with
+`reply` declared first, so under the strict schema the `reply` string is the
+first value emitted. Streaming lets the avatar start speaking as soon as those
+characters arrive, but they land wrapped in JSON and chopped at arbitrary byte
+boundaries. `ReplyStreamExtractor` is fed the content deltas and returns the
+decoded characters of the `reply` value as soon as they are unambiguously
+available, buffering the raw text so `finalize()` can parse the trailing
+`answer_complete` field once the object is complete.
 
 The extractor never advances past a fragment it cannot fully decode (a partial
 `\\uXXXX` escape at a delta boundary, say) - it simply waits for the next feed.
 If the object turns out malformed after the reply, `finalize()` raises, but the
-reply characters have already been emitted correctly: the caller speaks them and
-falls back to the default branch, matching the non-streaming soft-fail.
+reply characters have already been emitted correctly: the caller speaks them
+and leaves state unchanged, matching the non-streaming soft-fail.
 """
 
 from app.services.llm_json import parse_llm_json

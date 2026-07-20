@@ -3,8 +3,8 @@
 The extractor is fed Gemini content deltas (fragments of a JSON object whose
 first field is the spoken `reply` string) and must emit the decoded characters
 of that `reply` value as early as possible, regardless of how the deltas are
-chopped up. `finalize()` then parses the whole buffered object for the routing
-fields and returns any reply tail not yet emitted.
+chopped up. `finalize()` then parses the whole buffered object for the
+trailing `answer_complete` field and returns any reply tail not yet emitted.
 """
 
 import pytest
@@ -19,14 +19,13 @@ def _feed_all(deltas: list[str]) -> tuple[str, ReplyStreamExtractor]:
 
 
 def test_plain_reply_single_delta():
-    whole = '{"reply": "Hello there", "answer_complete": true, "branch_signal": "default"}'
+    whole = '{"reply": "Hello there", "answer_complete": true}'
     emitted, extractor = _feed_all([whole])
 
     assert emitted == "Hello there"
     parsed, remaining = extractor.finalize()
     assert remaining == ""
     assert parsed["answer_complete"] is True
-    assert parsed["branch_signal"] == "default"
 
 
 def test_reply_streams_before_trailing_fields_arrive():
@@ -34,7 +33,7 @@ def test_reply_streams_before_trailing_fields_arrive():
     extractor = ReplyStreamExtractor()
     first = extractor.feed('{"reply": "Hi ')
     assert first == "Hi "
-    rest = extractor.feed('friend", "answer_complete": true, "branch_signal": "default"}')
+    rest = extractor.feed('friend", "answer_complete": true}')
     assert rest == "friend"
     parsed, remaining = extractor.finalize()
     assert remaining == ""
@@ -42,7 +41,7 @@ def test_reply_streams_before_trailing_fields_arrive():
 
 
 def test_split_across_many_deltas():
-    whole = '{"reply": "Great, tell me more about your work.", "answer_complete": false, "branch_signal": "x"}'
+    whole = '{"reply": "Great, tell me more about your work.", "answer_complete": false}'
     deltas = [whole[i : i + 3] for i in range(0, len(whole), 3)]
     emitted, extractor = _feed_all(deltas)
 
@@ -53,7 +52,7 @@ def test_split_across_many_deltas():
 
 
 def test_escaped_quote_in_reply():
-    whole = '{"reply": "He said \\"hi\\" to me", "answer_complete": true, "branch_signal": "d"}'
+    whole = '{"reply": "He said \\"hi\\" to me", "answer_complete": true}'
     emitted, extractor = _feed_all([whole])
 
     assert emitted == 'He said "hi" to me'
@@ -62,14 +61,14 @@ def test_escaped_quote_in_reply():
 
 
 def test_escaped_backslash_and_newline():
-    whole = '{"reply": "line1\\npath C:\\\\tmp", "answer_complete": true, "branch_signal": "d"}'
+    whole = '{"reply": "line1\\npath C:\\\\tmp", "answer_complete": true}'
     emitted, extractor = _feed_all([whole])
 
     assert emitted == "line1\npath C:\\tmp"
 
 
 def test_unicode_escape():
-    whole = '{"reply": "caf\\u00e9 crawl", "answer_complete": true, "branch_signal": "d"}'
+    whole = '{"reply": "caf\\u00e9 crawl", "answer_complete": true}'
     emitted, extractor = _feed_all([whole])
 
     assert emitted == "café crawl"
@@ -79,7 +78,7 @@ def test_escape_split_across_delta_boundary():
     # Backslash arrives in one delta, the escaped char in the next.
     extractor = ReplyStreamExtractor()
     out = extractor.feed('{"reply": "quote: \\')
-    out += extractor.feed('" end", "answer_complete": true, "branch_signal": "d"}')
+    out += extractor.feed('" end", "answer_complete": true}')
 
     assert out == 'quote: " end'
 
@@ -87,36 +86,32 @@ def test_escape_split_across_delta_boundary():
 def test_unicode_escape_split_across_delta_boundary():
     extractor = ReplyStreamExtractor()
     out = extractor.feed('{"reply": "x \\u00')
-    out += extractor.feed('e9 y", "answer_complete": true, "branch_signal": "d"}')
+    out += extractor.feed('e9 y", "answer_complete": true}')
 
     assert out == "x é y"
 
 
 def test_reply_not_first_field_still_extracted():
-    # Fallback ordering: routing fields precede reply. Correctness must hold;
-    # a branch value even contains the word "reply" to catch naive matching.
-    whole = (
-        '{"branch_signal": "say reply now", "answer_complete": true, '
-        '"reply": "The actual spoken line."}'
-    )
+    # Fallback ordering: the routing field precedes reply. Correctness must
+    # hold even when a preceding string value contains the word "reply", to
+    # catch naive matching.
+    whole = '{"answer_complete": true, "extra": "say reply now", "reply": "The actual spoken line."}'
     emitted, extractor = _feed_all([whole])
 
     parsed, remaining = extractor.finalize()
     assert emitted + remaining == "The actual spoken line."
-    assert parsed["branch_signal"] == "say reply now"
 
 
 def test_reply_not_first_split_across_tiny_deltas():
-    # Forces _locate to re-run on partial buffers: keys, a boolean literal, and
-    # a preceding string value all get chopped mid-token across deltas.
-    whole = '{"answer_complete": true, "branch_signal": "moved on", "reply": "Final words."}'
+    # Forces _locate to re-run on partial buffers: a boolean literal and a
+    # preceding string value both get chopped mid-token across deltas.
+    whole = '{"answer_complete": true, "extra": "moved on", "reply": "Final words."}'
     deltas = [whole[i : i + 4] for i in range(0, len(whole), 4)]
     emitted, extractor = _feed_all(deltas)
 
     parsed, remaining = extractor.finalize()
     assert emitted + remaining == "Final words."
     assert parsed["answer_complete"] is True
-    assert parsed["branch_signal"] == "moved on"
 
 
 def test_truncated_trailing_json_still_emits_full_reply():
