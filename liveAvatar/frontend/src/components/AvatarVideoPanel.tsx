@@ -33,11 +33,7 @@ export function AvatarVideoPanel({ status, speakingState, isUploading, videoRef 
                  <p className="text-lg font-medium">{isUploading ? 'Uploading context...' : 'Connecting to avatar...'}</p>
              </div>
           )}
-          {/* object-contain, not object-cover: when the incoming stream's
-              resolution/aspect changes (LiveKit degrades it near session end),
-              cover re-crops and the avatar visibly "grows"; contain never
-              scales past the frame. */}
-          <video ref={videoRef} autoPlay playsInline className={`w-full h-full object-contain ${status === 'connected' ? 'opacity-100' : 'opacity-0 absolute'}`} />
+          <video ref={videoRef} autoPlay playsInline className={`w-full h-full object-cover ${status === 'connected' ? 'opacity-100' : 'opacity-0 absolute'}`} />
           {status === 'connected' && (
               <div className="absolute bottom-6 left-6 bg-slate-950/80 backdrop-blur-md px-4 py-2 rounded-xl text-sm font-semibold text-slate-200 shadow-xl border border-slate-700/50 flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />

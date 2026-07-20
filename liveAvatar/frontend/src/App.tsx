@@ -131,7 +131,9 @@ function App() {
 
         {/* Video Area */}
         <div className="flex-1 relative flex overflow-hidden p-4 md:px-8 pb-4">
-          <div className="flex-1 self-stretch flex flex-col md:flex-row items-stretch justify-center gap-4 transition-all duration-500">
+          {/* min-h-0: keeps children (esp. the transcript) bounded so their
+              content scrolls internally instead of stretching the row. */}
+          <div className="flex-1 self-stretch min-h-0 flex flex-col md:flex-row items-stretch justify-center gap-4 transition-all duration-500">
             <AvatarVideoPanel status={status} speakingState={speakingState} isUploading={isUploading} videoRef={videoRef} />
             <LocalVideoPanel status={status} speakingState={speakingState} cameraEnabled={cameraEnabled} micEnabled={micEnabled} localVideoRef={localVideoRef} />
 
