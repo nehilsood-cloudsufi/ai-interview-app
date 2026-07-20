@@ -52,10 +52,11 @@ export function useOnboardingProfile(interviewId: string | null, active: boolean
         const data: InterviewStateResponse = await res.json();
         if (cancelled) return;
 
-        // Keep polling while current_topic is "onboarding" or still null/
-        // undefined (not yet resolved); stop once it names any later topic.
-        // isOnboarding itself only lights up for the "onboarding" topic.
-        const keepPolling = data.current_topic === 'onboarding' || data.current_topic == null;
+        // Keep polling only while current_topic is "onboarding". The start
+        // node always IS an onboarding node, and null only appears at END -
+        // so treating null as "not yet resolved" would keep polling forever
+        // for a vendor who quits during onboarding.
+        const keepPolling = data.current_topic === 'onboarding';
         setProfile(data.vendor_profile);
         setIsOnboarding(data.current_topic === 'onboarding');
         if (!keepPolling) stop();
