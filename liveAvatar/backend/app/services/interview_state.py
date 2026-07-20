@@ -2,9 +2,22 @@ import secrets
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from app.models import TranscriptTurn
+
+# evaluator_agent imports ScoutFinding from this module, and coordinator_agent
+# imports Scorecard from evaluator_agent - so a real (runtime) import of
+# either Scorecard or FollowupRecommendation here would be circular. They are
+# only needed for type-checking, so TYPE_CHECKING + string annotations keep
+# the fields typed without ever importing the agent modules at runtime.
+if TYPE_CHECKING:
+    from app.services.coordinator_agent import FollowupRecommendation
+    from app.services.evaluator_agent import Scorecard
+
+# Post-interview pipeline (Scout -> Evaluator -> Coordinator) progress, owned
+# and mutated exclusively by app.services.pipeline.
+PipelineStatus = Literal["interviewed", "scouting", "evaluating", "ready", "failed"]
 
 
 @dataclass
@@ -41,6 +54,11 @@ class InterviewState:
     scout_findings: list[ScoutFinding] = field(default_factory=list)
     status: Literal["created", "active", "finished"] = "created"
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Set by app.services.pipeline once finalize hands the state off to it;
+    # None until then.
+    pipeline_status: PipelineStatus | None = None
+    scorecard: "Scorecard | None" = None
+    recommendation: "FollowupRecommendation | None" = None
 
 
 _interviews: dict[str, InterviewState] = {}

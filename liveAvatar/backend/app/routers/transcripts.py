@@ -1,18 +1,10 @@
-import dataclasses
 import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
 from app.models import FinalizeTranscriptRequest, FinalizeTranscriptResponse
-from app.services import (
-    coordinator_agent,
-    evaluator_agent,
-    interview_state,
-    summary_service,
-    transcript_store,
-)
-from app.services.interview_config import get_rubric
+from app.services import interview_state, pipeline, summary_service, transcript_store
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +15,22 @@ router = APIRouter()
 async def finalize_transcript(body: FinalizeTranscriptRequest):
     if not body.turns:
         raise HTTPException(status_code=400, detail="Transcript has no turns to finalize")
+
+    state = interview_state.get(body.interview_id) if body.interview_id else None
+
+    # Idempotency guard: a double finalize call (e.g. a retried request) must
+    # not re-enqueue the pipeline or re-save over a record the pipeline may
+    # already be mutating. The first finalize's record already holds the
+    # summary, so we just report the current status back.
+    if state is not None and state.pipeline_status is not None:
+        return {
+            "summary": "",
+            "summary_ok": True,
+            "pipeline_status": state.pipeline_status,
+            "scorecard": None,
+            "insights": None,
+            "recommendation": None,
+        }
 
     # Generate the summary, but never let a summary failure lose the transcript.
     summary = ""
@@ -41,17 +49,14 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
         "summary_ok": summary_ok,
     }
 
-    # Gateway mode: when the interview is still live in memory, enrich the
-    # record with the vendor profile, final scorecard, and Scout findings.
-    # Legacy finalize (no/unknown interview_id) keeps the exact shape above.
-    scorecard_dict = None
-    insights = None
-    recommendation = None
-    state = interview_state.get(body.interview_id) if body.interview_id else None
+    # Gateway mode: when the interview is still live in memory, hand it off
+    # to the background pipeline (Scout -> Evaluator -> Coordinator) - the
+    # scorecard/insights/recommendation arrive later via GET .../state
+    # polling, not in this response. Legacy finalize (no/unknown
+    # interview_id) keeps the exact shape above, with no pipeline at all.
+    pipeline_status = None
     if state is not None:
         profile = state.vendor_profile
-        rubric = get_rubric()
-        insights = [dataclasses.asdict(finding) for finding in state.scout_findings]
         payload["vendor_profile"] = {
             # Deliberately excludes doc_text - it can be huge.
             "company_name": profile.company_name,
@@ -59,30 +64,8 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
             "contact_name": profile.contact_name,
             "contact_role": profile.contact_role,
         }
-        payload["scout_findings"] = insights
-
-        # Holistic scoring: one pro-model pass over the Host's authoritative
-        # transcript (state.turns, not the frontend-captured body.turns), plus
-        # any independent Scout research findings. Like the summary, a scoring
-        # failure must never lose the transcript.
-        scorecard = None
-        try:
-            scorecard = await evaluator_agent.score_interview(state.turns, rubric, state.scout_findings)
-            scorecard_dict = dataclasses.asdict(scorecard)
-        except Exception as e:
-            logger.warning("Holistic scoring failed for session %s: %s", body.session_id, e)
-        payload["scorecard"] = scorecard_dict
-
-        # Coordinator: pure threshold rule over the final scorecard, skipped
-        # entirely when scoring produced no usable overall. evaluate_followup
-        # is deterministic (no LLM, no I/O) so it needs no soft-fail wrapper.
-        if scorecard is not None and scorecard.overall is not None:
-            rec = coordinator_agent.evaluate_followup(scorecard, rubric)
-            if rec is not None:
-                recommendation = dataclasses.asdict(rec)
-        payload["recommendation"] = recommendation
-
-        state.status = "finished"
+        pipeline_status = "interviewed"
+        payload["pipeline_status"] = pipeline_status
 
     try:
         await transcript_store.save(body.session_id, payload)
@@ -90,12 +73,18 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
         logger.error("Failed to persist transcript %s: %s", body.session_id, e)
         raise HTTPException(status_code=500, detail="Failed to save transcript")
 
+    if state is not None:
+        state.status = "finished"
+        state.pipeline_status = "interviewed"
+        pipeline.enqueue(state, body.session_id, payload)
+
     return {
         "summary": summary,
         "summary_ok": summary_ok,
-        "scorecard": scorecard_dict,
-        "insights": insights,
-        "recommendation": recommendation,
+        "pipeline_status": pipeline_status,
+        "scorecard": None,
+        "insights": None,
+        "recommendation": None,
     }
 
 

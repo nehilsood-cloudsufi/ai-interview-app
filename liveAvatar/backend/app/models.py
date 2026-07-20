@@ -66,19 +66,28 @@ class FinalizeTranscriptResponse(BaseModel):
     summary: str
     # False when summary generation failed but the transcript was still saved.
     summary_ok: bool = True
-    # Present only in gateway mode (interview_id resolved to a live interview);
-    # the final values so the UI needs no extra state poll.
+    # Gateway mode: "interviewed" once finalize hands the interview to the
+    # background pipeline, progressing to "ready"/"failed" as it runs -
+    # polled via GET /api/interview/{id}/state. None for the legacy
+    # (no/unknown interview_id) path, which has no pipeline at all.
+    pipeline_status: str | None = None
+    # Scorecard/insights/recommendation now arrive via polling, not in this
+    # response - the pipeline runs in the background after finalize returns,
+    # so these are always None in gateway mode too.
     scorecard: ScorecardModel | None = None
     insights: list[ScoutFindingModel] | None = None
-    # Coordinator's threshold-rule recommendation for the human evaluator;
-    # None when nothing is recommended or the interview_id didn't resolve to
-    # a live interview. evaluate_followup is pure and never raises, so there
-    # is no soft-fail case to represent here.
     recommendation: FollowupRecommendationModel | None = None
 
 
 class CreateInterviewResponse(BaseModel):
     interview_id: str
+
+
+class VendorProfileModel(BaseModel):
+    company_name: str
+    website: str | None
+    contact_name: str
+    contact_role: str | None
 
 
 class InterviewStateResponse(BaseModel):
@@ -88,6 +97,12 @@ class InterviewStateResponse(BaseModel):
     current_topic: str | None
     insights: list[ScoutFindingModel]
     updated_at: str  # ISO-8601 UTC timestamp of this snapshot
+    # Post-interview pipeline progress (None until finalize hands the
+    # interview to app.services.pipeline); the UI polls this endpoint for it.
+    pipeline_status: str | None = None
+    scorecard: ScorecardModel | None = None
+    recommendation: FollowupRecommendationModel | None = None
+    vendor_profile: VendorProfileModel
 
 
 class ChatRequest(BaseModel):

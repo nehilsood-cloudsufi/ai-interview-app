@@ -1,7 +1,10 @@
+import dataclasses
 from datetime import datetime, timezone
 
 from app.models import TranscriptTurn
 from app.services import host_agent, interview_state
+from app.services.coordinator_agent import FollowupRecommendation
+from app.services.evaluator_agent import CategoryScore, Scorecard
 from app.services.host_agent import TurnResult
 from app.services.interview_state import ScoutFinding, VendorProfile
 
@@ -64,11 +67,22 @@ def test_fresh_interview_state(client):
     # The start node is the questionnaire's first question (intro).
     assert body["current_topic"] == "onboarding"
 
-    # Scoring is a single holistic pass at finalize - the live-state snapshot
-    # deliberately carries no scorecard.
-    assert "scorecard" not in body
+    # Scoring is a single holistic pass at finalize, run by the background
+    # pipeline - the live-state snapshot carries the pipeline's progress
+    # (None until finalize hands the interview off) rather than running its
+    # own scoring.
+    assert body["pipeline_status"] is None
+    assert body["scorecard"] is None
+    assert body["recommendation"] is None
 
     assert body["insights"] == []
+
+    assert body["vendor_profile"] == {
+        "company_name": "Acme Corp",
+        "website": "https://acme.example",
+        "contact_name": "Jane Doe",
+        "contact_role": "CTO",
+    }
 
     updated_at = datetime.fromisoformat(body["updated_at"])
     assert updated_at.utcoffset() == timezone.utc.utcoffset(None)
@@ -90,12 +104,41 @@ def test_seeded_interview_state(client):
     body = response.json()
     assert body["status"] == "active"
     assert body["current_topic"] == "ai_ml_capability"
-    assert "scorecard" not in body
+    assert body["pipeline_status"] is None
+    assert body["scorecard"] is None
+    assert body["recommendation"] is None
 
     assert body["insights"] == [
         {"topic": "reputation", "summary": "Solid reviews.", "source_url": "https://example.com/reviews"},
         {"topic": "news", "summary": "No recent press.", "source_url": None},
     ]
+
+
+def test_state_reflects_pipeline_progress(client):
+    from app.services.interview_config import get_rubric
+
+    state = _seed_interview()
+    state.status = "finished"
+    state.pipeline_status = "ready"
+    scorecard = Scorecard(
+        categories=[
+            CategoryScore(id=c.id, name=c.name, weight=c.weight, score=4.0, evidence=["ev1"])
+            for c in get_rubric().values()
+        ],
+        overall=4.0,
+    )
+    state.scorecard = scorecard
+    state.recommendation = FollowupRecommendation(
+        kind="advance", reason="Overall score 4/5 meets the advance threshold.", focus_categories=["experience"]
+    )
+
+    response = client.get(_url(state.interview_id))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pipeline_status"] == "ready"
+    assert body["scorecard"] == dataclasses.asdict(scorecard)
+    assert body["recommendation"] == dataclasses.asdict(state.recommendation)
 
 
 def test_end_node_has_null_topic(client):

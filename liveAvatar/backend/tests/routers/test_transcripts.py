@@ -1,12 +1,9 @@
-import logging
-
 import httpx
 import respx
 
 from app.models import TranscriptTurn
-from app.services import interview_state
-from app.services.evaluator_agent import CategoryScore, Scorecard
-from app.services.interview_state import ScoutFinding, VendorProfile
+from app.services import interview_state, pipeline
+from app.services.interview_state import VendorProfile
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
@@ -36,37 +33,17 @@ def _seed_interview(turns=None, findings=None):
     return state
 
 
-def make_scorecard(scores: dict[str, float | None], overall: float | None, evidence=None) -> Scorecard:
-    from app.services.interview_config import get_rubric
+def _stub_enqueue(monkeypatch):
+    """Replace pipeline.enqueue with a no-op that records its calls; the
+    pipeline's own Scout -> Evaluator -> Coordinator behavior is covered by
+    tests/services/test_pipeline.py, not here."""
+    calls = []
 
-    return Scorecard(
-        categories=[
-            CategoryScore(
-                id=c.id,
-                name=c.name,
-                weight=c.weight,
-                score=scores.get(c.id),
-                evidence=(evidence or {}).get(c.id, []),
-            )
-            for c in get_rubric().values()
-        ],
-        overall=overall,
-    )
+    def _fake(state, session_id, payload):
+        calls.append({"state": state, "session_id": session_id, "payload": payload})
 
-
-def _patch_score_interview(monkeypatch, scorecard: Scorecard | Exception, calls: list | None = None):
-    """Replace the holistic scoring call; its own Gemini plumbing is covered by
-    tests/services/test_evaluator_agent.py."""
-    from app.services import evaluator_agent
-
-    async def _fake(turns, rubric, scout_findings):
-        if calls is not None:
-            calls.append(turns)
-        if isinstance(scorecard, Exception):
-            raise scorecard
-        return scorecard
-
-    monkeypatch.setattr(evaluator_agent, "score_interview", _fake)
+    monkeypatch.setattr(pipeline, "enqueue", _fake)
+    return calls
 
 
 def test_finalize_empty_turns_returns_400(client, tmp_transcripts_dir):
@@ -130,6 +107,8 @@ def test_finalize_happy_path_with_summary(client, patch_settings, tmp_transcript
     body = response.json()
     assert body["summary"] == "Nice summary"
     assert body["summary_ok"] is True
+    # No interview_id -> no pipeline at all.
+    assert body["pipeline_status"] is None
 
     # The full record must be persisted: summary, all turns, and a created_at stamp.
     saved = client.get("/api/transcript/s2").json()
@@ -187,7 +166,13 @@ def test_finalize_save_failure_returns_500(client, patch_settings, monkeypatch):
 
 
 @respx.mock
-def test_finalize_with_interview_embeds_enrichment(client, patch_settings, tmp_transcripts_dir, monkeypatch):
+def test_finalize_with_interview_returns_fast_and_enqueues_pipeline(
+    client, patch_settings, tmp_transcripts_dir, monkeypatch
+):
+    # Gateway mode: finalize no longer runs the evaluator/coordinator inline -
+    # it saves an "interviewed" record and hands off to the background
+    # pipeline. The pipeline's own Scout -> Evaluator -> Coordinator behavior
+    # is covered by tests/services/test_pipeline.py, not here.
     patch_settings(
         gemini_api_key="gem-key",
         gemini_base_url=GEMINI_BASE_URL,
@@ -195,19 +180,10 @@ def test_finalize_with_interview_embeds_enrichment(client, patch_settings, tmp_t
         gcs_bucket=None,
     )
     respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        return_value=httpx.Response(
-            200, json={"choices": [{"message": {"content": "Nice summary"}}]}
-        )
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "Nice summary"}}]})
     )
-    scoring_calls: list = []
-    _patch_score_interview(
-        monkeypatch,
-        make_scorecard({"experience": 4.0}, overall=4.0, evidence={"experience": ["ev1"]}),
-        calls=scoring_calls,
-    )
-    state = _seed_interview(
-        findings=[ScoutFinding(topic="news", summary="No recent press.", source_url=None)],
-    )
+    calls = _stub_enqueue(monkeypatch)
+    state = _seed_interview()
 
     response = client.post(
         "/api/transcript/finalize",
@@ -219,10 +195,22 @@ def test_finalize_with_interview_embeds_enrichment(client, patch_settings, tmp_t
     )
 
     assert response.status_code == 200
+    body = response.json()
+    assert body["summary"] == "Nice summary"
+    assert body["summary_ok"] is True
+    assert body["pipeline_status"] == "interviewed"
+    # Scorecard/insights/recommendation arrive later via polling, never here.
+    assert body["scorecard"] is None
+    assert body["insights"] is None
+    assert body["recommendation"] is None
 
-    # Scoring ran once, over the Host's authoritative transcript (state.turns,
-    # not the frontend-captured body turns).
-    assert scoring_calls == [state.turns]
+    # The interview is marked finished and handed to the pipeline exactly once.
+    assert state.status == "finished"
+    assert state.pipeline_status == "interviewed"
+    assert len(calls) == 1
+    assert calls[0]["state"] is state
+    assert calls[0]["session_id"] == "e1"
+    assert calls[0]["payload"]["pipeline_status"] == "interviewed"
 
     saved = client.get("/api/transcript/e1").json()
     # Vendor profile is embedded WITHOUT the (potentially huge) doc_text.
@@ -232,25 +220,93 @@ def test_finalize_with_interview_embeds_enrichment(client, patch_settings, tmp_t
         "contact_name": "Jane Doe",
         "contact_role": "CTO",
     }
-    scorecard = saved["scorecard"]
-    by_id = {c["id"]: c for c in scorecard["categories"]}
-    assert by_id["experience"]["score"] == 4.0
-    assert by_id["experience"]["evidence"] == ["ev1"]
-    assert scorecard["overall"] == 4.0
-    assert saved["scout_findings"] == [
-        {"topic": "news", "summary": "No recent press.", "source_url": None}
-    ]
-    # Legacy fields are untouched.
+    assert saved["pipeline_status"] == "interviewed"
     assert saved["summary"] == "Nice summary"
     assert saved["summary_ok"] is True
 
-    # The interview is marked finished.
-    assert state.status == "finished"
 
-    # The response carries the final scorecard + insights for the UI.
+def test_finalize_summary_failure_still_enqueues_pipeline(
+    client, patch_settings, tmp_transcripts_dir, monkeypatch
+):
+    # No Gemini key -> generate_summary raises -> summary soft-fails, but the
+    # interview must still be marked finished and handed to the pipeline -
+    # the summary and pipeline handoff fail independently.
+    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+    calls = _stub_enqueue(monkeypatch)
+    state = _seed_interview()
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={
+            "session_id": "e2",
+            "interview_id": state.interview_id,
+            "turns": [{"role": "candidate", "text": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
     body = response.json()
-    assert body["scorecard"]["overall"] == 4.0
-    assert body["insights"] == saved["scout_findings"]
+    assert body["summary_ok"] is False
+    assert body["pipeline_status"] == "interviewed"
+
+    assert state.status == "finished"
+    assert len(calls) == 1
+
+    saved = client.get("/api/transcript/e2").json()
+    assert saved["summary_ok"] is False
+    assert saved["vendor_profile"]["company_name"] == "Acme Corp"
+    assert saved["pipeline_status"] == "interviewed"
+
+
+def test_finalize_double_finalize_short_circuits(client, patch_settings, tmp_transcripts_dir, monkeypatch):
+    # A retried finalize call (or the UI double-submitting) must not
+    # re-enqueue the pipeline or re-save over a record the pipeline may
+    # already be mutating in the background.
+    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+    calls = _stub_enqueue(monkeypatch)
+
+    save_calls: list = []
+    from app.services import transcript_store
+
+    real_save = transcript_store.save
+
+    async def _tracking_save(session_id, payload):
+        save_calls.append(session_id)
+        await real_save(session_id, payload)
+
+    monkeypatch.setattr(transcript_store, "save", _tracking_save)
+
+    state = _seed_interview()
+    body = {
+        "session_id": "e3",
+        "interview_id": state.interview_id,
+        "turns": [{"role": "candidate", "text": "hello"}],
+    }
+
+    first = client.post("/api/transcript/finalize", json=body)
+    assert first.status_code == 200
+    assert first.json()["pipeline_status"] == "interviewed"
+    assert len(calls) == 1
+    assert len(save_calls) == 1
+
+    # Simulate the pipeline having advanced past "interviewed" in the
+    # background before the (retried) second finalize call arrives.
+    state.pipeline_status = "ready"
+
+    second = client.post("/api/transcript/finalize", json=body)
+
+    assert second.status_code == 200
+    assert second.json() == {
+        "summary": "",
+        "summary_ok": True,
+        "pipeline_status": "ready",
+        "scorecard": None,
+        "insights": None,
+        "recommendation": None,
+    }
+    # No second enqueue, no second save.
+    assert len(calls) == 1
+    assert len(save_calls) == 1
 
 
 def test_finalize_without_interview_id_keeps_legacy_shape(client, patch_settings, tmp_transcripts_dir):
@@ -281,147 +337,6 @@ def test_finalize_unknown_interview_id_treated_as_legacy(client, patch_settings,
     assert response.status_code == 200
     saved = client.get("/api/transcript/leg2").json()
     assert set(saved) == LEGACY_RECORD_KEYS
-
-
-def test_finalize_summary_failure_still_saves_enriched_record(
-    client, patch_settings, tmp_transcripts_dir, monkeypatch
-):
-    # No Gemini key -> generate_summary raises -> summary soft-fails, but the
-    # enriched record (vendor profile, scorecard, findings) must still be
-    # saved - the summary and scoring calls fail independently.
-    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
-    _patch_score_interview(monkeypatch, make_scorecard({"experience": 3.0}, overall=3.0))
-    state = _seed_interview()
-
-    response = client.post(
-        "/api/transcript/finalize",
-        json={
-            "session_id": "e2",
-            "interview_id": state.interview_id,
-            "turns": [{"role": "candidate", "text": "hello"}],
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["summary_ok"] is False
-
-    saved = client.get("/api/transcript/e2").json()
-    assert saved["summary_ok"] is False
-    assert saved["vendor_profile"]["company_name"] == "Acme Corp"
-    assert saved["scorecard"]["overall"] == 3.0
-    assert saved["scout_findings"] == []
-    assert state.status == "finished"
-
-
-def test_finalize_scoring_failure_still_saves_with_null_scorecard(
-    client, patch_settings, tmp_transcripts_dir, monkeypatch, caplog
-):
-    # Holistic scoring blowing up must never lose the transcript: the record
-    # is saved with scorecard null, the coordinator is skipped, and a warning
-    # is logged.
-    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
-    _patch_score_interview(monkeypatch, RuntimeError("scoring exploded"))
-    state = _seed_interview()
-
-    with caplog.at_level(logging.WARNING, logger="app.routers.transcripts"):
-        response = client.post(
-            "/api/transcript/finalize",
-            json={
-                "session_id": "e3",
-                "interview_id": state.interview_id,
-                "turns": [{"role": "candidate", "text": "hello"}],
-            },
-        )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["scorecard"] is None
-    assert body["recommendation"] is None
-    assert "Holistic scoring failed" in caplog.text
-
-    saved = client.get("/api/transcript/e3").json()
-    assert saved["scorecard"] is None
-    assert saved["recommendation"] is None
-    assert saved["vendor_profile"]["company_name"] == "Acme Corp"
-    assert state.status == "finished"
-
-
-def test_finalize_high_scores_includes_recommendation(client, patch_settings, tmp_transcripts_dir, monkeypatch):
-    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
-
-    # experience 5 -> overall 5.0 >= advance threshold (3.5) -> "advance",
-    # via the real (pure) evaluate_followup - no LLM drafting involved.
-    _patch_score_interview(monkeypatch, make_scorecard({"experience": 5.0}, overall=5.0))
-    state = _seed_interview()
-
-    response = client.post(
-        "/api/transcript/finalize",
-        json={
-            "session_id": "f1",
-            "interview_id": state.interview_id,
-            "turns": [{"role": "candidate", "text": "hello"}],
-        },
-    )
-
-    assert response.status_code == 200
-    recommendation = response.json()["recommendation"]
-    assert recommendation["kind"] == "advance"
-    assert recommendation["reason"]
-    assert recommendation["focus_categories"] == ["experience"]
-
-    saved = client.get("/api/transcript/f1").json()
-    assert saved["recommendation"] == recommendation
-
-
-def test_finalize_low_scores_has_null_recommendation(client, patch_settings, tmp_transcripts_dir, monkeypatch):
-    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
-
-    # experience 1 -> overall 1.0 < clarify floor (2.5) -> no recommendation.
-    _patch_score_interview(monkeypatch, make_scorecard({"experience": 1.0}, overall=1.0))
-    state = _seed_interview()
-
-    response = client.post(
-        "/api/transcript/finalize",
-        json={
-            "session_id": "f2",
-            "interview_id": state.interview_id,
-            "turns": [{"role": "candidate", "text": "hello"}],
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["recommendation"] is None
-
-    saved = client.get("/api/transcript/f2").json()
-    assert saved["recommendation"] is None
-    # The rest of the enrichment is unaffected.
-    assert saved["scorecard"]["overall"] == 1.0
-
-
-def test_finalize_overall_none_skips_coordinator(client, patch_settings, tmp_transcripts_dir, monkeypatch):
-    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
-
-    from app.services import coordinator_agent
-
-    def _must_not_run(scorecard, rubric):
-        raise AssertionError("coordinator must not run when overall is None")
-
-    monkeypatch.setattr(coordinator_agent, "evaluate_followup", _must_not_run)
-    _patch_score_interview(monkeypatch, make_scorecard({}, overall=None))
-    state = _seed_interview()
-
-    response = client.post(
-        "/api/transcript/finalize",
-        json={
-            "session_id": "f4",
-            "interview_id": state.interview_id,
-            "turns": [{"role": "candidate", "text": "hello"}],
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["recommendation"] is None
 
 
 def test_get_transcript_not_found_returns_404(client, tmp_transcripts_dir):
