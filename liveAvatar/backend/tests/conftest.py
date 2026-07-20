@@ -19,6 +19,7 @@ _SETTINGS_IMPORTERS = [
     "app.config",
     "app.main",
     "app.dependencies",
+    "app.routers.interview",
     "app.routers.llm_gateway",
     "app.routers.sessions",
     "app.services.interview_config",
