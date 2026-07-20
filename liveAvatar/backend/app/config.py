@@ -67,14 +67,14 @@ class Settings:
     # state is left untouched so the vendor can simply repeat themselves.
     host_fallback_reply: str = "I'm sorry, could you say that again?"
 
-    # System prompt for the Appraiser agent's single holistic scoring call,
+    # System prompt for the Evaluator agent's single holistic scoring call,
     # made once at finalize over the WHOLE transcript (not per answer - a
     # deliberate design choice so early answers are judged in the context of
     # the full conversation). The service appends the rubric categories (ids,
     # names, descriptions) as a structured block after this text; scores are
     # clamped/filtered in code regardless of what comes back.
-    appraiser_system_prompt: str = (
-        "You are a strict, impartial appraiser evaluating a completed "
+    evaluator_system_prompt: str = (
+        "You are a strict, impartial evaluator assessing a completed "
         "vendor-qualification interview. You are given the full interview "
         "transcript and the rubric categories to score. Judge the interview "
         "as a whole: weigh everything the vendor said across the entire "
@@ -85,32 +85,13 @@ class Settings:
         "reward vague claims without substance. If a category was never "
         "meaningfully discussed in the interview, OMIT it entirely rather "
         "than guessing a score. For each scored category, quote one to three "
-        "short supporting excerpts from the vendor's own words.\n\n"
+        "short supporting excerpts from the vendor's own words. Independent "
+        "research findings may also be provided; weigh the vendor's claims "
+        "against them where relevant.\n\n"
         "Always respond with a single JSON object of exactly this shape: "
         '{"categories": {"<category_id>": {"score": <0-5>, '
         '"evidence": ["<short quote>", ...], '
         '"rationale": "<one or two sentences>"}, ...}}'
-    )
-
-    # System prompt for the Coordinator agent's invite-drafting Gemini call.
-    # The service appends the vendor profile, the follow-up recommendation,
-    # the focus categories with supporting evidence quotes, and any Scout
-    # findings as structured blocks after this text.
-    coordinator_invite_prompt: str = (
-        "You are a coordinator preparing a follow-up meeting package after a "
-        "vendor-qualification interview, on behalf of a procurement team. You "
-        "are given the vendor's profile, the follow-up recommendation (advance "
-        "to a next-round deep-dive, or clarify weak areas), the focus "
-        "categories with supporting evidence from the interview, and any "
-        "research findings. Draft a concise, professional meeting package: a "
-        "short meeting title, a focused agenda covering the focus categories, "
-        "a sensible meeting duration in minutes, and an invitation email "
-        "addressed to the vendor contact by name. The email must be "
-        "professional and brief, and its body must be plain text with no "
-        "markdown formatting.\n\n"
-        "Always respond with a single JSON object of exactly this shape: "
-        '{"title": "<meeting title>", "agenda": ["<agenda item>", ...], '
-        '"duration_minutes": <integer>, "email_draft": "<plain-text email>"}'
     )
 
     # --- Transcript + summary feature ---

@@ -6,8 +6,8 @@ from fastapi import APIRouter, HTTPException
 
 from app.models import FinalizeTranscriptRequest, FinalizeTranscriptResponse
 from app.services import (
-    appraiser_agent,
     coordinator_agent,
+    evaluator_agent,
     interview_state,
     summary_service,
     transcript_store,
@@ -46,7 +46,7 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
     # Legacy finalize (no/unknown interview_id) keeps the exact shape above.
     scorecard_dict = None
     insights = None
-    followup = None
+    recommendation = None
     state = interview_state.get(body.interview_id) if body.interview_id else None
     if state is not None:
         profile = state.vendor_profile
@@ -62,27 +62,25 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
         payload["scout_findings"] = insights
 
         # Holistic scoring: one pro-model pass over the Host's authoritative
-        # transcript (state.turns, not the frontend-captured body.turns).
-        # Like the summary, a scoring failure must never lose the transcript.
+        # transcript (state.turns, not the frontend-captured body.turns), plus
+        # any independent Scout research findings. Like the summary, a scoring
+        # failure must never lose the transcript.
         scorecard = None
         try:
-            scorecard = await appraiser_agent.score_interview(state.turns, rubric)
+            scorecard = await evaluator_agent.score_interview(state.turns, rubric, state.scout_findings)
             scorecard_dict = dataclasses.asdict(scorecard)
         except Exception as e:
             logger.warning("Holistic scoring failed for session %s: %s", body.session_id, e)
         payload["scorecard"] = scorecard_dict
 
-        # Coordinator follow-up: same soft-fail rule. Skipped entirely when
-        # scoring produced no usable overall.
-        try:
-            if scorecard is not None and scorecard.overall is not None:
-                rec = coordinator_agent.evaluate_followup(scorecard, rubric)
-                if rec is not None:
-                    proposal = await coordinator_agent.draft_followup(state, rec, scorecard, rubric)
-                    followup = dataclasses.asdict(proposal)
-        except Exception as e:
-            logger.warning("Coordinator follow-up failed for session %s: %s", body.session_id, e)
-        payload["followup"] = followup
+        # Coordinator: pure threshold rule over the final scorecard, skipped
+        # entirely when scoring produced no usable overall. evaluate_followup
+        # is deterministic (no LLM, no I/O) so it needs no soft-fail wrapper.
+        if scorecard is not None and scorecard.overall is not None:
+            rec = coordinator_agent.evaluate_followup(scorecard, rubric)
+            if rec is not None:
+                recommendation = dataclasses.asdict(rec)
+        payload["recommendation"] = recommendation
 
         state.status = "finished"
 
@@ -97,7 +95,7 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
         "summary_ok": summary_ok,
         "scorecard": scorecard_dict,
         "insights": insights,
-        "followup": followup,
+        "recommendation": recommendation,
     }
 
 

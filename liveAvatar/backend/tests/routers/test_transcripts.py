@@ -5,7 +5,7 @@ import respx
 
 from app.models import TranscriptTurn
 from app.services import interview_state
-from app.services.appraiser_agent import CategoryScore, Scorecard
+from app.services.evaluator_agent import CategoryScore, Scorecard
 from app.services.interview_state import ScoutFinding, VendorProfile
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -56,17 +56,17 @@ def make_scorecard(scores: dict[str, float | None], overall: float | None, evide
 
 def _patch_score_interview(monkeypatch, scorecard: Scorecard | Exception, calls: list | None = None):
     """Replace the holistic scoring call; its own Gemini plumbing is covered by
-    tests/services/test_appraiser_agent.py."""
-    from app.services import appraiser_agent
+    tests/services/test_evaluator_agent.py."""
+    from app.services import evaluator_agent
 
-    async def _fake(turns, rubric):
+    async def _fake(turns, rubric, scout_findings):
         if calls is not None:
             calls.append(turns)
         if isinstance(scorecard, Exception):
             raise scorecard
         return scorecard
 
-    monkeypatch.setattr(appraiser_agent, "score_interview", _fake)
+    monkeypatch.setattr(evaluator_agent, "score_interview", _fake)
 
 
 def test_finalize_empty_turns_returns_400(client, tmp_transcripts_dir):
@@ -337,37 +337,22 @@ def test_finalize_scoring_failure_still_saves_with_null_scorecard(
     assert response.status_code == 200
     body = response.json()
     assert body["scorecard"] is None
-    assert body["followup"] is None
+    assert body["recommendation"] is None
     assert "Holistic scoring failed" in caplog.text
 
     saved = client.get("/api/transcript/e3").json()
     assert saved["scorecard"] is None
-    assert saved["followup"] is None
+    assert saved["recommendation"] is None
     assert saved["vendor_profile"]["company_name"] == "Acme Corp"
     assert state.status == "finished"
 
 
-def test_finalize_high_scores_includes_followup(client, patch_settings, tmp_transcripts_dir, monkeypatch):
+def test_finalize_high_scores_includes_recommendation(client, patch_settings, tmp_transcripts_dir, monkeypatch):
     patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
 
-    from app.services import coordinator_agent
-    from app.services.coordinator_agent import FollowupProposal
-
-    # experience 5 -> overall 5.0 >= advance threshold (3.5) -> "advance".
+    # experience 5 -> overall 5.0 >= advance threshold (3.5) -> "advance",
+    # via the real (pure) evaluate_followup - no LLM drafting involved.
     _patch_score_interview(monkeypatch, make_scorecard({"experience": 5.0}, overall=5.0))
-
-    async def _fake_draft(state, rec, scorecard, rubric):
-        assert scorecard.overall == 5.0  # the final scorecard is passed through
-        return FollowupProposal(
-            recommendation=rec,
-            title="Deep dive with Acme Corp",
-            agenda=["Technical Capability", "Delivery & Team"],
-            duration_minutes=45,
-            email_draft="Dear Jane,\n\nLet's schedule a deep dive.",
-        )
-
-    monkeypatch.setattr(coordinator_agent, "draft_followup", _fake_draft)
-
     state = _seed_interview()
 
     response = client.post(
@@ -380,19 +365,16 @@ def test_finalize_high_scores_includes_followup(client, patch_settings, tmp_tran
     )
 
     assert response.status_code == 200
-    followup = response.json()["followup"]
-    assert followup["recommendation"]["kind"] == "advance"
-    assert followup["recommendation"]["reason"]
-    assert followup["title"] == "Deep dive with Acme Corp"
-    assert followup["agenda"] == ["Technical Capability", "Delivery & Team"]
-    assert followup["duration_minutes"] == 45
-    assert followup["email_draft"].startswith("Dear Jane,")
+    recommendation = response.json()["recommendation"]
+    assert recommendation["kind"] == "advance"
+    assert recommendation["reason"]
+    assert recommendation["focus_categories"] == ["experience"]
 
     saved = client.get("/api/transcript/f1").json()
-    assert saved["followup"] == followup
+    assert saved["recommendation"] == recommendation
 
 
-def test_finalize_low_scores_has_null_followup(client, patch_settings, tmp_transcripts_dir, monkeypatch):
+def test_finalize_low_scores_has_null_recommendation(client, patch_settings, tmp_transcripts_dir, monkeypatch):
     patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
 
     # experience 1 -> overall 1.0 < clarify floor (2.5) -> no recommendation.
@@ -409,10 +391,10 @@ def test_finalize_low_scores_has_null_followup(client, patch_settings, tmp_trans
     )
 
     assert response.status_code == 200
-    assert response.json()["followup"] is None
+    assert response.json()["recommendation"] is None
 
     saved = client.get("/api/transcript/f2").json()
-    assert saved["followup"] is None
+    assert saved["recommendation"] is None
     # The rest of the enrichment is unaffected.
     assert saved["scorecard"]["overall"] == 1.0
 
@@ -439,37 +421,7 @@ def test_finalize_overall_none_skips_coordinator(client, patch_settings, tmp_tra
     )
 
     assert response.status_code == 200
-    assert response.json()["followup"] is None
-
-
-def test_finalize_coordinator_crash_never_blocks_save(client, patch_settings, tmp_transcripts_dir, monkeypatch):
-    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
-
-    from app.services import coordinator_agent
-
-    def _boom(scorecard, rubric):
-        raise RuntimeError("coordinator exploded")
-
-    monkeypatch.setattr(coordinator_agent, "evaluate_followup", _boom)
-    _patch_score_interview(monkeypatch, make_scorecard({"experience": 5.0}, overall=5.0))
-    state = _seed_interview()
-
-    response = client.post(
-        "/api/transcript/finalize",
-        json={
-            "session_id": "f3",
-            "interview_id": state.interview_id,
-            "turns": [{"role": "candidate", "text": "hello"}],
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["followup"] is None
-
-    saved = client.get("/api/transcript/f3").json()
-    assert saved["followup"] is None
-    assert saved["scorecard"]["overall"] == 5.0
-    assert state.status == "finished"
+    assert response.json()["recommendation"] is None
 
 
 def test_get_transcript_not_found_returns_404(client, tmp_transcripts_dir):

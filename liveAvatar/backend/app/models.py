@@ -62,14 +62,6 @@ class FollowupRecommendationModel(BaseModel):
     focus_categories: list[str]
 
 
-class FollowupProposalModel(BaseModel):
-    recommendation: FollowupRecommendationModel
-    title: str
-    agenda: list[str]
-    duration_minutes: int
-    email_draft: str
-
-
 class FinalizeTranscriptResponse(BaseModel):
     summary: str
     # False when summary generation failed but the transcript was still saved.
@@ -78,10 +70,11 @@ class FinalizeTranscriptResponse(BaseModel):
     # the final values so the UI needs no extra state poll.
     scorecard: ScorecardModel | None = None
     insights: list[ScoutFindingModel] | None = None
-    # Coordinator follow-up proposal; None when nothing is recommended, the
-    # interview_id didn't resolve to a live interview, or the coordinator
-    # failed (soft-fail).
-    followup: FollowupProposalModel | None = None
+    # Coordinator's threshold-rule recommendation for the human evaluator;
+    # None when nothing is recommended or the interview_id didn't resolve to
+    # a live interview. evaluate_followup is pure and never raises, so there
+    # is no soft-fail case to represent here.
+    recommendation: FollowupRecommendationModel | None = None
 
 
 class CreateInterviewResponse(BaseModel):
