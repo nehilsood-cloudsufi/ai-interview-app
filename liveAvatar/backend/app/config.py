@@ -102,6 +102,15 @@ class Settings:
     # Gemini's OpenAI-compatible endpoint (same base already used to provision the
     # LiveAvatar LLM config). Reused here for direct summary generation via httpx.
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    # Gemini's NATIVE REST endpoint (not the OpenAI-compat one above) - only this
+    # endpoint supports the `google_search` grounding tool, which the Data Scout
+    # needs. Kept as its own setting rather than derived by string-munging
+    # gemini_base_url, so the two can diverge independently.
+    gemini_native_base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "GEMINI_NATIVE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/"
+        )
+    )
     # Fast tier (Host turns, Coordinator drafting) and pro tier (holistic
     # scoring + summary at finalize, where latency doesn't matter). Both use
     # Gemini's auto-tracking "-latest" aliases so we stop hand-bumping
@@ -127,6 +136,27 @@ class Settings:
         "Use short bullet points under each heading (a sentence or two each). If a "
         "section has nothing to report from the transcript, write '- N/A'. Keep the "
         "whole summary tight and scannable."
+    )
+
+    # Prompt for the Data Scout's single Gemini native-API call with Google
+    # Search grounding enabled. Structured output can't be combined with the
+    # google_search tool, so the JSON contract is asked for in-prompt and
+    # parsed with app.services.llm_json.parse_llm_json instead of a schema.
+    # The contract is a JSON *object* wrapping the findings array (not a bare
+    # top-level array) so parse_llm_json - which only ever extracts a
+    # top-level JSON object, by design - can be reused unmodified; a bare
+    # array of objects would otherwise silently decode to just its first
+    # element (raw_decode stops at the first complete JSON value it finds).
+    scout_research_prompt: str = (
+        "Research the following vendor company on the web, using the company "
+        "name (and website, if given) below. Cover: company overview; "
+        "products/services offered; notable clients or recent news; and any "
+        "red flags (disputes, controversies, credibility concerns). Respond "
+        "with STRICTLY a single JSON object (no prose, no markdown fences) of "
+        'exactly this shape: {"findings": [{"topic": "<short topic label>", '
+        '"summary": "<1-3 sentence summary>", "source_url": "<url or null>"}, '
+        "...]}. Include 3 to 8 findings, each summary 1 to 3 sentences. If you "
+        'genuinely find nothing credible about the company, return {"findings": []}.'
     )
 
 

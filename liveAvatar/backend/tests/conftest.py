@@ -26,6 +26,7 @@ _SETTINGS_IMPORTERS = [
     "app.services.gemini_client",
     "app.services.host_agent",
     "app.services.evaluator_agent",
+    "app.services.scout_agent",
     "app.services.transcript_store",
     "app.services.summary_service",
 ]
