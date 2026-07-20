@@ -60,9 +60,9 @@ async def run(state: InterviewState, session_id: str, payload: dict) -> None:
         payload["scorecard"] = dataclasses.asdict(scorecard) if scorecard is not None else None
         payload["recommendation"] = dataclasses.asdict(rec) if rec is not None else None
         payload["pipeline_status"] = "ready"
-        state.pipeline_status = "ready"
 
         await transcript_store.save(session_id, payload)
+        state.pipeline_status = "ready"
     except Exception:
         logger.error("Post-interview pipeline failed for session %s", session_id, exc_info=True)
         state.pipeline_status = "failed"

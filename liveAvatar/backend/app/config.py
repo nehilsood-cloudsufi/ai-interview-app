@@ -111,7 +111,7 @@ class Settings:
             "GEMINI_NATIVE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/"
         )
     )
-    # Fast tier (Host turns, Coordinator drafting) and pro tier (holistic
+    # Fast tier (Host turns) and pro tier (holistic
     # scoring + summary at finalize, where latency doesn't matter). Both use
     # Gemini's auto-tracking "-latest" aliases so we stop hand-bumping
     # versions; the pinned *_fallback names are retried automatically by

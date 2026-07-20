@@ -174,6 +174,39 @@ async def test_final_save_failure_marks_failed_and_attempts_resave(monkeypatch):
     assert len(save_payloads) == 2
     assert save_payloads[0]["pipeline_status"] == "ready"
     assert save_payloads[1]["pipeline_status"] == "failed"
+    # state.pipeline_status must never have been set to "ready" - a save
+    # failure would otherwise flip a transient "ready" back to "failed",
+    # visible to a poll tick in between.
+
+
+async def test_ready_status_only_set_after_successful_save(monkeypatch):
+    # state.pipeline_status must flip to "ready" only once the save that
+    # carries the "ready" record has actually succeeded - not before, so a
+    # save failure can never leave a transient "ready" visible to a poll.
+    async def fake_scout_run(state):
+        return []
+
+    scorecard = make_scorecard({"experience": 4.0}, overall=4.0)
+
+    async def fake_score_interview(turns, rubric, scout_findings):
+        return scorecard
+
+    status_during_save: list[str | None] = []
+
+    async def fake_save(session_id, payload):
+        status_during_save.append(state.pipeline_status)
+
+    monkeypatch.setattr(scout_agent, "run", fake_scout_run)
+    monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
+    monkeypatch.setattr(transcript_store, "save", fake_save)
+
+    state = make_state()
+    await pipeline.run(state, "sid", make_payload())
+
+    # At the moment save() ran, the state was still "evaluating" - the
+    # "ready" flip happens only after save() returns successfully.
+    assert status_during_save == ["evaluating"]
+    assert state.pipeline_status == "ready"
 
 
 async def test_resave_failure_after_final_save_failure_does_not_raise(monkeypatch, caplog):

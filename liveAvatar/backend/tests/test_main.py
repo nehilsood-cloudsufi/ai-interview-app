@@ -26,6 +26,9 @@ def test_all_expected_routes_registered():
         "/api/session/stop",
         "/api/transcript/finalize",
         "/api/transcript/{session_id}",
+        "/api/interview",
+        "/api/interview/{interview_id}/state",
+        "/api/interview/{interview_id}/chat",
     }
     assert expected.issubset(paths)
 

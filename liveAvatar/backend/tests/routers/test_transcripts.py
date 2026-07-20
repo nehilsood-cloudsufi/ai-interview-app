@@ -258,11 +258,23 @@ def test_finalize_summary_failure_still_enqueues_pipeline(
     assert saved["pipeline_status"] == "interviewed"
 
 
-def test_finalize_double_finalize_short_circuits(client, patch_settings, tmp_transcripts_dir, monkeypatch):
+@respx.mock
+def test_finalize_double_finalize_short_circuits_and_returns_saved_summary(
+    client, patch_settings, tmp_transcripts_dir, monkeypatch
+):
     # A retried finalize call (or the UI double-submitting) must not
     # re-enqueue the pipeline or re-save over a record the pipeline may
-    # already be mutating in the background.
-    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+    # already be mutating in the background - but it also must not hand back
+    # a lossy empty summary; it should reflect what was actually saved.
+    patch_settings(
+        gemini_api_key="gem-key",
+        gemini_base_url=GEMINI_BASE_URL,
+        transcripts_local_dir=str(tmp_transcripts_dir),
+        gcs_bucket=None,
+    )
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "Nice summary"}}]})
+    )
     calls = _stub_enqueue(monkeypatch)
 
     save_calls: list = []
@@ -297,7 +309,7 @@ def test_finalize_double_finalize_short_circuits(client, patch_settings, tmp_tra
 
     assert second.status_code == 200
     assert second.json() == {
-        "summary": "",
+        "summary": "Nice summary",
         "summary_ok": True,
         "pipeline_status": "ready",
         "scorecard": None,
@@ -307,6 +319,82 @@ def test_finalize_double_finalize_short_circuits(client, patch_settings, tmp_tra
     # No second enqueue, no second save.
     assert len(calls) == 1
     assert len(save_calls) == 1
+
+
+def test_finalize_double_finalize_short_circuit_without_saved_record_falls_back_to_empty(
+    client, patch_settings, tmp_transcripts_dir, monkeypatch
+):
+    # If, for whatever reason, no record was ever persisted (or the lookup
+    # itself fails), the short-circuit response falls back to the legacy
+    # empty-summary shape rather than raising.
+    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+
+    state = _seed_interview()
+    state.pipeline_status = "scouting"  # claimed by a finalize that never got this far to save
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={
+            "session_id": "no-record",
+            "interview_id": state.interview_id,
+            "turns": [{"role": "candidate", "text": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "summary": "",
+        "summary_ok": True,
+        "pipeline_status": "scouting",
+        "scorecard": None,
+        "insights": None,
+        "recommendation": None,
+    }
+
+
+def test_finalize_failed_save_resets_claim_so_retry_proceeds(
+    client, patch_settings, tmp_transcripts_dir, monkeypatch
+):
+    # A finalize that fails to save must reset state.pipeline_status back to
+    # None so the claim doesn't permanently lock out a retry - the retried
+    # call should regenerate the summary and re-enqueue the pipeline.
+    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+    calls = _stub_enqueue(monkeypatch)
+
+    from app.services import transcript_store
+
+    real_save = transcript_store.save
+    should_fail = {"value": True}
+
+    async def _flaky_save(session_id, payload):
+        if should_fail["value"]:
+            raise OSError("disk full")
+        await real_save(session_id, payload)
+
+    monkeypatch.setattr(transcript_store, "save", _flaky_save)
+
+    state = _seed_interview()
+    body = {
+        "session_id": "e4",
+        "interview_id": state.interview_id,
+        "turns": [{"role": "candidate", "text": "hello"}],
+    }
+
+    first = client.post("/api/transcript/finalize", json=body)
+    assert first.status_code == 500
+    # The claim must be released, not left as "interviewed" - otherwise the
+    # retry below would short-circuit into the idempotency guard instead of
+    # actually retrying.
+    assert state.pipeline_status is None
+    assert len(calls) == 0
+
+    should_fail["value"] = False
+    second = client.post("/api/transcript/finalize", json=body)
+
+    assert second.status_code == 200
+    assert second.json()["pipeline_status"] == "interviewed"
+    assert state.pipeline_status == "interviewed"
+    assert len(calls) == 1
 
 
 def test_finalize_without_interview_id_keeps_legacy_shape(client, patch_settings, tmp_transcripts_dir):

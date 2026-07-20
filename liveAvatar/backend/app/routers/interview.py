@@ -52,8 +52,9 @@ async def get_interview_state(interview_id: str):
         "scorecard": dataclasses.asdict(state.scorecard) if state.scorecard is not None else None,
         "recommendation": dataclasses.asdict(state.recommendation) if state.recommendation is not None else None,
         "vendor_profile": {
-            # Deliberately excludes doc_text - it can be huge (matches the
-            # finalize route's enrichment).
+            # Serializes the profile's four fields (company_name, website,
+            # contact_name, contact_role); matches the finalize route's
+            # enrichment.
             "company_name": profile.company_name,
             "website": profile.website,
             "contact_name": profile.contact_name,
