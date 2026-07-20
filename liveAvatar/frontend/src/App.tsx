@@ -80,7 +80,11 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex flex-col overflow-hidden">
+    // h-screen (definite), NOT min-h-screen: a column flex container with auto
+    // height sizes itself from its children's CONTENT, so a growing transcript
+    // stretched every shell past the viewport ("UI keeps growing", seen live in
+    // chat mode 2026-07-20) instead of letting the min-h-0 chain scroll it.
+    <div className="h-screen bg-slate-950 text-white flex flex-col overflow-hidden">
       <div className="flex-1 flex flex-col h-screen overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-slate-950 to-black">
         {/* Header */}
         <div className="p-4 md:px-8 md:py-5 flex justify-between items-center shrink-0 border-b border-slate-800/60">
