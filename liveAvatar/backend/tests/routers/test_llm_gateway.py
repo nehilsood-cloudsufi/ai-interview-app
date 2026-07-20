@@ -135,7 +135,7 @@ def test_non_stream_happy_path(client, monkeypatch):
     assert len(calls) == 1
     assert calls[0]["state"] is state
     assert calls[0]["user_text"] == "We build ML pipelines."
-    assert "verify_identity" in calls[0]["questionnaire"]
+    assert "company_overview" in calls[0]["questionnaire"]
     assert calls[0]["rubric"]
 
 

@@ -32,8 +32,8 @@ def test_fresh_interview_state(client):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "created"
-    # The start node is verify_identity; its topic comes from the shipped questionnaire.
-    assert body["current_topic"] == "identity_verification"
+    # The start node is the questionnaire's first question (company_overview).
+    assert body["current_topic"] == "company_overview"
 
     # Scoring is a single holistic pass at finalize - the live-state snapshot
     # deliberately carries no scorecard.

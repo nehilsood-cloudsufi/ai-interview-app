@@ -20,7 +20,7 @@ def test_create_returns_state_with_defaults():
     assert state.interview_id
     assert state.gateway_token
     assert state.status == "created"
-    assert state.current_node_id == "verify_identity"
+    assert state.current_node_id == "company_overview"  # first node of the shipped questionnaire
     assert state.followup_count == 0
     assert state.turns == []
     assert state.scout_findings == []

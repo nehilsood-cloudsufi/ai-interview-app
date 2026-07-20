@@ -55,8 +55,8 @@ def load_questionnaire(path: Path) -> dict[str, QuestionNode]:
 
 
 def _validate_questionnaire(nodes: dict[str, QuestionNode]) -> None:
-    if "verify_identity" not in nodes:
-        raise ValueError("questionnaire must define a 'verify_identity' start node")
+    if not nodes:
+        raise ValueError("questionnaire must define at least one question")
 
     for node in nodes.values():
         if not node.branches:
@@ -105,6 +105,12 @@ def _resolve_path(path_str: str) -> Path:
 @lru_cache(maxsize=1)
 def get_questionnaire() -> dict[str, QuestionNode]:
     return load_questionnaire(_resolve_path(settings.questionnaire_path))
+
+
+def get_start_node_id() -> str:
+    """The interview's first question: the first node in the questionnaire
+    file (dicts preserve insertion order)."""
+    return next(iter(get_questionnaire()))
 
 
 @lru_cache(maxsize=1)

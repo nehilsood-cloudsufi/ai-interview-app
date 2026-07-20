@@ -126,7 +126,7 @@ async def test_advances_on_complete_answer(patch_settings):
     assert schema_spec["strict"] is True
     assert set(schema_spec["schema"]["required"]) == {"reply", "answer_complete", "branch_signal"}
     assert body["reasoning_effort"] == "low"
-    assert body["max_tokens"] == 500
+    assert body["max_tokens"] == 800
     assert body["messages"][0]["role"] == "system"
     system_content = body["messages"][0]["content"]
     assert "Acme Corp" in system_content

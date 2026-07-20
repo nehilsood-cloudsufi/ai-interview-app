@@ -32,7 +32,9 @@ class InterviewState:
     llm_config_id: str | None = None
     secret_id: str | None = None
     context_id: str | None = None
-    current_node_id: str = "verify_identity"
+    # Set by create() from the questionnaire's first node; the empty default
+    # only exists so tests can construct states directly with explicit ids.
+    current_node_id: str = ""
     followup_count: int = 0
     turns: list[TranscriptTurn] = field(default_factory=list)
     scout_findings: list[ScoutFinding] = field(default_factory=list)
@@ -44,11 +46,14 @@ _interviews: dict[str, InterviewState] = {}
 
 
 def create(profile: VendorProfile) -> InterviewState:
+    from app.services.interview_config import get_start_node_id
+
     prune_older_than()
     state = InterviewState(
         interview_id=uuid.uuid4().hex,
         gateway_token=secrets.token_urlsafe(32),
         vendor_profile=profile,
+        current_node_id=get_start_node_id(),
     )
     _interviews[state.interview_id] = state
     return state

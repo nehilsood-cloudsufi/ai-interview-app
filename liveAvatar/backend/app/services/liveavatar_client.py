@@ -8,7 +8,15 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-async def create_context(api_key: str, full_prompt: str) -> str:
+# Spoken by the avatar before any LLM call. The legacy (candidate-interview)
+# default; gateway mode passes a per-vendor greeting instead.
+DEFAULT_OPENING_TEXT = (
+    "Hello! I've reviewed the documents you shared. "
+    "Let me know when you're ready to begin the technical interview."
+)
+
+
+async def create_context(api_key: str, full_prompt: str, opening_text: str = DEFAULT_OPENING_TEXT) -> str:
     unique_name = f"AI Interviewer w/ Context {uuid.uuid4().hex[:8]}"
     async with httpx.AsyncClient() as client:
         context_res = await client.post(
@@ -16,7 +24,7 @@ async def create_context(api_key: str, full_prompt: str) -> str:
             json={
                 "name": unique_name,
                 "prompt": full_prompt[:25000],  # Keep within reasonable limits
-                "opening_text": "Hello! I've reviewed the documents you shared. Let me know when you're ready to begin the technical interview.",
+                "opening_text": opening_text,
             },
             headers={"X-API-KEY": api_key},
         )

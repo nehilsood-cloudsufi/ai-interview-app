@@ -2,26 +2,21 @@
 #
 # Each node is walked deterministically by app/services/host_agent.py - the
 # LLM only phrases the "ask" naturally and reports which branch signal fired.
+# The FIRST question in this file is the interview's start node.
 # Every node needs a "default" branch (the else-branch when no specific
 # signal matches) unless its only branch already points straight to "END".
+#
+# There is deliberately no identity-verification question: the vendor typed
+# their own details into the intake form moments earlier, so asking them to
+# confirm wastes the interview's opening (observed live 2026-07-20: a whole
+# session got consumed re-verifying). The profile is trusted as entered.
 questions:
-  - id: verify_identity
-    topic: identity_verification
-    ask: >
-      Greet the vendor warmly by name and company. Verbally confirm that
-      their company name, contact name, and role match what they entered
-      at intake, and ask them to correct anything that's wrong.
-    rubric_categories: []
-    max_followups: 1
-    branches:
-      - signal: default
-        next: company_overview
-
   - id: company_overview
     topic: company_overview
     ask: >
-      Ask the vendor for a brief overview of their company: what they do,
-      how long they've been operating, and which industries they serve.
+      Greet the vendor warmly by name. Then ask for a brief overview of
+      their company: what they do, how long they've been operating, and
+      which industries they serve.
     rubric_categories: [experience]
     max_followups: 1
     branches:

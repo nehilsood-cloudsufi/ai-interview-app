@@ -45,7 +45,9 @@ _GEMINI_TIMEOUT_SECONDS = 8.0
 # Bounds the spoken reply. Gemini counts thinking tokens against this cap
 # (~150 at low effort, measured live), so keep enough headroom that the JSON
 # never truncates mid-object - a truncated turn is worse than a long one.
-_MAX_TOKENS = 500
+# 800 (was 500): replies now carry acknowledgment + the next question, and a
+# 500-cap turn was observed truncating mid-JSON live on 2026-07-20.
+_MAX_TOKENS = 800
 
 # Strict structured output: the compat endpoint constrains decoding to this
 # schema, which (with parse_llm_json as the belt) prevents the malformed-JSON

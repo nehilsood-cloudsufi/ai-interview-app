@@ -32,6 +32,19 @@ GATEWAY_CONTEXT_PROMPT = (
 )
 
 
+def _gateway_opening_text(state) -> str:
+    """Spoken by the avatar the moment the session connects, before any
+    gateway call. Greets the vendor by name (details come straight from the
+    intake form - deliberately no verbal re-verification) and invites them to
+    kick off; their first utterance then triggers the Host's first question."""
+    profile = state.vendor_profile
+    return (
+        f"Hello {profile.contact_name}, welcome! I'm Noor, and I'll be running "
+        f"today's evaluation with {profile.company_name}. Whenever you're "
+        "ready, just say hello and we'll get started."
+    )
+
+
 async def _create_gateway_session(body: CreateSessionRequest) -> dict:
     """Gateway mode: register a per-interview Custom LLM (secret + LLM config
     pointing back at our /llm/{interview_id}/v1 endpoint) plus a minimal
@@ -48,7 +61,7 @@ async def _create_gateway_session(body: CreateSessionRequest) -> dict:
         secret_id = await create_llm_secret(liveavatar_key, state.gateway_token)
         gateway_base_url = f"{settings.public_base_url.rstrip('/')}/llm/{body.interview_id}/v1"
         llm_config_id = await create_llm_configuration(liveavatar_key, secret_id, gateway_base_url)
-        context_id = await create_context(liveavatar_key, GATEWAY_CONTEXT_PROMPT)
+        context_id = await create_context(liveavatar_key, GATEWAY_CONTEXT_PROMPT, _gateway_opening_text(state))
 
         token_data = await create_session_token(liveavatar_key, llm_config_id, context_id, None)
 

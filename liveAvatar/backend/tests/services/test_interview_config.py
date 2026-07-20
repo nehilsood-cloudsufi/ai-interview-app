@@ -54,12 +54,12 @@ def test_load_questionnaire_valid(tmp_path):
     assert nodes["closing"].branches[0].next == "END"
 
 
-def test_load_questionnaire_missing_start_node_raises(tmp_path):
+def test_load_questionnaire_empty_raises(tmp_path):
     data = _valid_questionnaire_data()
-    data["questions"] = [q for q in data["questions"] if q["id"] != "verify_identity"]
+    data["questions"] = []
     path = _write_yaml(tmp_path / "q.yaml", data)
 
-    with pytest.raises(ValueError, match="verify_identity"):
+    with pytest.raises(ValueError, match="at least one question"):
         load_questionnaire(path)
 
 
@@ -138,8 +138,11 @@ def test_load_rubric_weights_within_tolerance_is_allowed(tmp_path):
 
 def test_shipped_questionnaire_loads_and_validates():
     nodes = load_questionnaire(Path(settings.questionnaire_path))
-    assert "verify_identity" in nodes
-    assert nodes["verify_identity"].branches
+    # The shipped tree starts at company_overview - identity verification was
+    # deliberately removed (the intake form is the source of truth).
+    assert "verify_identity" not in nodes
+    assert next(iter(nodes)) == "company_overview"
+    assert nodes["company_overview"].branches
 
 
 def test_shipped_rubric_loads_and_weights_sum_to_one():
@@ -160,7 +163,7 @@ def test_get_questionnaire_and_rubric_are_cached_singletons(clear_config_cache):
     questionnaire = get_questionnaire()
     rubric = get_rubric()
 
-    assert "verify_identity" in questionnaire
+    assert "company_overview" in questionnaire
     assert abs(sum(c.weight for c in rubric.values()) - 1.0) < 0.01
     assert get_questionnaire() is questionnaire
     assert get_rubric() is rubric
@@ -171,5 +174,5 @@ def test_get_questionnaire_resolves_relative_to_backend_root(clear_config_cache,
     # not depend on the process CWD.
     monkeypatch.chdir(tmp_path)
 
-    assert "verify_identity" in get_questionnaire()
+    assert "company_overview" in get_questionnaire()
     assert get_rubric()
