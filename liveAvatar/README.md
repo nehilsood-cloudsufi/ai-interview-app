@@ -31,7 +31,7 @@ The application is configured for a Single Unified Cloud Run Service deployment.
 ## Features
 
 - **Conversational onboarding:** No forms — the avatar greets the vendor and captures name, role, company, and website from a natural self-introduction, then reads the details back for confirmation.
-- **Fixed, unbiased interview script:** A linear questionnaire (`backend/data/questionnaire.yaml`); every vendor gets the same questions, and scout research never reaches the interviewer.
+- **Fixed, unbiased interview script:** A linear per-domain questionnaire (`backend/data/questionnaires/{domain}.yaml`); every vendor in a domain gets the same questions, and scout research never reaches the interviewer.
 - **Text-chat fallback:** A claude.ai-style chat UI for low-bandwidth situations — selectable up front, or suggested automatically when network quality drops mid-call (one-way avatar → chat switch that carries the transcript over).
 - **Live transcript:** Interviewer/candidate turns captured in real time from the SDK's transcription events, in an internally-scrolling panel.
 - **Post-interview agent pipeline:** Scout → Evaluator → Coordinator run in the background immediately after the interview; the summary view shows the pipeline status and fills in the rubric scorecard, research findings, and follow-up recommendation as they land. Failures never lose the transcript.
