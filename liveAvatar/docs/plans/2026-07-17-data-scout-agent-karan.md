@@ -1,5 +1,16 @@
 # Data Scout Agent — Work Package for Karan
 
+> ## ⚠️ Status (2026-07-20): superseded — the Scout has been built, differently
+>
+> The 2026-07-20 meeting changed the Scout's design, and it has since been **implemented** on the MVP-1 branch (`app/services/scout_agent.py` + `tests/services/test_scout_agent.py`, orchestrated by `app/services/pipeline.py`). Do **not** build from this document. What changed:
+>
+> - **Post-interview only.** The Scout runs as step 1 of the background pipeline *after* the interview ends — never during it. Its findings go to the Evaluator and the results UI, **never into the Host's prompt** (the interview must stay unbiased). §1's diagram and Milestone C are obsolete.
+> - **No document digestion.** Document upload was removed from the product entirely; the web-research half (Gemini native API + `google_search` grounding, exactly as §5 Milestone B describes) is the whole agent. Milestone A is obsolete.
+> - **Entry point is `scout_agent.run(state)`** (not `run_initial_scout`), called by `pipeline.py`; it soft-fails to `[]` and honors `SCOUT_ENABLED`, as this doc specified. The `ScoutFinding` contract (§3) survived unchanged.
+> - **No separate insights panel** (Milestone D): findings render in the post-interview summary view, which polls `GET /api/interview/{id}/state`.
+>
+> The patterns/gotchas sections (§4, §8) are still good onboarding reading. Current truth: `../KT.md`, root `CLAUDE.md`.
+
 **Owner:** Karan (intern) · **Mentor/reviewer:** Nehil · **Target:** ~4–5 working days of effort, within the Week 2–3 window of the Resonance plan
 **Parent plan:** `liveAvatar/docs/plans/2026-07-17-resonance-multi-agent-plan.md` (read the Context, Global Constraints, and Phase 3 sections before starting)
 

@@ -1,6 +1,7 @@
 # LLM Gateway Notes — Phase 0 Spike Findings
 
 **Date:** 2026-07-17 · **Spike:** Task 0.1 of `docs/plans/2026-07-17-resonance-multi-agent-plan.md`
+**Status (2026-07-20):** still accurate — this observed contract is what `app/routers/llm_gateway.py` + `app/services/host_agent.py` implement today (task ids A4/B1/B2 below map to `sessions.py`'s per-interview registration, the Host agent, and the gateway route respectively).
 **Setup:** `app/routers/spike_llm_gateway.py` exposed via a `cloudflared` tunnel, registered as a LiveAvatar Custom LLM (`scripts/spike_llm_gateway_setup.py`), one live sandbox session with 5 conversational turns.
 
 **Verdict: the backend-as-LLM architecture works.** The avatar spoke our hardcoded reply on every turn. No blockers found; Tasks A4/B1/B2 can proceed. Everything below is the observed contract they must match.

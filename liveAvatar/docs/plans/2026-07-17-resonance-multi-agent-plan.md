@@ -1,5 +1,21 @@
 # Resonance Multi-Agent Interview — The Plan, Explained
 
+> ## ⚠️ Status (2026-07-20): implemented, then partially superseded
+>
+> All phases of this plan were built and verified live. Then the 2026-07-20 "Agent Interactions" meeting simplified the architecture, and the **MVP-1 branch** (`feature/resonance-mvp1`, PR #2) changed several of this document's decisions. Read this plan as the historical design record; for current truth see `../KT.md` and the root `CLAUDE.md`. The deltas:
+>
+> | This plan says | What's true now (MVP-1) |
+> |---|---|
+> | Branching interview ("questions adapt to answers") | **Linear fixed script** — branching machinery removed; every vendor gets the same questions |
+> | Appraiser scores each answer; **live scorecard** fills during the session | Renamed **Evaluator**; one holistic pass **after** the interview; no live scorecard (vendor must not watch their scores) |
+> | Scout runs **during** the interview and feeds findings into the Host's prompt | Scout runs **strictly post-interview** in a background pipeline; it never reaches the Host (unbiased-interview rule) |
+> | Intake form (`POST /api/vendor-profile`) + optional document upload | **Removed** — no forms, no uploads; the Host captures the profile conversationally (`profile_updates`) and confirms it |
+> | First node is `verify_identity`; Host "verbally verifies" details | Onboarding = `intro` → `confirm_profile` nodes; natural self-introduction, then read-back confirmation |
+> | Legacy mode fallback when `PUBLIC_BASE_URL` unset | **Removed** — gateway is the only mode (400/503 without `interview_id`/`PUBLIC_BASE_URL`) |
+> | Coordinator drafts the invite (agenda + email, Gemini call) | Coordinator is a **pure threshold rule** → recommendation card; email drafting removed |
+> | Scores reach the UI by polling every few seconds | Still polling, but for the post-interview `pipeline_status` (interviewed → scouting → evaluating → ready/failed) |
+> | — (not in this plan) | **Added:** low-bandwidth text-chat fallback (`POST /api/interview/{id}/chat`), one-way avatar→chat switch, `VITE_SHOW_SELF_VIEW` flag |
+
 **What this document is:** the implementation plan for turning our `liveAvatar/` POC into the Resonance vendor-evaluation experience, written to be read and understood — not just executed. Every phase explains *what* we're building, *why* it's built that way, and *how we'll know it works*.
 
 **Companion docs:**
