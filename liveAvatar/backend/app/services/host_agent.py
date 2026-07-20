@@ -87,7 +87,7 @@ _PROFILE_FIELDS = ("company_name", "website", "contact_name", "contact_role")
 class TurnResult:
     reply: str  # what the avatar says next
     answer_complete: bool  # True -> current question answered; state advanced
-    completed_question: QuestionNode | None  # set when answer_complete (Appraiser hook)
+    completed_question: QuestionNode | None  # set when answer_complete (Evaluator hook)
     answer_text: str  # user's full answer for the completed question ("" if not complete)
 
 
@@ -217,7 +217,7 @@ async def handle_turn(
     rubric: dict[str, RubricCategory] | None,
 ) -> TurnResult:
     """Process one user utterance: one Gemini call, then code-driven state
-    mutation. `rubric` is accepted for interface parity with the Appraiser
+    mutation. `rubric` is accepted for interface parity with the Evaluator
     flow; the Host itself does not score answers."""
     if state.current_node_id == END_NODE_ID:
         return TurnResult(

@@ -6,7 +6,7 @@ import respx
 
 from app.config import settings
 from app.routers import llm_gateway
-from app.services import appraiser_agent, gemini_client, host_agent, interview_state
+from app.services import evaluator_agent, gemini_client, host_agent, interview_state
 from app.services.host_agent import TurnResult
 from app.services.interview_config import QuestionNode
 from app.services.interview_state import VendorProfile
@@ -394,7 +394,7 @@ def _completed_node() -> QuestionNode:
 
 async def test_completed_answer_does_not_trigger_scoring(async_client, monkeypatch):
     # Scoring is a single holistic pass at finalize; completing an answer
-    # mid-interview must NOT call the appraiser.
+    # mid-interview must NOT call the evaluator.
     state = _seed_interview()
     node = _completed_node()
     _fake_handle_turn(
@@ -403,9 +403,9 @@ async def test_completed_answer_does_not_trigger_scoring(async_client, monkeypat
     )
 
     def _must_not_run(*args, **kwargs):
-        raise AssertionError("appraiser must not be called from the gateway")
+        raise AssertionError("evaluator must not be called from the gateway")
 
-    monkeypatch.setattr(appraiser_agent, "score_interview", _must_not_run)
+    monkeypatch.setattr(evaluator_agent, "score_interview", _must_not_run)
 
     response = await async_client.post(_url(state.interview_id), json=_openai_body(), headers=_auth(state))
 

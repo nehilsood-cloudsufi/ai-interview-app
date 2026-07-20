@@ -25,8 +25,7 @@ _SETTINGS_IMPORTERS = [
     "app.services.liveavatar_client",
     "app.services.gemini_client",
     "app.services.host_agent",
-    "app.services.appraiser_agent",
-    "app.services.coordinator_agent",
+    "app.services.evaluator_agent",
     "app.services.transcript_store",
     "app.services.summary_service",
 ]

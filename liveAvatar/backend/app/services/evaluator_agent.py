@@ -1,12 +1,12 @@
-"""Appraiser agent: one holistic scoring pass over the finished interview.
+"""Evaluator agent: one holistic scoring pass over the finished interview.
 
 `score_interview` runs once at finalize time (not per answer - a deliberate
 design choice: the vendor never watches scores move mid-interview, and every
 answer is judged in the context of the whole conversation). It renders the
-full transcript, makes a single Gemini call on the pro-tier model
-(`settings.gemini_pro_model` - latency doesn't matter after the interview
-ends, so we buy the better judgment), and asks for per-category scores with
-supporting evidence quotes.
+full transcript, plus any independent Data Scout research findings, makes a
+single Gemini call on the pro-tier model (`settings.gemini_pro_model` -
+latency doesn't matter after the interview ends, so we buy the better
+judgment), and asks for per-category scores with supporting evidence quotes.
 
 The LLM only proposes - all post-processing is done here in code: each score
 is clamped to an integer 0-5, category ids outside the rubric are dropped,
@@ -26,6 +26,7 @@ from app.config import settings
 from app.models import TranscriptTurn
 from app.services import gemini_client
 from app.services.interview_config import RubricCategory
+from app.services.interview_state import ScoutFinding
 from app.services.llm_json import parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -84,9 +85,19 @@ def _render_transcript(turns: list[TranscriptTurn]) -> str:
 
 
 def _render_system_content(rubric: dict[str, RubricCategory]) -> str:
-    lines = [settings.appraiser_system_prompt, "", "Rubric categories to score:"]
+    lines = [settings.evaluator_system_prompt, "", "Rubric categories to score:"]
     for category in rubric.values():
         lines.append(f"- {category.id} ({category.name}): {category.description}")
+    return "\n".join(lines)
+
+
+def _render_findings(scout_findings: list[ScoutFinding]) -> str:
+    lines = ["Independent research findings (from internet, not from the vendor):"]
+    for finding in scout_findings:
+        lines.append(f"- Topic: {finding.topic}")
+        lines.append(f"  Summary: {finding.summary}")
+        if finding.source_url:
+            lines.append(f"  Source: {finding.source_url}")
     return "\n".join(lines)
 
 
@@ -97,6 +108,7 @@ def _clamp_score(value: object) -> int:
 async def score_interview(
     turns: list[TranscriptTurn],
     rubric: dict[str, RubricCategory],
+    scout_findings: list[ScoutFinding],
 ) -> Scorecard:
     """Score the whole interview with a single pro-model Gemini call and
     return the final Scorecard. Raises on any HTTP/parse failure - the
@@ -108,11 +120,15 @@ async def score_interview(
     if not transcript_text:
         raise ValueError("Transcript is empty; nothing to score.")
 
+    user_content = f"Interview transcript:\n{transcript_text}"
+    if scout_findings:
+        user_content = f"{user_content}\n\n{_render_findings(scout_findings)}"
+
     payload = {
         "model": settings.gemini_pro_model,
         "messages": [
             {"role": "system", "content": _render_system_content(rubric)},
-            {"role": "user", "content": f"Interview transcript:\n{transcript_text}"},
+            {"role": "user", "content": user_content},
         ],
         "response_format": {
             "type": "json_schema",

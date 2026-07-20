@@ -1,4 +1,4 @@
-"""Shared Gemini chat call for all agents (host, appraiser, coordinator,
+"""Shared Gemini chat call for all agents (host, evaluator, coordinator,
 summary): one POST to the OpenAI-compatible endpoint with the standard auth
 headers, plus the model-fallback rule.
 
