@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 
-from app.services import interview_state
+from app.models import TranscriptTurn
+from app.services import host_agent, interview_state
+from app.services.host_agent import TurnResult
 from app.services.interview_state import ScoutFinding, VendorProfile
 
 
@@ -107,3 +109,94 @@ def test_end_node_has_null_topic(client):
     body = response.json()
     assert body["status"] == "finished"
     assert body["current_topic"] is None
+
+
+def _chat_url(interview_id: str) -> str:
+    return f"/api/interview/{interview_id}/chat"
+
+
+def _fake_handle_turn(monkeypatch, reply="Great, thanks.", next_node_id=None):
+    """Mirrors the real handle_turn's observable side effects (appends both
+    turns, may advance current_node_id) without a live Gemini call - matches
+    the mocking pattern used by tests/routers/test_llm_gateway.py."""
+    calls = []
+
+    async def fake(state, user_text, questionnaire, rubric):
+        calls.append({"state": state, "user_text": user_text, "questionnaire": questionnaire, "rubric": rubric})
+        state.turns.append(TranscriptTurn(role="candidate", text=user_text))
+        state.turns.append(TranscriptTurn(role="interviewer", text=reply))
+        if next_node_id is not None:
+            state.current_node_id = next_node_id
+        return TurnResult(reply=reply, answer_complete=False, completed_question=None, answer_text="")
+
+    monkeypatch.setattr(host_agent, "handle_turn", fake)
+    return calls
+
+
+def test_chat_happy_path_appends_turns_and_not_done(client, monkeypatch):
+    state = _seed_interview()
+    calls = _fake_handle_turn(monkeypatch, reply="Thanks, tell me more.", next_node_id="ai_ml_capability")
+
+    response = client.post(_chat_url(state.interview_id), json={"text": "We build ML pipelines."})
+
+    assert response.status_code == 200
+    assert response.json() == {"reply": "Thanks, tell me more.", "done": False}
+
+    assert len(calls) == 1
+    assert calls[0]["user_text"] == "We build ML pipelines."
+
+    assert [(t.role, t.text) for t in state.turns] == [
+        ("candidate", "We build ML pipelines."),
+        ("interviewer", "Thanks, tell me more."),
+    ]
+
+
+def test_chat_done_true_when_turn_lands_on_end(client, monkeypatch):
+    state = _seed_interview()
+    _fake_handle_turn(monkeypatch, reply="Thanks for your time!", next_node_id=host_agent.END_NODE_ID)
+
+    response = client.post(_chat_url(state.interview_id), json={"text": "That's everything."})
+
+    assert response.status_code == 200
+    assert response.json() == {"reply": "Thanks for your time!", "done": True}
+
+
+def test_chat_unknown_interview_404(client, monkeypatch):
+    calls = _fake_handle_turn(monkeypatch)
+
+    response = client.post(_chat_url("nope"), json={"text": "hello"})
+
+    assert response.status_code == 404
+    assert calls == []
+
+
+def test_chat_empty_text_400(client, monkeypatch):
+    state = _seed_interview()
+    calls = _fake_handle_turn(monkeypatch)
+
+    response = client.post(_chat_url(state.interview_id), json={"text": "   "})
+
+    assert response.status_code == 400
+    assert calls == []
+
+
+def test_chat_transitions_status_from_created_to_active(client, monkeypatch):
+    state = _seed_interview()
+    assert state.status == "created"
+    _fake_handle_turn(monkeypatch)
+
+    response = client.post(_chat_url(state.interview_id), json={"text": "Hi there."})
+
+    assert response.status_code == 200
+    assert state.status == "active"
+
+
+def test_chat_leaves_active_status_unchanged(client, monkeypatch):
+    state = _seed_interview()
+    state.status = "active"
+    _fake_handle_turn(monkeypatch)
+
+    response = client.post(_chat_url(state.interview_id), json={"text": "Hi there."})
+
+    assert response.status_code == 200
+    assert state.status == "active"

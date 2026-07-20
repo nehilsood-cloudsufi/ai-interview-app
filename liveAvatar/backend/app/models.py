@@ -95,3 +95,13 @@ class InterviewStateResponse(BaseModel):
     current_topic: str | None
     insights: list[ScoutFindingModel]
     updated_at: str  # ISO-8601 UTC timestamp of this snapshot
+
+
+class ChatRequest(BaseModel):
+    text: str
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    # True once the questionnaire has reached host_agent.END_NODE_ID.
+    done: bool

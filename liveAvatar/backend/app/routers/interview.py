@@ -1,4 +1,5 @@
-"""Interview creation + live-state endpoints for the interviewer-side UI.
+"""Interview creation, live-state, and text-chat endpoints for the
+interviewer-side UI.
 
 POST creates a fresh in-memory interview with an empty vendor profile - the
 intake form is gone, so the profile is captured conversationally by the Host
@@ -6,8 +7,11 @@ agent's `intro`/`confirm_profile` onboarding nodes instead. GET is a
 read-only snapshot: status, current topic, and the Scout insights collected
 so far. No scorecard here - scoring is a single holistic pass at finalize
 time (deliberately never mid-interview), so the final scorecard arrives in
-the finalize response instead. Same-origin UI endpoints like the rest of
-/api - no auth.
+the finalize response instead. POST .../chat is the low-bandwidth text
+fallback: it drives the same Host agent turn as the avatar's
+/llm/{id}/v1/chat/completions gateway, but same-origin and unauthenticated
+(no gateway_token in the browser) since it never leaves our own backend.
+Same-origin UI endpoints like the rest of /api - no auth.
 """
 
 import dataclasses
@@ -15,9 +19,9 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
-from app.models import CreateInterviewResponse, InterviewStateResponse
-from app.services import interview_state
-from app.services.interview_config import get_questionnaire
+from app.models import ChatRequest, ChatResponse, CreateInterviewResponse, InterviewStateResponse
+from app.services import host_agent, interview_state
+from app.services.interview_config import get_questionnaire, get_rubric
 from app.services.interview_state import VendorProfile
 
 router = APIRouter()
@@ -42,3 +46,24 @@ async def get_interview_state(interview_id: str):
         "insights": [dataclasses.asdict(finding) for finding in state.scout_findings],
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@router.post("/api/interview/{interview_id}/chat", response_model=ChatResponse)
+async def chat(interview_id: str, body: ChatRequest):
+    """Same-origin text-chat fallback for low-bandwidth users: drives the
+    identical Host agent conversation as the avatar, without exposing the
+    per-interview gateway_token (unlike /llm/{id}/v1, which requires it)."""
+    state = interview_state.get(interview_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Unknown interview")
+
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    if state.status == "created":
+        state.status = "active"
+
+    result = await host_agent.handle_turn(state, text, get_questionnaire(), get_rubric())
+
+    return {"reply": result.reply, "done": state.current_node_id == host_agent.END_NODE_ID}
