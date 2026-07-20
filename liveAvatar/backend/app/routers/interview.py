@@ -1,10 +1,13 @@
-"""Live interview-state endpoint for the interviewer-side UI.
+"""Interview creation + live-state endpoints for the interviewer-side UI.
 
-Read-only snapshot of an in-memory interview: status, current topic, and the
-Scout insights collected so far. No scorecard here - scoring is a single
-holistic pass at finalize time (deliberately never mid-interview), so the
-final scorecard arrives in the finalize response instead. Same-origin UI
-endpoint like the rest of /api - no auth.
+POST creates a fresh in-memory interview with an empty vendor profile - the
+intake form is gone, so the profile is captured conversationally by the Host
+agent's `intro`/`confirm_profile` onboarding nodes instead. GET is a
+read-only snapshot: status, current topic, and the Scout insights collected
+so far. No scorecard here - scoring is a single holistic pass at finalize
+time (deliberately never mid-interview), so the final scorecard arrives in
+the finalize response instead. Same-origin UI endpoints like the rest of
+/api - no auth.
 """
 
 import dataclasses
@@ -12,11 +15,18 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 
-from app.models import InterviewStateResponse
+from app.models import CreateInterviewResponse, InterviewStateResponse
 from app.services import interview_state
 from app.services.interview_config import get_questionnaire
+from app.services.interview_state import VendorProfile
 
 router = APIRouter()
+
+
+@router.post("/api/interview", response_model=CreateInterviewResponse)
+async def create_interview():
+    state = interview_state.create(VendorProfile())
+    return {"interview_id": state.interview_id}
 
 
 @router.get("/api/interview/{interview_id}/state", response_model=InterviewStateResponse)

@@ -133,10 +133,13 @@ def test_load_rubric_weights_within_tolerance_is_allowed(tmp_path):
 
 def test_shipped_questionnaire_loads_and_validates():
     nodes = load_questionnaire(Path(settings.questionnaire_path))
-    # The shipped tree starts at company_overview - identity verification was
-    # deliberately removed (the intake form is the source of truth).
+    # The intake form is gone - the shipped tree now starts with the
+    # conversational onboarding nodes instead of jumping straight to
+    # company_overview.
     assert "verify_identity" not in nodes
-    assert next(iter(nodes)) == "company_overview"
+    assert next(iter(nodes)) == "intro"
+    assert nodes["intro"].next == "confirm_profile"
+    assert nodes["confirm_profile"].next == "company_overview"
     assert nodes["company_overview"].next == "ai_ml_depth"
 
 

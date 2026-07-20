@@ -50,7 +50,12 @@ class Settings:
         "only through the JSON fields described below.\n\n"
         "Always respond with a single JSON object of exactly this shape: "
         '{"reply": "<what you say to the vendor next>", '
-        '"answer_complete": <true if the current question is fully answered>}'
+        '"answer_complete": <true if the current question is fully answered>, '
+        '"profile_updates": {"company_name": <string or null>, '
+        '"website": <string or null>, "contact_name": <string or null>, '
+        '"contact_role": <string or null>}}. Set each profile_updates field '
+        "to the vendor's own words only when they just stated or corrected "
+        "that detail this turn; otherwise leave it null."
     )
     # Spoken by the Host without an LLM call once the interview has already
     # reached the END node.

@@ -32,16 +32,18 @@ GATEWAY_CONTEXT_PROMPT = (
 )
 
 
-def _gateway_opening_text(state) -> str:
+def _gateway_opening_text() -> str:
     """Spoken by the avatar the moment the session connects, before any
-    gateway call. Greets the vendor by name (details come straight from the
-    intake form - deliberately no verbal re-verification) and invites them to
-    kick off; their first utterance then triggers the Host's first question."""
-    profile = state.vendor_profile
+    gateway call. The intake form is gone, so the vendor profile is empty at
+    this point - onboarding happens conversationally via the `intro`
+    questionnaire node - so this is a generic opener rather than a by-name
+    greeting. Content is aligned with `intro`'s ask: name, role, company,
+    and website."""
     return (
-        f"Hello {profile.contact_name}, welcome! I'm Noor, and I'll be running "
-        f"today's evaluation with {profile.company_name}. Whenever you're "
-        "ready, just say hello and we'll get started."
+        "Hello, and welcome! I'm Noor, and I'll be running today's vendor "
+        "evaluation. To get us started, could you introduce yourself - your "
+        "name, your role, the company you represent, and that company's "
+        "website?"
     )
 
 
@@ -59,7 +61,7 @@ async def _create_gateway_session(body: CreateSessionRequest) -> dict:
         secret_id = await create_llm_secret(liveavatar_key, state.gateway_token)
         gateway_base_url = f"{settings.public_base_url.rstrip('/')}/llm/{body.interview_id}/v1"
         llm_config_id = await create_llm_configuration(liveavatar_key, secret_id, gateway_base_url)
-        context_id = await create_context(liveavatar_key, GATEWAY_CONTEXT_PROMPT, _gateway_opening_text(state))
+        context_id = await create_context(liveavatar_key, GATEWAY_CONTEXT_PROMPT, _gateway_opening_text())
 
         token_data = await create_session_token(liveavatar_key, llm_config_id, context_id, None)
 

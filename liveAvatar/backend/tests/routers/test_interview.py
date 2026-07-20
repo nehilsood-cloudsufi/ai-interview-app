@@ -19,6 +19,33 @@ def _url(interview_id: str) -> str:
     return f"/api/interview/{interview_id}/state"
 
 
+def test_create_interview_returns_empty_profile_interview(client):
+    response = client.post("/api/interview")
+
+    assert response.status_code == 200
+    body = response.json()
+    interview_id = body["interview_id"]
+    assert interview_id
+
+    state = interview_state.get(interview_id)
+    assert state is not None
+    assert state.vendor_profile == VendorProfile()
+
+
+def test_create_interview_id_resolves_via_get_state(client):
+    response = client.post("/api/interview")
+    interview_id = response.json()["interview_id"]
+
+    state_response = client.get(_url(interview_id))
+
+    assert state_response.status_code == 200
+    body = state_response.json()
+    assert body["status"] == "created"
+    # The start node is the questionnaire's first question (intro), which
+    # onboards the vendor conversationally now that the intake form is gone.
+    assert body["current_topic"] == "onboarding"
+
+
 def test_unknown_interview_404(client):
     response = client.get(_url("nope"))
     assert response.status_code == 404
@@ -32,8 +59,8 @@ def test_fresh_interview_state(client):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "created"
-    # The start node is the questionnaire's first question (company_overview).
-    assert body["current_topic"] == "company_overview"
+    # The start node is the questionnaire's first question (intro).
+    assert body["current_topic"] == "onboarding"
 
     # Scoring is a single holistic pass at finalize - the live-state snapshot
     # deliberately carries no scorecard.

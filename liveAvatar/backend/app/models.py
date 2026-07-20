@@ -84,6 +84,10 @@ class FinalizeTranscriptResponse(BaseModel):
     followup: FollowupProposalModel | None = None
 
 
+class CreateInterviewResponse(BaseModel):
+    interview_id: str
+
+
 class InterviewStateResponse(BaseModel):
     status: Literal["created", "active", "finished"]
     # Topic of the current questionnaire node; None when the interview has

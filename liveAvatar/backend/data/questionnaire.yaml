@@ -8,17 +8,41 @@
 # The FIRST question in this file is the interview's start node. The last
 # node's `next` must be the literal "END".
 #
-# There is deliberately no identity-verification question: the vendor typed
-# their own details into the intake form moments earlier, so asking them to
-# confirm wastes the interview's opening (observed live 2026-07-20: a whole
-# session got consumed re-verifying). The profile is trusted as entered.
+# The intake form is gone: the vendor profile (contact name, role, company
+# name, website) is no longer submitted up front, so it is captured
+# naturally in conversation instead. `intro` invites the self-introduction
+# and `confirm_profile` reads it back for correction before the scripted
+# questionnaire proper begins - two ordinary linear nodes, no special-case
+# gate. `host_agent.py` extracts the profile via structured output
+# (`profile_updates`) on EVERY turn, not just these two nodes, so a later
+# mention or correction elsewhere in the interview still sticks.
 questions:
+  - id: intro
+    topic: onboarding
+    ask: >
+      Greet the vendor warmly and invite them to introduce themselves
+      naturally: their name, their role, the company they represent, and
+      that company's website. If their answer leaves any of those out,
+      the follow-up should naturally ask for just what's missing.
+    rubric_categories: []
+    max_followups: 2
+    next: confirm_profile
+
+  - id: confirm_profile
+    topic: onboarding
+    ask: >
+      Read the captured name, role, company, and website back to the
+      vendor and ask them to confirm it's correct. If they correct
+      anything, capture the correction.
+    rubric_categories: []
+    max_followups: 1
+    next: company_overview
+
   - id: company_overview
     topic: company_overview
     ask: >
-      Greet the vendor warmly by name. Then ask for a brief overview of
-      their company: what they do, how long they've been operating, and
-      which industries they serve.
+      Ask for a brief overview of their company: what they do, how long
+      they've been operating, and which industries they serve.
     rubric_categories: [experience]
     max_followups: 1
     next: ai_ml_depth

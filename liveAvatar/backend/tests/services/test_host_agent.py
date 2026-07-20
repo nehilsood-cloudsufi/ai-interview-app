@@ -1,3 +1,4 @@
+import dataclasses
 import json
 
 import httpx
@@ -80,9 +81,22 @@ def make_state(
     )
 
 
-def gemini_response(reply: str = "Thanks!", answer_complete: bool = True) -> httpx.Response:
-    content = json.dumps({"reply": reply, "answer_complete": answer_complete})
+def gemini_response(
+    reply: str = "Thanks!", answer_complete: bool = True, profile_updates: dict | None = None
+) -> httpx.Response:
+    body = {"reply": reply, "answer_complete": answer_complete}
+    if profile_updates is not None:
+        body["profile_updates"] = profile_updates
+    content = json.dumps(body)
     return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+
+NULL_PROFILE_UPDATES = {
+    "company_name": None,
+    "website": None,
+    "contact_name": None,
+    "contact_role": None,
+}
 
 
 @respx.mock
@@ -118,7 +132,7 @@ async def test_advances_on_complete_answer(patch_settings):
     schema_spec = body["response_format"]["json_schema"]
     assert schema_spec["name"] == "host_turn"
     assert schema_spec["strict"] is True
-    assert set(schema_spec["schema"]["required"]) == {"reply", "answer_complete"}
+    assert set(schema_spec["schema"]["required"]) == {"reply", "answer_complete", "profile_updates"}
     assert body["reasoning_effort"] == "low"
     assert body["max_tokens"] == 800
     assert body["messages"][0]["role"] == "system"
@@ -365,6 +379,102 @@ async def test_transcript_window_limits_history(patch_settings):
     assert "Latest answer." in user_content
 
 
+# --- profile_updates merge ---------------------------------------------------
+
+
+@respx.mock
+async def test_profile_updates_merged_into_vendor_profile(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=gemini_response(
+            profile_updates={
+                "company_name": "New Co",
+                "website": "https://newco.example",
+                "contact_name": "Sam Lee",
+                "contact_role": "VP Sales",
+            }
+        )
+    )
+    state = make_state()
+
+    await handle_turn(
+        state, "I'm Sam Lee, VP Sales at New Co - newco.example.", make_questionnaire(), make_rubric()
+    )
+
+    assert state.vendor_profile.company_name == "New Co"
+    assert state.vendor_profile.website == "https://newco.example"
+    assert state.vendor_profile.contact_name == "Sam Lee"
+    assert state.vendor_profile.contact_role == "VP Sales"
+
+
+@respx.mock
+async def test_all_null_profile_updates_leaves_profile_unchanged(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(return_value=gemini_response(profile_updates=NULL_PROFILE_UPDATES))
+    state = make_state()
+    original = dataclasses.replace(state.vendor_profile)
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    assert state.vendor_profile == original
+
+
+@respx.mock
+async def test_empty_string_profile_updates_are_ignored(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=gemini_response(
+            profile_updates={"company_name": "   ", "website": "", "contact_name": None, "contact_role": None}
+        )
+    )
+    state = make_state()
+    original = dataclasses.replace(state.vendor_profile)
+
+    await handle_turn(state, "Hi.", make_questionnaire(), make_rubric())
+
+    assert state.vendor_profile == original
+
+
+@respx.mock
+async def test_late_correction_on_non_onboarding_node_overwrites(patch_settings):
+    # The merge runs on EVERY turn, not just onboarding nodes, so a
+    # correction mentioned mid-interview still sticks.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=gemini_response(
+            reply="Got it, thanks for the correction.",
+            profile_updates={
+                "company_name": "Acme Corp International",
+                "website": None,
+                "contact_name": None,
+                "contact_role": None,
+            },
+        )
+    )
+    state = make_state(node_id="ai_ml_depth")  # not intro/confirm_profile
+
+    await handle_turn(
+        state, "Actually, it's Acme Corp International now.", make_questionnaire(), make_rubric()
+    )
+
+    assert state.vendor_profile.company_name == "Acme Corp International"
+    # Untouched fields keep their prior values.
+    assert state.vendor_profile.contact_name == "Jane Doe"
+
+
+@respx.mock
+async def test_soft_fail_leaves_profile_untouched(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(return_value=httpx.Response(500))
+    state = make_state()
+    original = dataclasses.replace(state.vendor_profile)
+
+    result = await handle_turn(state, "Hello?", make_questionnaire(), make_rubric())
+
+    assert result.reply == settings.host_fallback_reply
+    assert state.vendor_profile == original
+
+
 # --- streaming turn ----------------------------------------------------------
 
 
@@ -373,8 +483,13 @@ def _sse(*deltas: str) -> str:
     return "".join(frames) + "data: [DONE]\n\n"
 
 
-def stream_response(reply="Thanks!", answer_complete=True, *, chunk_size=None) -> httpx.Response:
-    content = json.dumps({"reply": reply, "answer_complete": answer_complete})
+def stream_response(
+    reply="Thanks!", answer_complete=True, profile_updates: dict | None = None, *, chunk_size=None
+) -> httpx.Response:
+    body = {"reply": reply, "answer_complete": answer_complete}
+    if profile_updates is not None:
+        body["profile_updates"] = profile_updates
+    content = json.dumps(body)
     if chunk_size is None:
         deltas = [content]
     else:
@@ -476,6 +591,33 @@ async def test_stream_turn_http_error_before_emit_yields_fallback(patch_settings
     assert outcome.result.reply == settings.host_fallback_reply
     assert state.turns == []
     assert state.current_node_id == "company_overview"
+
+
+@respx.mock
+async def test_stream_turn_merges_profile_updates_identically(patch_settings):
+    # Buffered and streaming paths must drive state (including the profile
+    # merge) identically - both funnel through _apply_outcome.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=stream_response(
+            reply="Great, thanks!",
+            profile_updates={
+                "company_name": "New Co",
+                "website": None,
+                "contact_name": "Sam Lee",
+                "contact_role": None,
+            },
+        )
+    )
+    state = make_state()
+
+    await _collect_stream(state, "I'm Sam Lee at New Co.", make_questionnaire(), make_rubric())
+
+    assert state.vendor_profile.company_name == "New Co"
+    assert state.vendor_profile.contact_name == "Sam Lee"
+    # Fields not reported this turn keep their prior values.
+    assert state.vendor_profile.website == "https://acme.example"
+    assert state.vendor_profile.contact_role == "CTO"
 
 
 @respx.mock

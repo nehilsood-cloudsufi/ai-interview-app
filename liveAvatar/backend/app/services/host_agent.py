@@ -3,10 +3,12 @@ structured Gemini turn.
 
 Per user utterance, `handle_turn` makes a single call to Gemini's
 OpenAI-compatible chat endpoint (same raw-httpx pattern as
-`summary_service`) asking for JSON `{"reply", "answer_complete"}`. The LLM
-only phrases the reply and judges whether the current question is fully
-answered - all state mutation (appending turns, advancing `current_node_id`
-along the fixed linear script, follow-up accounting) is done here in code.
+`summary_service`) asking for JSON `{"reply", "answer_complete",
+"profile_updates"}`. The LLM only phrases the reply, judges whether the
+current question is fully answered, and reports any vendor profile details
+just stated/corrected - all state mutation (appending turns, advancing
+`current_node_id` along the fixed linear script, follow-up accounting,
+merging profile_updates into `state.vendor_profile`) is done here in code.
 
 Answer-text collection: `state.followup_count` counts the follow-up rounds
 already exchanged for the current question, and each round appended exactly
@@ -27,7 +29,7 @@ from app.config import settings
 from app.models import TranscriptTurn
 from app.services import gemini_client
 from app.services.interview_config import QuestionNode, RubricCategory
-from app.services.interview_state import InterviewState
+from app.services.interview_state import InterviewState, VendorProfile
 from app.services.llm_json import parse_llm_json
 from app.services.reply_stream import ReplyStreamExtractor
 
@@ -53,14 +55,32 @@ _MAX_TOKENS = 800
 # Strict structured output: the compat endpoint constrains decoding to this
 # schema, which (with parse_llm_json as the belt) prevents the malformed-JSON
 # turns observed in the 2026-07-18 live test.
+# `reply` must stay the FIRST property - the streaming extractor
+# (reply_stream.ReplyStreamExtractor) depends on it being emitted first.
+# `profile_updates` is required (with all four of ITS properties required
+# too) because the Gemini compat endpoint's strict mode rejects a schema that
+# omits a property from `required`; null is how the LLM says "nothing new".
 _TURN_SCHEMA = {
     "type": "object",
     "properties": {
         "reply": {"type": "string"},
         "answer_complete": {"type": "boolean"},
+        "profile_updates": {
+            "type": "object",
+            "properties": {
+                "company_name": {"type": ["string", "null"]},
+                "website": {"type": ["string", "null"]},
+                "contact_name": {"type": ["string", "null"]},
+                "contact_role": {"type": ["string", "null"]},
+            },
+            "required": ["company_name", "website", "contact_name", "contact_role"],
+        },
     },
-    "required": ["reply", "answer_complete"],
+    "required": ["reply", "answer_complete", "profile_updates"],
 }
+
+# Keys of profile_updates / VendorProfile fields it may overwrite.
+_PROFILE_FIELDS = ("company_name", "website", "contact_name", "contact_role")
 
 
 @dataclass
@@ -81,23 +101,29 @@ def _render_transcript(turns: list[TranscriptTurn]) -> str:
     return "\n".join(lines)
 
 
+_NOT_CAPTURED = "(not captured yet)"
+
+
+def _display(value: str | None) -> str:
+    return value.strip() if value and value.strip() else _NOT_CAPTURED
+
+
 def _render_system_content(
     state: InterviewState, node: QuestionNode, questionnaire: dict[str, QuestionNode]
 ) -> str:
     profile = state.vendor_profile
-    contact = profile.contact_name
-    if profile.contact_role:
-        contact += f" ({profile.contact_role})"
 
     lines = [
         settings.host_system_prompt,
         "",
         "Vendor profile:",
-        f"- Company: {profile.company_name}",
-        f"- Contact: {contact}",
+        f"- Company: {_display(profile.company_name)}",
+        f"- Website: {_display(profile.website)}",
+        f"- Contact name: {_display(profile.contact_name)}",
+        f"- Contact role: {_display(profile.contact_role)}",
+        "- Whenever the vendor states or corrects any of these details, "
+        "report them in profile_updates; otherwise return null for all four fields.",
     ]
-    if profile.website:
-        lines.append(f"- Website: {profile.website}")
 
     next_node = questionnaire.get(node.next)  # None only for the literal END
     if next_node is None:
@@ -210,6 +236,7 @@ async def handle_turn(
         parsed = await _call_gemini(state, node, user_text, questionnaire)
         reply = str(parsed["reply"])
         answer_complete = bool(parsed.get("answer_complete"))
+        profile_updates = parsed.get("profile_updates")
     except Exception:
         logger.warning(
             "Host turn failed for interview %s at node %s; returning fallback reply.",
@@ -224,7 +251,20 @@ async def handle_turn(
             answer_text="",
         )
 
-    return _apply_outcome(state, node, user_text, reply, answer_complete)
+    return _apply_outcome(state, node, user_text, reply, answer_complete, profile_updates)
+
+
+def _merge_profile_updates(profile: VendorProfile, updates: dict | None) -> None:
+    """Overwrite only the fields the vendor actually gave a new value for -
+    null, missing, or whitespace-only entries leave the existing value alone.
+    Runs on EVERY turn (not just the onboarding nodes) so a late mention or
+    correction anywhere in the interview still sticks."""
+    if not updates:
+        return
+    for field_name in _PROFILE_FIELDS:
+        value = updates.get(field_name)
+        if isinstance(value, str) and value.strip():
+            setattr(profile, field_name, value.strip())
 
 
 def _apply_outcome(
@@ -233,10 +273,14 @@ def _apply_outcome(
     user_text: str,
     reply: str,
     answer_complete: bool,
+    profile_updates: dict | None,
 ) -> TurnResult:
     """Deterministic state mutation once the reply and judgement are in hand.
     Shared by `handle_turn` and `stream_turn` so both drive the state machine
-    identically."""
+    identically. Only reached on the success path - soft-fail returns before
+    ever calling this, so a failed turn never merges a profile update."""
+    _merge_profile_updates(state.vendor_profile, profile_updates)
+
     # Candidate texts already given for this node (see module docstring),
     # captured before the new turns are appended.
     prior_answer_texts = [
@@ -352,4 +396,5 @@ async def stream_turn(
         user_text,
         extractor.emitted + remaining,
         bool(parsed.get("answer_complete")),
+        parsed.get("profile_updates"),
     )
