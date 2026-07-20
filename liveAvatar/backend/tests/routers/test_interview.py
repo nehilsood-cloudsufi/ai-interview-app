@@ -1,5 +1,9 @@
 import dataclasses
+import json
 from datetime import datetime, timezone
+
+import httpx
+import respx
 
 from app.models import TranscriptTurn
 from app.services import host_agent, interview_state
@@ -7,6 +11,9 @@ from app.services.coordinator_agent import FollowupRecommendation
 from app.services.evaluator_agent import CategoryScore, Scorecard
 from app.services.host_agent import TurnResult
 from app.services.interview_state import ScoutFinding, VendorProfile
+
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+CHAT_URL = f"{GEMINI_BASE_URL}chat/completions"
 
 
 def _seed_interview(domain="ai_ml"):
@@ -210,8 +217,10 @@ def _fake_handle_turn(monkeypatch, reply="Great, thanks.", next_node_id=None):
     the mocking pattern used by tests/routers/test_llm_gateway.py."""
     calls = []
 
-    async def fake(state, user_text, questionnaire, rubric):
-        calls.append({"state": state, "user_text": user_text, "questionnaire": questionnaire, "rubric": rubric})
+    async def fake(state, user_text, questionnaire, rubric, mode="avatar"):
+        calls.append(
+            {"state": state, "user_text": user_text, "questionnaire": questionnaire, "rubric": rubric, "mode": mode}
+        )
         state.turns.append(TranscriptTurn(role="candidate", text=user_text))
         state.turns.append(TranscriptTurn(role="interviewer", text=reply))
         if next_node_id is not None:
@@ -233,6 +242,10 @@ def test_chat_happy_path_appends_turns_and_not_done(client, monkeypatch):
 
     assert len(calls) == 1
     assert calls[0]["user_text"] == "We build ML pipelines."
+    # The chat route always drives the Host in chat mode - never the avatar
+    # default - so terse typed answers are treated as complete, not pressed
+    # for elaboration.
+    assert calls[0]["mode"] == "chat"
 
     assert [(t.role, t.text) for t in state.turns] == [
         ("candidate", "We build ML pipelines."),
@@ -289,3 +302,52 @@ def test_chat_leaves_active_status_unchanged(client, monkeypatch):
 
     assert response.status_code == 200
     assert state.status == "active"
+
+
+@respx.mock
+def test_chat_route_gemini_request_includes_chat_mode_prompt(client, patch_settings):
+    # Integration: real handle_turn (not monkeypatched) drives the actual
+    # Gemini request; the chat route must pass mode="chat" so the terse-answer
+    # instructions land in the system prompt sent to Gemini.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    from app.config import settings
+
+    content = json.dumps({"reply": "Got it, thanks.", "answer_complete": True})
+    route = respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+    )
+    state = _seed_interview()
+
+    response = client.post(_chat_url(state.interview_id), json={"text": "GCP, done."})
+
+    assert response.status_code == 200
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_chat_mode_prompt in system_content
+
+
+@respx.mock
+def test_avatar_gateway_gemini_request_excludes_chat_mode_prompt(client, patch_settings):
+    # Contrast case: the same real handle_turn, driven through the avatar
+    # gateway (default mode), must NOT carry the chat-mode text.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    from app.config import settings
+
+    content = json.dumps({"reply": "Great, thanks.", "answer_complete": True})
+    route = respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+    )
+    state = _seed_interview()
+
+    response = client.post(
+        f"/llm/{state.interview_id}/v1/chat/completions",
+        json={
+            "model": "resonance-host",
+            "stream": False,
+            "messages": [{"role": "user", "content": "GCP, done."}],
+        },
+        headers={"Authorization": f"Bearer {state.gateway_token}"},
+    )
+
+    assert response.status_code == 200
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_chat_mode_prompt not in system_content

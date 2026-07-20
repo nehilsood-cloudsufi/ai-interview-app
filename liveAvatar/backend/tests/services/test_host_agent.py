@@ -641,3 +641,63 @@ async def test_stream_turn_truncated_trailing_json_keeps_spoken_reply(patch_sett
 def test_host_agent_settings_are_patchable(patch_settings):
     patched = patch_settings(gemini_api_key="sentinel-key")
     assert host_agent.settings is patched
+
+
+# --- mode-aware system prompt (H3: terse typed answers in chat mode) --------
+
+
+@respx.mock
+async def test_handle_turn_avatar_mode_omits_chat_prompt(patch_settings):
+    # Default mode ("avatar") must render byte-identical to before mode
+    # existed - no chat-mode text anywhere in the system content.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_chat_mode_prompt not in system_content
+
+
+@respx.mock
+async def test_handle_turn_chat_mode_appends_chat_prompt(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric(), mode="chat")
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_chat_mode_prompt in system_content
+
+
+@respx.mock
+async def test_stream_turn_avatar_mode_omits_chat_prompt(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=stream_response())
+    state = make_state()
+
+    await _collect_stream(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_chat_mode_prompt not in system_content
+
+
+@respx.mock
+async def test_stream_turn_chat_mode_appends_chat_prompt(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=stream_response())
+    state = make_state()
+
+    outcome = host_agent.StreamedTurn()
+    deltas = [
+        d
+        async for d in host_agent.stream_turn(
+            state, "We build ML pipelines.", make_questionnaire(), make_rubric(), outcome, mode="chat"
+        )
+    ]
+    assert deltas  # sanity: the turn still streamed a reply
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_chat_mode_prompt in system_content

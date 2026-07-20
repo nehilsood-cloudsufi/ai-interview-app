@@ -24,6 +24,7 @@ again" reply is returned and the state is left completely unchanged.
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Literal
 
 from app.config import settings
 from app.models import TranscriptTurn
@@ -109,7 +110,10 @@ def _display(value: str | None) -> str:
 
 
 def _render_system_content(
-    state: InterviewState, node: QuestionNode, questionnaire: dict[str, QuestionNode]
+    state: InterviewState,
+    node: QuestionNode,
+    questionnaire: dict[str, QuestionNode],
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> str:
     profile = state.vendor_profile
 
@@ -146,6 +150,9 @@ def _render_system_content(
         next_line,
     ]
 
+    if mode == "chat":
+        lines += ["", settings.host_chat_mode_prompt]
+
     return "\n".join(lines)
 
 
@@ -160,6 +167,7 @@ def _build_payload(
     node: QuestionNode,
     user_text: str,
     questionnaire: dict[str, QuestionNode],
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> dict:
     """The per-turn Gemini request, shared by the buffered and streaming paths.
     `reply` is first in `_TURN_SCHEMA` so the streaming path can speak it before
@@ -167,7 +175,7 @@ def _build_payload(
     return {
         "model": settings.gemini_model,
         "messages": [
-            {"role": "system", "content": _render_system_content(state, node, questionnaire)},
+            {"role": "system", "content": _render_system_content(state, node, questionnaire, mode)},
             {"role": "user", "content": _render_user_content(state, user_text)},
         ],
         "response_format": {
@@ -184,8 +192,9 @@ async def _call_gemini(
     node: QuestionNode,
     user_text: str,
     questionnaire: dict[str, QuestionNode],
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> dict:
-    payload = _build_payload(state, node, user_text, questionnaire)
+    payload = _build_payload(state, node, user_text, questionnaire, mode)
 
     # Parse failures get one retry (fresh sample, fast); HTTP failures don't -
     # a Gemini outage should fall back immediately, not double the wait inside
@@ -215,10 +224,15 @@ async def handle_turn(
     user_text: str,
     questionnaire: dict[str, QuestionNode],
     rubric: dict[str, RubricCategory] | None,
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> TurnResult:
     """Process one user utterance: one Gemini call, then code-driven state
     mutation. `rubric` is accepted for interface parity with the Evaluator
-    flow; the Host itself does not score answers."""
+    flow; the Host itself does not score answers. `mode` selects which
+    frontend is driving the turn: "avatar" (HeyGen, spoken) is the default and
+    renders byte-identical to before this parameter existed; "chat" appends
+    settings.host_chat_mode_prompt so terse typed answers aren't treated as
+    incomplete."""
     if state.current_node_id == END_NODE_ID:
         return TurnResult(
             reply=settings.host_closing_reply,
@@ -233,7 +247,7 @@ async def handle_turn(
     node = questionnaire[state.current_node_id]
 
     try:
-        parsed = await _call_gemini(state, node, user_text, questionnaire)
+        parsed = await _call_gemini(state, node, user_text, questionnaire, mode)
         reply = str(parsed["reply"])
         answer_complete = bool(parsed.get("answer_complete"))
         profile_updates = parsed.get("profile_updates")
@@ -329,10 +343,12 @@ async def stream_turn(
     questionnaire: dict[str, QuestionNode],
     rubric: dict[str, RubricCategory] | None,
     outcome: StreamedTurn,
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> AsyncIterator[str]:
     """Streaming counterpart to `handle_turn`: yields the spoken reply in
     fragments as Gemini emits them, then applies the same code-driven state
-    mutation from the trailing routing fields.
+    mutation from the trailing routing fields. `mode` behaves identically to
+    `handle_turn`'s.
 
     Soft-fail contract mirrors `handle_turn`: if the call fails before any
     reply character is spoken, the canned fallback reply is yielded and state
@@ -353,7 +369,7 @@ async def stream_turn(
         raise RuntimeError("GEMINI_API_KEY is not configured; cannot run the host agent.")
 
     node = questionnaire[state.current_node_id]
-    payload = _build_payload(state, node, user_text, questionnaire)
+    payload = _build_payload(state, node, user_text, questionnaire, mode)
     extractor = ReplyStreamExtractor()
 
     try:

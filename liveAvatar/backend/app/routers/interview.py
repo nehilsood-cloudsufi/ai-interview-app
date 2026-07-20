@@ -102,6 +102,6 @@ async def chat(interview_id: str, body: ChatRequest):
     if state.status == "created":
         state.status = "active"
 
-    result = await host_agent.handle_turn(state, text, get_questionnaire(state.domain), get_rubric())
+    result = await host_agent.handle_turn(state, text, get_questionnaire(state.domain), get_rubric(), mode="chat")
 
     return {"reply": result.reply, "done": state.current_node_id == host_agent.END_NODE_ID}

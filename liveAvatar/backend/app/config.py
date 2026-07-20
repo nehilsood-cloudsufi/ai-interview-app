@@ -73,6 +73,22 @@ class Settings:
     # Safe reply when the Gemini turn fails (HTTP error or unparsable JSON);
     # state is left untouched so the vendor can simply repeat themselves.
     host_fallback_reply: str = "I'm sorry, could you say that again?"
+    # Appended to host_system_prompt only when the Host is driving the
+    # text-chat fallback (mode="chat" in host_agent.handle_turn/stream_turn).
+    # Per the 2026-07-20 meeting: typed answers are terse, so the avatar-mode
+    # prompt's "ask one focused follow-up" instinct must not fire on short but
+    # complete typed answers.
+    host_chat_mode_prompt: str = field(
+        default_factory=lambda: os.getenv(
+            "HOST_CHAT_MODE_PROMPT",
+            "The vendor is typing in a text chat, not speaking. Treat concise "
+            "answers as complete rather than pressing for elaboration, and "
+            "keep your own replies brief. If a detail was already stated "
+            "earlier, infer it and confirm it instead of re-asking (for "
+            "example: 'You mentioned GCP earlier - do you support other "
+            "clouds too?').",
+        )
+    )
 
     # System prompt for the Evaluator agent's single holistic scoring call,
     # made once at finalize over the WHOLE transcript (not per answer - a
