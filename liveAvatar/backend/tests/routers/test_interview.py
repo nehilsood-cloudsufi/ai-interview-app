@@ -9,14 +9,15 @@ from app.services.host_agent import TurnResult
 from app.services.interview_state import ScoutFinding, VendorProfile
 
 
-def _seed_interview():
+def _seed_interview(domain="ai_ml"):
     return interview_state.create(
         VendorProfile(
             company_name="Acme Corp",
             website="https://acme.example",
             contact_name="Jane Doe",
             contact_role="CTO",
-        )
+        ),
+        domain,
     )
 
 
@@ -35,6 +36,50 @@ def test_create_interview_returns_empty_profile_interview(client):
     state = interview_state.get(interview_id)
     assert state is not None
     assert state.vendor_profile == VendorProfile()
+
+
+def test_create_interview_with_no_body_defaults_domain(client):
+    # The frontend currently POSTs with no body at all - must not 422.
+    response = client.post("/api/interview")
+
+    assert response.status_code == 200
+    state = interview_state.get(response.json()["interview_id"])
+    assert state.domain == "ai_ml"
+
+
+def test_create_interview_with_null_domain_defaults_domain(client):
+    response = client.post("/api/interview", json={"domain": None})
+
+    assert response.status_code == 200
+    state = interview_state.get(response.json()["interview_id"])
+    assert state.domain == "ai_ml"
+
+
+def test_create_interview_with_valid_domain(client):
+    response = client.post("/api/interview", json={"domain": "cloud_infrastructure"})
+
+    assert response.status_code == 200
+    state = interview_state.get(response.json()["interview_id"])
+    assert state.domain == "cloud_infrastructure"
+
+
+def test_create_interview_with_unknown_domain_returns_400(client):
+    response = client.post("/api/interview", json={"domain": "not_a_real_domain"})
+
+    assert response.status_code == 400
+    assert interview_state._interviews == {}
+
+
+def test_get_domains(client):
+    response = client.get("/api/domains")
+
+    assert response.status_code == 200
+    body = response.json()
+    ids = [d["id"] for d in body["domains"]]
+    assert ids == sorted(ids)
+    assert set(ids) == {"ai_ml", "cloud_infrastructure", "data_engineering"}
+    for entry in body["domains"]:
+        assert entry["title"]
 
 
 def test_create_interview_id_resolves_via_get_state(client):
@@ -64,6 +109,7 @@ def test_fresh_interview_state(client):
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "created"
+    assert body["domain"] == "ai_ml"
     # The start node is the questionnaire's first question (intro).
     assert body["current_topic"] == "onboarding"
 

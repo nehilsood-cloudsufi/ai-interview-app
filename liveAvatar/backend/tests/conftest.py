@@ -92,6 +92,22 @@ def fake_gcs_client(monkeypatch):
     return fake_client
 
 
+@pytest.fixture(autouse=True)
+def clear_questionnaire_caches():
+    """Every lru_cache'd loader in interview_config needs its cache cleared
+    around each test - otherwise a domain/questionnaire/rubric loaded (or
+    monkeypatched away) in one test leaks into the next."""
+    from app.services.interview_config import get_questionnaire, get_rubric, list_domains
+
+    get_questionnaire.cache_clear()
+    get_rubric.cache_clear()
+    list_domains.cache_clear()
+    yield
+    get_questionnaire.cache_clear()
+    get_rubric.cache_clear()
+    list_domains.cache_clear()
+
+
 @pytest.fixture
 def sample_turns():
     from app.models import TranscriptTurn

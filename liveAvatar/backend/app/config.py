@@ -18,7 +18,14 @@ class Settings:
     # tunnel), so HeyGen can call back into /llm/{interview_id}/v1. Required
     # for session creation - gateway mode is the only mode.
     public_base_url: str | None = field(default_factory=lambda: os.getenv("PUBLIC_BASE_URL"))
-    questionnaire_path: str = field(default_factory=lambda: os.getenv("QUESTIONNAIRE_PATH", "data/questionnaire.yaml"))
+    # Per-domain questionnaires: production assigns each vendor's interview a
+    # domain (e.g. "ai_ml"), and `{questionnaires_dir}/{domain}.yaml` is the
+    # complete, standalone linear script for that domain. See
+    # app.services.interview_config.get_questionnaire/list_domains.
+    questionnaires_dir: str = field(
+        default_factory=lambda: os.getenv("QUESTIONNAIRES_DIR", "data/questionnaires")
+    )
+    default_domain: str = field(default_factory=lambda: os.getenv("DEFAULT_DOMAIN", "ai_ml"))
     rubric_path: str = field(default_factory=lambda: os.getenv("RUBRIC_PATH", "data/rubric.yaml"))
     scout_enabled: bool = field(default_factory=lambda: os.getenv("SCOUT_ENABLED", "true").lower() != "false")
     # Optional latency polish: when enabled, the gateway streams the Host's

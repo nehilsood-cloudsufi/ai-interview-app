@@ -8,7 +8,7 @@ from app.services.interview_state import ScoutFinding, VendorProfile
 
 
 def make_state() -> interview_state.InterviewState:
-    state = interview_state.create(VendorProfile(company_name="Acme Corp"))
+    state = interview_state.create(VendorProfile(company_name="Acme Corp"), "ai_ml")
     state.turns = [
         TranscriptTurn(role="interviewer", text="Tell me about your company."),
         TranscriptTurn(role="candidate", text="We build ML pipelines for banks."),

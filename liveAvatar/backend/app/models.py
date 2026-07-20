@@ -79,8 +79,23 @@ class FinalizeTranscriptResponse(BaseModel):
     recommendation: FollowupRecommendationModel | None = None
 
 
+class CreateInterviewRequest(BaseModel):
+    # Optional: missing/null resolves to settings.default_domain. An unknown
+    # domain is rejected with a 400 by the router.
+    domain: str | None = None
+
+
 class CreateInterviewResponse(BaseModel):
     interview_id: str
+
+
+class DomainInfo(BaseModel):
+    id: str
+    title: str
+
+
+class DomainsResponse(BaseModel):
+    domains: list[DomainInfo]
 
 
 class VendorProfileModel(BaseModel):
@@ -92,6 +107,7 @@ class VendorProfileModel(BaseModel):
 
 class InterviewStateResponse(BaseModel):
     status: Literal["created", "active", "finished"]
+    domain: str
     # Topic of the current questionnaire node; None when the interview has
     # reached END (or the node id is unknown).
     current_topic: str | None

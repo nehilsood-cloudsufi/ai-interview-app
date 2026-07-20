@@ -1,4 +1,4 @@
-# Resonance vendor-interview question tree.
+# Resonance vendor-interview question tree - AI / Machine Learning domain.
 #
 # The interview is a FIXED linear script - no branching, no adaptive
 # machinery - so every vendor is asked the same questions in the same order.
@@ -8,6 +8,10 @@
 # The FIRST question in this file is the interview's start node. The last
 # node's `next` must be the literal "END".
 #
+# Each domain file is a COMPLETE, standalone script (deliberate duplication
+# of the onboarding/closing nodes across domain files - no shared-prefix
+# compose mechanism - so each file stays admin-legible on its own).
+#
 # The intake form is gone: the vendor profile (contact name, role, company
 # name, website) is no longer submitted up front, so it is captured
 # naturally in conversation instead. `intro` invites the self-introduction
@@ -16,6 +20,8 @@
 # gate. `host_agent.py` extracts the profile via structured output
 # (`profile_updates`) on EVERY turn, not just these two nodes, so a later
 # mention or correction elsewhere in the interview still sticks.
+domain: ai_ml
+title: "AI / Machine Learning"
 questions:
   - id: intro
     topic: onboarding
@@ -81,6 +87,26 @@ questions:
       Ask for one or two reference clients or case studies relevant to
       this kind of engagement, and what outcomes were achieved.
     rubric_categories: [experience, credibility]
+    max_followups: 1
+    next: data_governance
+
+  - id: data_governance
+    topic: data_governance_and_evaluation
+    ask: >
+      Ask how they handle data governance and model evaluation: how they
+      manage training data quality/provenance, and how they measure and
+      validate model performance before it ships.
+    rubric_categories: [capability]
+    max_followups: 1
+    next: mlops_productionization
+
+  - id: mlops_productionization
+    topic: mlops_and_productionization
+    ask: >
+      Ask how they take a model from prototype to production: their
+      MLOps tooling, deployment/monitoring approach, and how they handle
+      model drift or retraining over time.
+    rubric_categories: [capability]
     max_followups: 1
     next: security_posture
 

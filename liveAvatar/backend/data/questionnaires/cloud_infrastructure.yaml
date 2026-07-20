@@ -1,0 +1,126 @@
+# Resonance vendor-interview question tree - Cloud Infrastructure domain.
+#
+# The interview is a FIXED linear script - no branching, no adaptive
+# machinery - so every vendor is asked the same questions in the same order.
+# Each node is walked deterministically by app/services/host_agent.py: the
+# LLM only phrases the "ask" naturally and judges whether the answer is
+# complete; advancing is a plain `next` hop to the following node id.
+# The FIRST question in this file is the interview's start node. The last
+# node's `next` must be the literal "END".
+#
+# Each domain file is a COMPLETE, standalone script (deliberate duplication
+# of the onboarding/closing nodes across domain files - no shared-prefix
+# compose mechanism - so each file stays admin-legible on its own).
+#
+# Placeholder content: this is a sensible first draft of domain-specific
+# vendor-evaluation questions; the real 20-question set for this domain
+# arrives later as a YAML edit, not a code change.
+domain: cloud_infrastructure
+title: "Cloud Infrastructure"
+questions:
+  - id: intro
+    topic: onboarding
+    ask: >
+      Greet the vendor warmly and invite them to introduce themselves
+      naturally: their name, their role, the company they represent, and
+      that company's website. If their answer leaves any of those out,
+      the follow-up should naturally ask for just what's missing.
+    rubric_categories: []
+    max_followups: 2
+    next: confirm_profile
+
+  - id: confirm_profile
+    topic: onboarding
+    ask: >
+      Read the captured name, role, company, and website back to the
+      vendor and ask them to confirm it's correct. If they correct
+      anything, capture the correction.
+    rubric_categories: []
+    max_followups: 1
+    next: company_overview
+
+  - id: company_overview
+    topic: company_overview
+    ask: >
+      Ask for a brief overview of their company: what they do, how long
+      they've been operating, and which industries they serve.
+    rubric_categories: [experience]
+    max_followups: 1
+    next: cloud_platforms_expertise
+
+  - id: cloud_platforms_expertise
+    topic: cloud_platforms_and_certifications
+    ask: >
+      Ask which cloud platforms they specialize in (for example AWS,
+      Azure, or GCP), which certifications their team holds, and how
+      deep that expertise runs.
+    rubric_categories: [capability]
+    max_followups: 1
+    next: architecture_approach
+
+  - id: architecture_approach
+    topic: architecture_and_iac
+    ask: >
+      Ask how they typically design and provision cloud infrastructure -
+      their infrastructure-as-code tooling, architecture patterns, and
+      how they approach reliability and cost efficiency.
+    rubric_categories: [capability]
+    max_followups: 1
+    next: migration_experience
+
+  - id: migration_experience
+    topic: migration_experience
+    ask: >
+      Ask about a cloud migration or modernization project they've led:
+      the scope, the approach taken, and the outcome.
+    rubric_categories: [experience]
+    max_followups: 1
+    next: delivery_team
+
+  - id: delivery_team
+    topic: delivery_and_team
+    ask: >
+      Ask about the team that would deliver this engagement: its size,
+      seniority, and how they typically structure delivery (onsite,
+      remote, hybrid) and project management.
+    rubric_categories: [delivery]
+    max_followups: 1
+    next: monitoring_and_reliability
+
+  - id: monitoring_and_reliability
+    topic: monitoring_and_reliability
+    ask: >
+      Ask how they monitor production infrastructure and respond to
+      incidents: their observability stack, on-call practices, and
+      typical response times.
+    rubric_categories: [capability]
+    max_followups: 1
+    next: references
+
+  - id: references
+    topic: references_and_track_record
+    ask: >
+      Ask for one or two reference clients or case studies relevant to
+      this kind of engagement, and what outcomes were achieved.
+    rubric_categories: [experience, credibility]
+    max_followups: 1
+    next: security_posture
+
+  - id: security_posture
+    topic: security_and_compliance
+    ask: >
+      Ask about their security posture and any relevant compliance
+      certifications (for example SOC 2 or ISO 27001) relevant to
+      handling company infrastructure and data.
+    rubric_categories: [credibility]
+    max_followups: 1
+    next: closing
+
+  - id: closing
+    topic: closing
+    ask: >
+      Thank the vendor for their time and let them know the evaluation
+      team will follow up with next steps.
+    rubric_categories: []
+    max_followups: 0
+    next: END

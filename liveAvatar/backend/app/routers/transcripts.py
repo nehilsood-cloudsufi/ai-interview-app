@@ -72,6 +72,7 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
         pipeline_status = None
         if state is not None:
             profile = state.vendor_profile
+            payload["domain"] = state.domain
             payload["vendor_profile"] = {
                 # Serializes the profile's four fields (company_name, website,
                 # contact_name, contact_role); doc_text does not exist here.

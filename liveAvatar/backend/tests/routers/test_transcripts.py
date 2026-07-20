@@ -19,7 +19,8 @@ def _seed_interview(turns=None, findings=None):
             website="https://acme.example",
             contact_name="Jane Doe",
             contact_role="CTO",
-        )
+        ),
+        "ai_ml",
     )
     state.turns.extend(
         turns
@@ -220,6 +221,7 @@ def test_finalize_with_interview_returns_fast_and_enqueues_pipeline(
         "contact_name": "Jane Doe",
         "contact_role": "CTO",
     }
+    assert saved["domain"] == "ai_ml"
     assert saved["pipeline_status"] == "interviewed"
     assert saved["summary"] == "Nice summary"
     assert saved["summary_ok"] is True
