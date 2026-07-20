@@ -138,6 +138,38 @@ async def test_advances_on_complete_answer(patch_settings):
 
 
 @respx.mock
+async def test_system_content_includes_next_question_per_branch(patch_settings):
+    # The reply that closes a question must also ASK the next one (HeyGen only
+    # calls the gateway when the vendor speaks - a bare acknowledgment stalls
+    # the conversation), so the prompt carries each branch's follow-on ask.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()  # at company_overview
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert "next question by branch signal" in system_content
+    # mentions_ai_ml branch -> ai_ml_depth's ask; default branch -> closing's ask.
+    assert "- mentions_ai_ml: Go deeper on their AI/ML capabilities." in system_content
+    assert "- default: Thank the vendor and wrap up." in system_content
+
+
+@respx.mock
+async def test_system_content_marks_end_branch_as_closing(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(
+        return_value=gemini_response(reply="Thanks for your time!", branch_signal="finished")
+    )
+    state = make_state(node_id="closing")
+
+    await handle_turn(state, "That's everything from me.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert "- finished: no further questions - thank them and close the interview." in system_content
+
+
+@respx.mock
 async def test_followup_on_incomplete_answer(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     respx.post(CHAT_URL).mock(

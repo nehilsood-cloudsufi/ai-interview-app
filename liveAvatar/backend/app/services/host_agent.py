@@ -79,7 +79,9 @@ def _render_transcript(turns: list[TranscriptTurn]) -> str:
     return "\n".join(lines)
 
 
-def _render_system_content(state: InterviewState, node: QuestionNode) -> str:
+def _render_system_content(
+    state: InterviewState, node: QuestionNode, questionnaire: dict[str, QuestionNode]
+) -> str:
     profile = state.vendor_profile
     contact = profile.contact_name
     if profile.contact_role:
@@ -102,7 +104,19 @@ def _render_system_content(state: InterviewState, node: QuestionNode) -> str:
         f"- Topic: {node.topic}",
         f"- Ask: {node.ask}",
         f"- Allowed branch signals: {signals}",
+        "",
+        # The LLM never mutates the tree, but it must SPEAK the next question
+        # in the same reply that closes the current one - HeyGen only calls us
+        # when the vendor talks, so a reply that ends on a bare acknowledgment
+        # leaves the avatar waiting in silence (observed live 2026-07-20).
+        "If the answer is complete, the next question by branch signal:",
     ]
+    for branch in node.branches:
+        next_node = questionnaire.get(branch.next)
+        if next_node is None:  # END: questionnaire validation guarantees only END is absent
+            lines.append(f"- {branch.signal}: no further questions - thank them and close the interview.")
+        else:
+            lines.append(f"- {branch.signal}: {next_node.ask}")
 
     if state.scout_findings:
         lines += ["", "Known vendor intel:"]
@@ -133,11 +147,16 @@ def _resolve_branch(node: QuestionNode, signal: str | None) -> str:
     return node.branches[0].next
 
 
-async def _call_gemini(state: InterviewState, node: QuestionNode, user_text: str) -> dict:
+async def _call_gemini(
+    state: InterviewState,
+    node: QuestionNode,
+    user_text: str,
+    questionnaire: dict[str, QuestionNode],
+) -> dict:
     payload = {
         "model": settings.gemini_model,
         "messages": [
-            {"role": "system", "content": _render_system_content(state, node)},
+            {"role": "system", "content": _render_system_content(state, node, questionnaire)},
             {"role": "user", "content": _render_user_content(state, user_text)},
         ],
         "response_format": {
@@ -194,7 +213,7 @@ async def handle_turn(
     node = questionnaire[state.current_node_id]
 
     try:
-        parsed = await _call_gemini(state, node, user_text)
+        parsed = await _call_gemini(state, node, user_text, questionnaire)
         reply = str(parsed["reply"])
         answer_complete = bool(parsed.get("answer_complete"))
         branch_signal = parsed.get("branch_signal")

@@ -43,10 +43,14 @@ class Settings:
         "conversationally - never read it verbatim like a script, do not "
         "output markdown, and keep each reply to a few spoken sentences. "
         "Judge whether the vendor's latest message fully answers the current "
-        "question: if it does, acknowledge it briefly and lead into what comes "
-        "next; if it does not, ask one focused follow-up. The interview flow "
-        "itself is controlled by the system, not by you - report your "
-        "judgement only through the JSON fields described below.\n\n"
+        "question: if it does, acknowledge it briefly and then, IN THE SAME "
+        "reply, naturally ask the next question listed for the branch signal "
+        "you chose (or deliver a warm closing if that branch ends the "
+        "interview). Never end a reply with a bare acknowledgment - the "
+        "vendor must always hear a question or a closing, or the conversation "
+        "stalls. If the answer is not complete, ask one focused follow-up. "
+        "The interview flow itself is controlled by the system, not by you - "
+        "report your judgement only through the JSON fields described below.\n\n"
         "Always respond with a single JSON object of exactly this shape: "
         '{"reply": "<what you say to the vendor next>", '
         '"answer_complete": <true if the current question is fully answered>, '
