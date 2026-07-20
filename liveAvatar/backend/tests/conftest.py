@@ -20,13 +20,9 @@ _SETTINGS_IMPORTERS = [
     "app.main",
     "app.dependencies",
     "app.routers.llm_gateway",
-    "app.routers.resume",
     "app.routers.sessions",
-    "app.routers.vendor",
     "app.services.interview_config",
-    "app.services.resume_parser",
     "app.services.liveavatar_client",
-    "app.services.gemini_provisioning",
     "app.services.gemini_client",
     "app.services.host_agent",
     "app.services.appraiser_agent",
@@ -54,10 +50,6 @@ def patch_settings(monkeypatch):
 
 @pytest.fixture
 def client():
-    # Deliberately NOT `with TestClient(app) as client:` - entering the
-    # context manager would trigger FastAPI's lifespan (provision/deprovision
-    # Gemini), which makes real network calls if unmocked. Ordinary router
-    # tests don't want that.
     return TestClient(app)
 
 

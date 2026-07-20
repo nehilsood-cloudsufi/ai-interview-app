@@ -12,21 +12,11 @@ class Settings:
     gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     liveavatar_base_url: str = "https://api.liveavatar.com/v1"
     avatar_id: str = "dd73ea75-1218-4ef3-92ce-606d5f7fbc0a"
-    max_files: int = 5
-    max_file_size_bytes: int = 5 * 1024 * 1024
-    max_pdf_pages: int = 10
-    interview_base_prompt: str = (
-        "You are an experienced technical interviewer assessing a candidate for an "
-        "AI Engineering role. Ask them a few simple, basic questions about RAG "
-        "(Retrieval-Augmented Generation), fundamentals of Large Language Models (LLMs), "
-        "and general Generative AI basics. Keep your responses concise and conversational. "
-        "Do not output markdown, speak naturally."
-    )
 
     # --- Resonance multi-agent interview ---
     # Externally reachable base URL of this backend (Cloud Run URL or a dev
-    # tunnel). Unset -> legacy mode: sessions fall back to today's
-    # Gemini-provisioned behavior so local dev without a tunnel still works.
+    # tunnel), so HeyGen can call back into /llm/{interview_id}/v1. Required
+    # for session creation - gateway mode is the only mode.
     public_base_url: str | None = field(default_factory=lambda: os.getenv("PUBLIC_BASE_URL"))
     questionnaire_path: str = field(default_factory=lambda: os.getenv("QUESTIONNAIRE_PATH", "data/questionnaire.yaml"))
     rubric_path: str = field(default_factory=lambda: os.getenv("RUBRIC_PATH", "data/rubric.yaml"))

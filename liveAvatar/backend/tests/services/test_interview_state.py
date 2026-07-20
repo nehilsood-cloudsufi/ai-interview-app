@@ -26,6 +26,21 @@ def test_create_returns_state_with_defaults():
     assert state.scout_findings == []
 
 
+def test_vendor_profile_has_empty_defaults():
+    profile = VendorProfile()
+    assert profile.company_name == ""
+    assert profile.website is None
+    assert profile.contact_name == ""
+    assert profile.contact_role is None
+
+
+def test_create_works_with_no_args_profile():
+    # Profile is filled in later by conversation, not at creation time.
+    state = interview_state.create(VendorProfile())
+    assert state.interview_id
+    assert state.vendor_profile.company_name == ""
+
+
 def test_create_generates_unique_ids_and_tokens():
     state1 = interview_state.create(make_profile())
     state2 = interview_state.create(make_profile())

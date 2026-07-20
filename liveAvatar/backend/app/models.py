@@ -4,40 +4,19 @@ from pydantic import BaseModel
 
 
 class CreateSessionRequest(BaseModel):
-    context_id: str | None = None
-    llm_configuration_id: str | None = None
     avatar_id: str | None = None
-    api_key: str | None = None
-    # Set (with PUBLIC_BASE_URL configured) to run in gateway mode: the session
-    # gets a per-interview Custom LLM pointing back at our /llm/{id}/v1 gateway.
+    # Identifies the interview whose gateway session should be created; the
+    # session gets a per-interview Custom LLM pointing back at our
+    # /llm/{id}/v1 gateway.
     interview_id: str | None = None
-
-
-class CreateSessionResponse(BaseModel):
-    session_token: str
-    session_id: str
 
 
 class StopSessionRequest(BaseModel):
     session_token: str | None = None
     context_id: str | None = None
-    api_key: str | None = None
     # Gateway mode: identifies the interview whose LLM config/secret/context
     # should be torn down best-effort on stop.
     interview_id: str | None = None
-
-
-class StopSessionResponse(BaseModel):
-    status: str
-    api_status: int | None = None
-
-
-class UploadResumeResponse(BaseModel):
-    context_id: str
-
-
-class VendorProfileResponse(BaseModel):
-    interview_id: str
 
 
 class ConcurrencyResponse(BaseModel):
@@ -100,7 +79,8 @@ class FinalizeTranscriptResponse(BaseModel):
     scorecard: ScorecardModel | None = None
     insights: list[ScoutFindingModel] | None = None
     # Coordinator follow-up proposal; None when nothing is recommended, the
-    # coordinator failed (soft-fail), or in legacy mode.
+    # interview_id didn't resolve to a live interview, or the coordinator
+    # failed (soft-fail).
     followup: FollowupProposalModel | None = None
 
 

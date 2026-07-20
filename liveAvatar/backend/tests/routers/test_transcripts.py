@@ -22,7 +22,6 @@ def _seed_interview(turns=None, findings=None):
             website="https://acme.example",
             contact_name="Jane Doe",
             contact_role="CTO",
-            doc_text="a huge vendor document that must never be persisted",
         )
     )
     state.turns.extend(
