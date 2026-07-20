@@ -18,6 +18,17 @@ export interface CreateInterviewResponse {
   interview_id: string;
 }
 
+// GET /api/domains -> DomainsResponse. Dev stand-in for the admin-assigned
+// domain: the vendor picks one on the start screen.
+export interface DomainInfo {
+  id: string;
+  title: string;
+}
+
+export interface DomainsResponse {
+  domains: DomainInfo[];
+}
+
 // Vendor profile as returned inside GET /api/interview/{id}/state
 // (backend VendorProfileModel — snake_case, doc_text excluded).
 export interface VendorProfile {
