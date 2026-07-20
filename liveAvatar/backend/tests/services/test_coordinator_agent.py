@@ -15,7 +15,7 @@ from app.services.coordinator_agent import (
     evaluate_followup,
 )
 from app.services.interview_config import RubricCategory
-from app.services.interview_state import AnswerScore, InterviewState, ScoutFinding, VendorProfile
+from app.services.interview_state import InterviewState, ScoutFinding, VendorProfile
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 CHAT_URL = f"{GEMINI_BASE_URL}chat/completions"
@@ -30,15 +30,24 @@ def make_rubric() -> dict[str, RubricCategory]:
     }
 
 
-def make_scorecard(scores: dict[str, float | None], overall: float | None) -> Scorecard:
+def make_scorecard(
+    scores: dict[str, float | None],
+    overall: float | None,
+    evidence: dict[str, list[str]] | None = None,
+) -> Scorecard:
     """Hand-construct a Scorecard so the overall/category values are exact."""
     rubric = make_rubric()
     categories = [
-        CategoryScore(id=c.id, name=c.name, weight=c.weight, score=scores.get(c.id), evidence=[])
+        CategoryScore(
+            id=c.id,
+            name=c.name,
+            weight=c.weight,
+            score=scores.get(c.id),
+            evidence=(evidence or {}).get(c.id, []),
+        )
         for c in rubric.values()
     ]
-    answered = len([s for s in scores.values() if s is not None])
-    return Scorecard(categories=categories, overall=overall, answered_questions=answered)
+    return Scorecard(categories=categories, overall=overall)
 
 
 def make_state() -> InterviewState:
@@ -177,28 +186,20 @@ async def test_draft_followup_happy_path(patch_settings):
     )
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
     state = make_state()
-    state.scores.append(
-        AnswerScore(
-            question_id="q1",
-            category_scores={"capability": 3},
-            evidence="We shipped ML pipelines for three banks.",
-            rationale="Concrete engagements.",
-        )
-    )
-    state.scores.append(
-        AnswerScore(
-            question_id="q2",
-            category_scores={"credibility": 4},
-            evidence="Unrelated quote that must not appear.",
-            rationale="",
-        )
+    scorecard = make_scorecard(
+        {"capability": 3.0, "credibility": 4.0},
+        overall=3.4,
+        evidence={
+            "capability": ["We shipped ML pipelines for three banks."],
+            "credibility": ["Unrelated quote that must not appear."],
+        },
     )
     state.scout_findings.append(
         ScoutFinding(topic="funding", summary="Raised a Series B in 2025.", source_url=None)
     )
     rec = make_rec()
 
-    proposal = await draft_followup(state, rec, make_rubric())
+    proposal = await draft_followup(state, rec, scorecard, make_rubric())
 
     assert isinstance(proposal, FollowupProposal)
     assert proposal.recommendation is rec
@@ -243,7 +244,7 @@ async def test_draft_followup_http_error_falls_back_to_template(patch_settings, 
     import logging
 
     with caplog.at_level(logging.WARNING, logger="app.services.coordinator_agent"):
-        proposal = await draft_followup(state, rec, make_rubric())
+        proposal = await draft_followup(state, rec, make_scorecard({}, overall=None), make_rubric())
 
     assert proposal.recommendation is rec
     assert proposal.recommendation.kind == "advance"
@@ -264,7 +265,7 @@ async def test_draft_followup_missing_api_key_falls_back_not_raises(patch_settin
     rec = make_rec(kind="clarify", focus_categories=["delivery"])
 
     with respx.mock:
-        proposal = await draft_followup(state, rec, make_rubric())
+        proposal = await draft_followup(state, rec, make_scorecard({}, overall=None), make_rubric())
         assert len(respx.calls) == 0
 
     assert proposal.recommendation is rec
@@ -282,7 +283,7 @@ async def test_draft_followup_malformed_json_falls_back(patch_settings):
     state = make_state()
     rec = make_rec()
 
-    proposal = await draft_followup(state, rec, make_rubric())
+    proposal = await draft_followup(state, rec, make_scorecard({}, overall=None), make_rubric())
 
     assert proposal.recommendation is rec
     assert proposal.duration_minutes == 30

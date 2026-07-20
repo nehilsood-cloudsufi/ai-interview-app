@@ -1,15 +1,7 @@
 from datetime import datetime, timezone
 
 from app.services import interview_state
-from app.services.interview_state import AnswerScore, ScoutFinding, VendorProfile
-
-# Shipped rubric (data/rubric.yaml), in file order.
-RUBRIC_META = [
-    ("experience", "Experience & Track Record", 0.3),
-    ("capability", "Technical Capability", 0.3),
-    ("delivery", "Delivery & Team", 0.2),
-    ("credibility", "Credibility & Security", 0.2),
-]
+from app.services.interview_state import ScoutFinding, VendorProfile
 
 
 def _seed_interview():
@@ -43,12 +35,9 @@ def test_fresh_interview_state(client):
     # The start node is verify_identity; its topic comes from the shipped questionnaire.
     assert body["current_topic"] == "identity_verification"
 
-    scorecard = body["scorecard"]
-    assert [(c["id"], c["name"], c["weight"]) for c in scorecard["categories"]] == RUBRIC_META
-    assert all(c["score"] is None for c in scorecard["categories"])
-    assert all(c["evidence"] == [] for c in scorecard["categories"])
-    assert scorecard["overall"] is None
-    assert scorecard["answered_questions"] == 0
+    # Scoring is a single holistic pass at finalize - the live-state snapshot
+    # deliberately carries no scorecard.
+    assert "scorecard" not in body
 
     assert body["insights"] == []
 
@@ -61,17 +50,6 @@ def test_seeded_interview_state(client):
     state = _seed_interview()
     state.status = "active"
     state.current_node_id = "ai_ml_depth"
-    state.scores.append(
-        AnswerScore(question_id="company_overview", category_scores={"experience": 4}, evidence="ev1", rationale="r1")
-    )
-    state.scores.append(
-        AnswerScore(
-            question_id="ai_ml_depth",
-            category_scores={"capability": 3, "experience": 5},
-            evidence="ev2",
-            rationale="r2",
-        )
-    )
     state.scout_findings.append(
         ScoutFinding(topic="reputation", summary="Solid reviews.", source_url="https://example.com/reviews")
     )
@@ -83,19 +61,7 @@ def test_seeded_interview_state(client):
     body = response.json()
     assert body["status"] == "active"
     assert body["current_topic"] == "ai_ml_capability"
-
-    scorecard = body["scorecard"]
-    by_id = {c["id"]: c for c in scorecard["categories"]}
-    assert by_id["experience"]["score"] == 4.5
-    assert by_id["experience"]["evidence"] == ["ev1", "ev2"]
-    assert by_id["capability"]["score"] == 3.0
-    assert by_id["capability"]["evidence"] == ["ev2"]
-    assert by_id["delivery"]["score"] is None
-    assert by_id["credibility"]["score"] is None
-    # Only categories with data count, weights renormalized:
-    # (4.5 * 0.3 + 3.0 * 0.3) / 0.6 = 3.75
-    assert scorecard["overall"] == 3.75
-    assert scorecard["answered_questions"] == 2
+    assert "scorecard" not in body
 
     assert body["insights"] == [
         {"topic": "reputation", "summary": "Solid reviews.", "source_url": "https://example.com/reviews"},

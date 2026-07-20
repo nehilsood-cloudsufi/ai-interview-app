@@ -17,14 +17,6 @@ class VendorProfile:
 
 
 @dataclass
-class AnswerScore:
-    question_id: str
-    category_scores: dict[str, int]
-    evidence: str
-    rationale: str
-
-
-@dataclass
 class ScoutFinding:
     topic: str
     summary: str
@@ -43,7 +35,6 @@ class InterviewState:
     current_node_id: str = "verify_identity"
     followup_count: int = 0
     turns: list[TranscriptTurn] = field(default_factory=list)
-    scores: list[AnswerScore] = field(default_factory=list)
     scout_findings: list[ScoutFinding] = field(default_factory=list)
     status: Literal["created", "active", "finished"] = "created"
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

@@ -69,7 +69,6 @@ class CategoryScoreModel(BaseModel):
 class ScorecardModel(BaseModel):
     categories: list[CategoryScoreModel]
     overall: float | None
-    answered_questions: int
 
 
 class ScoutFindingModel(BaseModel):
@@ -110,6 +109,5 @@ class InterviewStateResponse(BaseModel):
     # Topic of the current questionnaire node; None when the interview has
     # reached END (or the node id is unknown).
     current_topic: str | None
-    scorecard: ScorecardModel
     insights: list[ScoutFindingModel]
     updated_at: str  # ISO-8601 UTC timestamp of this snapshot

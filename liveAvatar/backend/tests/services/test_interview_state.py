@@ -23,7 +23,6 @@ def test_create_returns_state_with_defaults():
     assert state.current_node_id == "verify_identity"
     assert state.followup_count == 0
     assert state.turns == []
-    assert state.scores == []
     assert state.scout_findings == []
 
 

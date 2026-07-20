@@ -27,6 +27,7 @@ _SETTINGS_IMPORTERS = [
     "app.services.resume_parser",
     "app.services.liveavatar_client",
     "app.services.gemini_provisioning",
+    "app.services.gemini_client",
     "app.services.host_agent",
     "app.services.appraiser_agent",
     "app.services.coordinator_agent",

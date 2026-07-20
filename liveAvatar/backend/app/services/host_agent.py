@@ -22,10 +22,9 @@ again" reply is returned and the state is left completely unchanged.
 import logging
 from dataclasses import dataclass
 
-import httpx
-
 from app.config import settings
 from app.models import TranscriptTurn
+from app.services import gemini_client
 from app.services.interview_config import QuestionNode, RubricCategory
 from app.services.interview_state import InterviewState
 from app.services.llm_json import parse_llm_json
@@ -149,33 +148,26 @@ async def _call_gemini(state: InterviewState, node: QuestionNode, user_text: str
         "max_tokens": _MAX_TOKENS,
     }
 
-    async with httpx.AsyncClient(timeout=_GEMINI_TIMEOUT_SECONDS) as client:
-        # Parse failures get one retry (fresh sample, fast); HTTP failures
-        # don't - a Gemini outage should fall back immediately, not double
-        # the wait inside HeyGen's timeout window.
-        for attempt in (1, 2):
-            response = await client.post(
-                f"{settings.gemini_base_url}chat/completions",
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {settings.gemini_api_key}",
-                    "Content-Type": "application/json",
-                },
+    # Parse failures get one retry (fresh sample, fast); HTTP failures don't -
+    # a Gemini outage should fall back immediately, not double the wait inside
+    # HeyGen's timeout window. The single exception is gemini_client's
+    # model-fallback retry (a model-not-found 404 returns in <1s).
+    for attempt in (1, 2):
+        data = await gemini_client.chat_completion(
+            payload, timeout=_GEMINI_TIMEOUT_SECONDS, fallback_model=settings.gemini_model_fallback
+        )
+        content = data["choices"][0]["message"]["content"]
+        try:
+            return parse_llm_json(content)
+        except ValueError:
+            if attempt == 2:
+                raise
+            logger.warning(
+                "Unparsable host turn for interview %s at node %s; retrying once. Content: %.500r",
+                state.interview_id,
+                state.current_node_id,
+                content,
             )
-            response.raise_for_status()
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            try:
-                return parse_llm_json(content)
-            except ValueError:
-                if attempt == 2:
-                    raise
-                logger.warning(
-                    "Unparsable host turn for interview %s at node %s; retrying once. Content: %.500r",
-                    state.interview_id,
-                    state.current_node_id,
-                    content,
-                )
     raise AssertionError("unreachable")
 
 

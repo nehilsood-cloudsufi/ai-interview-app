@@ -2,6 +2,7 @@ import { X, Download, Loader2, AlertTriangle } from 'lucide-react';
 import type { FollowupProposal, ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
 import { downloadTranscript } from '../utils/downloadTranscript';
 import { FollowupPanel } from './FollowupPanel';
+import { ScorecardPanel } from './ScorecardPanel';
 
 interface SummaryPanelProps {
   visible: boolean;
@@ -82,6 +83,9 @@ export function SummaryPanel({
               </>
             )}
           </section>
+
+          {/* Final scorecard from the holistic end-of-interview scoring pass */}
+          {!isGenerating && <ScorecardPanel scorecard={scorecard} />}
 
           {/* Coordinator follow-up card (only when a follow-up was recommended) */}
           {!isGenerating && <FollowupPanel followup={followup} />}

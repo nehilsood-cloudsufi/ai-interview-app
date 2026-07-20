@@ -38,7 +38,7 @@ async def test_happy_path_payload_shape(patch_settings, sample_turns):
     patch_settings(
         gemini_api_key="gem-key",
         gemini_base_url=GEMINI_BASE_URL,
-        gemini_model="gemini-3.5-flash",
+        gemini_pro_model="gemini-pro-latest",
     )
     route = respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
         return_value=httpx.Response(
@@ -56,7 +56,7 @@ async def test_happy_path_payload_shape(patch_settings, sample_turns):
     import json
 
     body = json.loads(request.content)
-    assert body["model"] == "gemini-3.5-flash"
+    assert body["model"] == "gemini-pro-latest"
     assert body["messages"][0]["role"] == "system"
     assert body["messages"][1]["role"] == "user"
     assert "Interviewer: Tell me about RAG." in body["messages"][1]["content"]

@@ -51,8 +51,6 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
     if state is not None:
         profile = state.vendor_profile
         rubric = get_rubric()
-        scorecard = appraiser_agent.compute_scorecard(state.scores, rubric)
-        scorecard_dict = dataclasses.asdict(scorecard)
         insights = [dataclasses.asdict(finding) for finding in state.scout_findings]
         payload["vendor_profile"] = {
             # Deliberately excludes doc_text - it can be huge.
@@ -61,16 +59,26 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
             "contact_name": profile.contact_name,
             "contact_role": profile.contact_role,
         }
-        payload["scorecard"] = scorecard_dict
         payload["scout_findings"] = insights
 
-        # Coordinator follow-up: like the summary, a crash here must never
-        # block saving the transcript - soft-fail to a null followup.
+        # Holistic scoring: one pro-model pass over the Host's authoritative
+        # transcript (state.turns, not the frontend-captured body.turns).
+        # Like the summary, a scoring failure must never lose the transcript.
+        scorecard = None
         try:
-            if state.scores:
+            scorecard = await appraiser_agent.score_interview(state.turns, rubric)
+            scorecard_dict = dataclasses.asdict(scorecard)
+        except Exception as e:
+            logger.warning("Holistic scoring failed for session %s: %s", body.session_id, e)
+        payload["scorecard"] = scorecard_dict
+
+        # Coordinator follow-up: same soft-fail rule. Skipped entirely when
+        # scoring produced no usable overall.
+        try:
+            if scorecard is not None and scorecard.overall is not None:
                 rec = coordinator_agent.evaluate_followup(scorecard, rubric)
                 if rec is not None:
-                    proposal = await coordinator_agent.draft_followup(state, rec, rubric)
+                    proposal = await coordinator_agent.draft_followup(state, rec, scorecard, rubric)
                     followup = dataclasses.asdict(proposal)
         except Exception as e:
             logger.warning("Coordinator follow-up failed for session %s: %s", body.session_id, e)

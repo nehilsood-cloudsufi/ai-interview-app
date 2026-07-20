@@ -63,22 +63,29 @@ class Settings:
     # state is left untouched so the vendor can simply repeat themselves.
     host_fallback_reply: str = "I'm sorry, could you say that again?"
 
-    # System prompt for the Appraiser agent's per-answer Gemini scoring call.
-    # The service appends the rubric categories attached to the current
-    # question (ids, names, descriptions) as a structured block after this
-    # text; scores are clamped/filtered in code regardless of what comes back.
+    # System prompt for the Appraiser agent's single holistic scoring call,
+    # made once at finalize over the WHOLE transcript (not per answer - a
+    # deliberate design choice so early answers are judged in the context of
+    # the full conversation). The service appends the rubric categories (ids,
+    # names, descriptions) as a structured block after this text; scores are
+    # clamped/filtered in code regardless of what comes back.
     appraiser_system_prompt: str = (
-        "You are a strict, impartial appraiser scoring one vendor answer from "
-        "a vendor-qualification interview. You are given the question that was "
-        "asked, the vendor's answer, and the rubric categories to score. Score "
-        "ONLY the listed categories - never any other category - using an "
-        "integer from 0 (no evidence at all) to 5 (excellent, fully "
-        "evidenced). Base every score strictly on what the vendor actually "
-        "said; do not reward vague claims without substance.\n\n"
+        "You are a strict, impartial appraiser evaluating a completed "
+        "vendor-qualification interview. You are given the full interview "
+        "transcript and the rubric categories to score. Judge the interview "
+        "as a whole: weigh everything the vendor said across the entire "
+        "conversation, not any single answer in isolation. Score ONLY the "
+        "listed categories - never any other category - using an integer "
+        "from 0 (no evidence at all) to 5 (excellent, fully evidenced). Base "
+        "every score strictly on what the vendor actually said; do not "
+        "reward vague claims without substance. If a category was never "
+        "meaningfully discussed in the interview, OMIT it entirely rather "
+        "than guessing a score. For each scored category, quote one to three "
+        "short supporting excerpts from the vendor's own words.\n\n"
         "Always respond with a single JSON object of exactly this shape: "
-        '{"category_scores": {"<category_id>": <0-5>, ...}, '
-        '"evidence": "<short quote from the answer>", '
-        '"rationale": "<one or two sentences>"}'
+        '{"categories": {"<category_id>": {"score": <0-5>, '
+        '"evidence": ["<short quote>", ...], '
+        '"rationale": "<one or two sentences>"}, ...}}'
     )
 
     # System prompt for the Coordinator agent's invite-drafting Gemini call.
@@ -110,7 +117,20 @@ class Settings:
     # Gemini's OpenAI-compatible endpoint (same base already used to provision the
     # LiveAvatar LLM config). Reused here for direct summary generation via httpx.
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
-    gemini_model: str = "gemini-3.5-flash"
+    # Fast tier (Host turns, Coordinator drafting) and pro tier (holistic
+    # scoring + summary at finalize, where latency doesn't matter). Both use
+    # Gemini's auto-tracking "-latest" aliases so we stop hand-bumping
+    # versions; the pinned *_fallback names are retried automatically by
+    # gemini_client when an alias stops resolving (Google hot-swaps aliases
+    # with only 2 weeks' email notice). All four are env-overridable.
+    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-flash-latest"))
+    gemini_model_fallback: str = field(
+        default_factory=lambda: os.getenv("GEMINI_MODEL_FALLBACK", "gemini-3.5-flash")
+    )
+    gemini_pro_model: str = field(default_factory=lambda: os.getenv("GEMINI_PRO_MODEL", "gemini-pro-latest"))
+    gemini_pro_model_fallback: str = field(
+        default_factory=lambda: os.getenv("GEMINI_PRO_MODEL_FALLBACK", "gemini-3.1-pro-preview")
+    )
     interview_summary_prompt: str = (
         "You are an assistant that writes concise, factual notes from a technical "
         "interview transcript. The transcript labels the AI interviewer as "

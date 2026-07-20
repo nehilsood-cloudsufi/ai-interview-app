@@ -1,8 +1,12 @@
+import logging
+
 import httpx
 import respx
 
+from app.models import TranscriptTurn
 from app.services import interview_state
-from app.services.interview_state import AnswerScore, ScoutFinding, VendorProfile
+from app.services.appraiser_agent import CategoryScore, Scorecard
+from app.services.interview_state import ScoutFinding, VendorProfile
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
@@ -11,7 +15,7 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 LEGACY_RECORD_KEYS = {"session_id", "created_at", "turns", "summary", "summary_ok"}
 
 
-def _seed_interview(scores=None, findings=None):
+def _seed_interview(turns=None, findings=None):
     state = interview_state.create(
         VendorProfile(
             company_name="Acme Corp",
@@ -21,9 +25,49 @@ def _seed_interview(scores=None, findings=None):
             doc_text="a huge vendor document that must never be persisted",
         )
     )
-    state.scores.extend(scores or [])
+    state.turns.extend(
+        turns
+        if turns is not None
+        else [
+            TranscriptTurn(role="interviewer", text="Tell me about your company."),
+            TranscriptTurn(role="candidate", text="We build ML pipelines for banks."),
+        ]
+    )
     state.scout_findings.extend(findings or [])
     return state
+
+
+def make_scorecard(scores: dict[str, float | None], overall: float | None, evidence=None) -> Scorecard:
+    from app.services.interview_config import get_rubric
+
+    return Scorecard(
+        categories=[
+            CategoryScore(
+                id=c.id,
+                name=c.name,
+                weight=c.weight,
+                score=scores.get(c.id),
+                evidence=(evidence or {}).get(c.id, []),
+            )
+            for c in get_rubric().values()
+        ],
+        overall=overall,
+    )
+
+
+def _patch_score_interview(monkeypatch, scorecard: Scorecard | Exception, calls: list | None = None):
+    """Replace the holistic scoring call; its own Gemini plumbing is covered by
+    tests/services/test_appraiser_agent.py."""
+    from app.services import appraiser_agent
+
+    async def _fake(turns, rubric):
+        if calls is not None:
+            calls.append(turns)
+        if isinstance(scorecard, Exception):
+            raise scorecard
+        return scorecard
+
+    monkeypatch.setattr(appraiser_agent, "score_interview", _fake)
 
 
 def test_finalize_empty_turns_returns_400(client, tmp_transcripts_dir):
@@ -144,7 +188,7 @@ def test_finalize_save_failure_returns_500(client, patch_settings, monkeypatch):
 
 
 @respx.mock
-def test_finalize_with_interview_embeds_enrichment(client, patch_settings, tmp_transcripts_dir):
+def test_finalize_with_interview_embeds_enrichment(client, patch_settings, tmp_transcripts_dir, monkeypatch):
     patch_settings(
         gemini_api_key="gem-key",
         gemini_base_url=GEMINI_BASE_URL,
@@ -156,10 +200,13 @@ def test_finalize_with_interview_embeds_enrichment(client, patch_settings, tmp_t
             200, json={"choices": [{"message": {"content": "Nice summary"}}]}
         )
     )
+    scoring_calls: list = []
+    _patch_score_interview(
+        monkeypatch,
+        make_scorecard({"experience": 4.0}, overall=4.0, evidence={"experience": ["ev1"]}),
+        calls=scoring_calls,
+    )
     state = _seed_interview(
-        scores=[
-            AnswerScore(question_id="company_overview", category_scores={"experience": 4}, evidence="ev1", rationale="r1"),
-        ],
         findings=[ScoutFinding(topic="news", summary="No recent press.", source_url=None)],
     )
 
@@ -174,6 +221,10 @@ def test_finalize_with_interview_embeds_enrichment(client, patch_settings, tmp_t
 
     assert response.status_code == 200
 
+    # Scoring ran once, over the Host's authoritative transcript (state.turns,
+    # not the frontend-captured body turns).
+    assert scoring_calls == [state.turns]
+
     saved = client.get("/api/transcript/e1").json()
     # Vendor profile is embedded WITHOUT the (potentially huge) doc_text.
     assert saved["vendor_profile"] == {
@@ -187,7 +238,6 @@ def test_finalize_with_interview_embeds_enrichment(client, patch_settings, tmp_t
     assert by_id["experience"]["score"] == 4.0
     assert by_id["experience"]["evidence"] == ["ev1"]
     assert scorecard["overall"] == 4.0
-    assert scorecard["answered_questions"] == 1
     assert saved["scout_findings"] == [
         {"topic": "news", "summary": "No recent press.", "source_url": None}
     ]
@@ -234,15 +284,15 @@ def test_finalize_unknown_interview_id_treated_as_legacy(client, patch_settings,
     assert set(saved) == LEGACY_RECORD_KEYS
 
 
-def test_finalize_summary_failure_still_saves_enriched_record(client, patch_settings, tmp_transcripts_dir):
+def test_finalize_summary_failure_still_saves_enriched_record(
+    client, patch_settings, tmp_transcripts_dir, monkeypatch
+):
     # No Gemini key -> generate_summary raises -> summary soft-fails, but the
-    # enriched record (vendor profile, scorecard, findings) must still be saved.
+    # enriched record (vendor profile, scorecard, findings) must still be
+    # saved - the summary and scoring calls fail independently.
     patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
-    state = _seed_interview(
-        scores=[
-            AnswerScore(question_id="company_overview", category_scores={"experience": 3}, evidence="ev", rationale="r"),
-        ],
-    )
+    _patch_score_interview(monkeypatch, make_scorecard({"experience": 3.0}, overall=3.0))
+    state = _seed_interview()
 
     response = client.post(
         "/api/transcript/finalize",
@@ -265,13 +315,50 @@ def test_finalize_summary_failure_still_saves_enriched_record(client, patch_sett
     assert state.status == "finished"
 
 
+def test_finalize_scoring_failure_still_saves_with_null_scorecard(
+    client, patch_settings, tmp_transcripts_dir, monkeypatch, caplog
+):
+    # Holistic scoring blowing up must never lose the transcript: the record
+    # is saved with scorecard null, the coordinator is skipped, and a warning
+    # is logged.
+    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+    _patch_score_interview(monkeypatch, RuntimeError("scoring exploded"))
+    state = _seed_interview()
+
+    with caplog.at_level(logging.WARNING, logger="app.routers.transcripts"):
+        response = client.post(
+            "/api/transcript/finalize",
+            json={
+                "session_id": "e3",
+                "interview_id": state.interview_id,
+                "turns": [{"role": "candidate", "text": "hello"}],
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scorecard"] is None
+    assert body["followup"] is None
+    assert "Holistic scoring failed" in caplog.text
+
+    saved = client.get("/api/transcript/e3").json()
+    assert saved["scorecard"] is None
+    assert saved["followup"] is None
+    assert saved["vendor_profile"]["company_name"] == "Acme Corp"
+    assert state.status == "finished"
+
+
 def test_finalize_high_scores_includes_followup(client, patch_settings, tmp_transcripts_dir, monkeypatch):
     patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
 
     from app.services import coordinator_agent
     from app.services.coordinator_agent import FollowupProposal
 
-    async def _fake_draft(state, rec, rubric):
+    # experience 5 -> overall 5.0 >= advance threshold (3.5) -> "advance".
+    _patch_score_interview(monkeypatch, make_scorecard({"experience": 5.0}, overall=5.0))
+
+    async def _fake_draft(state, rec, scorecard, rubric):
+        assert scorecard.overall == 5.0  # the final scorecard is passed through
         return FollowupProposal(
             recommendation=rec,
             title="Deep dive with Acme Corp",
@@ -282,12 +369,7 @@ def test_finalize_high_scores_includes_followup(client, patch_settings, tmp_tran
 
     monkeypatch.setattr(coordinator_agent, "draft_followup", _fake_draft)
 
-    # experience 5 -> overall 5.0 >= advance threshold (3.5) -> "advance".
-    state = _seed_interview(
-        scores=[
-            AnswerScore(question_id="company_overview", category_scores={"experience": 5}, evidence="ev", rationale="r"),
-        ],
-    )
+    state = _seed_interview()
 
     response = client.post(
         "/api/transcript/finalize",
@@ -311,15 +393,12 @@ def test_finalize_high_scores_includes_followup(client, patch_settings, tmp_tran
     assert saved["followup"] == followup
 
 
-def test_finalize_low_scores_has_null_followup(client, patch_settings, tmp_transcripts_dir):
+def test_finalize_low_scores_has_null_followup(client, patch_settings, tmp_transcripts_dir, monkeypatch):
     patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
 
     # experience 1 -> overall 1.0 < clarify floor (2.5) -> no recommendation.
-    state = _seed_interview(
-        scores=[
-            AnswerScore(question_id="company_overview", category_scores={"experience": 1}, evidence="ev", rationale="r"),
-        ],
-    )
+    _patch_score_interview(monkeypatch, make_scorecard({"experience": 1.0}, overall=1.0))
+    state = _seed_interview()
 
     response = client.post(
         "/api/transcript/finalize",
@@ -339,6 +418,31 @@ def test_finalize_low_scores_has_null_followup(client, patch_settings, tmp_trans
     assert saved["scorecard"]["overall"] == 1.0
 
 
+def test_finalize_overall_none_skips_coordinator(client, patch_settings, tmp_transcripts_dir, monkeypatch):
+    patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
+
+    from app.services import coordinator_agent
+
+    def _must_not_run(scorecard, rubric):
+        raise AssertionError("coordinator must not run when overall is None")
+
+    monkeypatch.setattr(coordinator_agent, "evaluate_followup", _must_not_run)
+    _patch_score_interview(monkeypatch, make_scorecard({}, overall=None))
+    state = _seed_interview()
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={
+            "session_id": "f4",
+            "interview_id": state.interview_id,
+            "turns": [{"role": "candidate", "text": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["followup"] is None
+
+
 def test_finalize_coordinator_crash_never_blocks_save(client, patch_settings, tmp_transcripts_dir, monkeypatch):
     patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
 
@@ -348,12 +452,8 @@ def test_finalize_coordinator_crash_never_blocks_save(client, patch_settings, tm
         raise RuntimeError("coordinator exploded")
 
     monkeypatch.setattr(coordinator_agent, "evaluate_followup", _boom)
-
-    state = _seed_interview(
-        scores=[
-            AnswerScore(question_id="company_overview", category_scores={"experience": 5}, evidence="ev", rationale="r"),
-        ],
-    )
+    _patch_score_interview(monkeypatch, make_scorecard({"experience": 5.0}, overall=5.0))
+    state = _seed_interview()
 
     response = client.post(
         "/api/transcript/finalize",

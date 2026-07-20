@@ -5,8 +5,8 @@ Scorecard (no LLM, no I/O): a strong overall recommends a next-round
 deep-dive, a borderline overall with weak categories recommends a
 clarification call, anything else recommends nothing.
 
-`draft_followup` makes one Gemini JSON call (same raw-httpx
-OpenAI-compatible pattern as `appraiser_agent`/`summary_service`) to draft
+`draft_followup` makes one Gemini JSON call (via the shared
+`gemini_client`, like `appraiser_agent`/`summary_service`) to draft
 the meeting package for a recommendation. Unlike the appraiser/host it
 deliberately NEVER raises: any failure (missing API key, HTTP error,
 unparsable JSON) logs a warning and falls back to a deterministic template
@@ -17,9 +17,8 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
-import httpx
-
 from app.config import settings
+from app.services import gemini_client
 from app.services.appraiser_agent import Scorecard
 from app.services.interview_config import RubricCategory
 from app.services.interview_state import InterviewState
@@ -117,7 +116,10 @@ def _focus_names(rec: FollowupRecommendation, rubric: dict[str, RubricCategory])
 
 
 def _render_user_content(
-    state: InterviewState, rec: FollowupRecommendation, rubric: dict[str, RubricCategory]
+    state: InterviewState,
+    rec: FollowupRecommendation,
+    scorecard: Scorecard,
+    rubric: dict[str, RubricCategory],
 ) -> str:
     profile = state.vendor_profile
     contact = profile.contact_name + (f" ({profile.contact_role})" if profile.contact_role else "")
@@ -131,12 +133,12 @@ def _render_user_content(
         "",
         "Focus categories:",
     ]
+    evidence_by_id = {c.id: c.evidence for c in scorecard.categories}
     for category_id in rec.focus_categories:
         name = rubric[category_id].name if category_id in rubric else category_id
         lines.append(f"- {name}")
-        for score in state.scores:
-            if category_id in score.category_scores and score.evidence:
-                lines.append(f'  Evidence: "{score.evidence}"')
+        for quote in evidence_by_id.get(category_id, []):
+            lines.append(f'  Evidence: "{quote}"')
     if state.scout_findings:
         lines.extend(["", "Research findings:"])
         for finding in state.scout_findings:
@@ -169,9 +171,13 @@ def _fallback_proposal(
 
 
 async def draft_followup(
-    state: InterviewState, rec: FollowupRecommendation, rubric: dict[str, RubricCategory]
+    state: InterviewState,
+    rec: FollowupRecommendation,
+    scorecard: Scorecard,
+    rubric: dict[str, RubricCategory],
 ) -> FollowupProposal:
-    """Draft the follow-up meeting package with a single Gemini JSON call.
+    """Draft the follow-up meeting package with a single Gemini JSON call,
+    citing evidence quotes from the final Scorecard's focus categories.
 
     Never raises: on any failure it logs a warning and returns the template
     fallback proposal, so a drafting failure cannot suppress the
@@ -185,7 +191,7 @@ async def draft_followup(
             "model": settings.gemini_model,
             "messages": [
                 {"role": "system", "content": settings.coordinator_invite_prompt},
-                {"role": "user", "content": _render_user_content(state, rec, rubric)},
+                {"role": "user", "content": _render_user_content(state, rec, scorecard, rubric)},
             ],
             "response_format": {
                 "type": "json_schema",
@@ -194,18 +200,9 @@ async def draft_followup(
             "reasoning_effort": "low",
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{settings.gemini_base_url}chat/completions",
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {settings.gemini_api_key}",
-                    "Content-Type": "application/json",
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-
+        data = await gemini_client.chat_completion(
+            payload, timeout=60.0, fallback_model=settings.gemini_model_fallback
+        )
         parsed = parse_llm_json(data["choices"][0]["message"]["content"])
         return FollowupProposal(
             recommendation=rec,

@@ -19,7 +19,10 @@ def test_settings_defaults():
     assert fresh.max_file_size_bytes == 5 * 1024 * 1024
     assert fresh.max_pdf_pages == 10
     assert fresh.transcripts_local_dir == "transcripts"
-    assert fresh.gemini_model == "gemini-3.5-flash"
+    assert fresh.gemini_model == "gemini-flash-latest"
+    assert fresh.gemini_model_fallback == "gemini-3.5-flash"
+    assert fresh.gemini_pro_model == "gemini-pro-latest"
+    assert fresh.gemini_pro_model_fallback == "gemini-3.1-pro-preview"
 
 
 def test_settings_env_overrides(monkeypatch):

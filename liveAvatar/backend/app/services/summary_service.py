@@ -1,9 +1,8 @@
 import logging
 
-import httpx
-
 from app.config import settings
 from app.models import TranscriptTurn
+from app.services import gemini_client
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +21,10 @@ def _render_transcript(turns: list[TranscriptTurn]) -> str:
 
 async def generate_summary(turns: list[TranscriptTurn]) -> str:
     """Generate an interview-focused summary from transcript turns via Gemini's
-    OpenAI-compatible chat endpoint. Raises on any failure so the caller can
-    persist the transcript with a soft-fail summary."""
+    OpenAI-compatible chat endpoint, on the pro-tier model (this runs after the
+    interview ends, so latency doesn't matter and the better judgment is free).
+    Raises on any failure so the caller can persist the transcript with a
+    soft-fail summary."""
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured; cannot generate summary.")
 
@@ -32,23 +33,14 @@ async def generate_summary(turns: list[TranscriptTurn]) -> str:
         raise ValueError("Transcript is empty; nothing to summarize.")
 
     payload = {
-        "model": settings.gemini_model,
+        "model": settings.gemini_pro_model,
         "messages": [
             {"role": "system", "content": settings.interview_summary_prompt},
             {"role": "user", "content": transcript_text},
         ],
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            f"{settings.gemini_base_url}chat/completions",
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {settings.gemini_api_key}",
-                "Content-Type": "application/json",
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-
+    data = await gemini_client.chat_completion(
+        payload, timeout=60.0, fallback_model=settings.gemini_pro_model_fallback
+    )
     return data["choices"][0]["message"]["content"].strip()

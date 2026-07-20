@@ -7,7 +7,6 @@ may return real 4xx; after auth the route never fails - any error becomes an
 HTTP 200 with a canned reply so the avatar always has something to say.
 """
 
-import asyncio
 import json
 import logging
 import secrets
@@ -18,9 +17,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
-from app.services import appraiser_agent, host_agent, interview_state
-from app.services.interview_config import QuestionNode, get_questionnaire, get_rubric
-from app.services.interview_state import InterviewState
+from app.services import host_agent, interview_state
+from app.services.interview_config import get_questionnaire, get_rubric
 
 logger = logging.getLogger(__name__)
 
@@ -28,32 +26,6 @@ router = APIRouter()
 
 # Spoken when HeyGen probes the endpoint before any user utterance exists.
 _GREETING_REPLY = "Hello! Thanks for joining. Whenever you're ready, we can begin."
-
-
-async def _on_answer_complete(state: InterviewState, question: QuestionNode, answer_text: str) -> None:
-    """Background hook fired each time the vendor completes an answer.
-
-    score_and_store already swallows its own failures; the outer
-    try/except-log in _fire_answer_complete_hook stays as a second belt."""
-    await appraiser_agent.score_and_store(state, question, answer_text, get_rubric())
-
-
-def _fire_answer_complete_hook(state: InterviewState, question: QuestionNode, answer_text: str) -> None:
-    async def _run() -> None:
-        try:
-            await _on_answer_complete(state, question, answer_text)
-        except Exception:
-            logger.warning(
-                "answer-complete hook failed for interview %s (question %s).",
-                state.interview_id,
-                question.id,
-                exc_info=True,
-            )
-
-    try:
-        asyncio.create_task(_run())
-    except Exception:
-        logger.warning("Could not schedule answer-complete hook for interview %s.", state.interview_id, exc_info=True)
 
 
 def _last_user_text(body: dict) -> str | None:
@@ -126,9 +98,9 @@ async def chat_completions(interview_id: str, request: Request):
         else:
             result = await host_agent.handle_turn(state, user_text, get_questionnaire(), get_rubric())
             reply = result.reply
+            # answer_complete only feeds the timing log now - scoring happens
+            # once, holistically, at finalize (never mid-interview).
             answer_complete = result.answer_complete
-            if result.answer_complete:
-                _fire_answer_complete_hook(state, result.completed_question, result.answer_text)
     except Exception:
         logger.warning("LLM gateway turn failed for interview %s; returning canned reply.", interview_id, exc_info=True)
         reply = settings.host_fallback_reply

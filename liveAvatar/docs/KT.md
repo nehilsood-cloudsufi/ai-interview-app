@@ -1,10 +1,73 @@
-# LiveAvatar AI Engineering Interview Application - Comprehensive Knowledge Transfer (KT)
+# Resonance — AI Vendor Evaluation Platform: Knowledge Transfer (KT)
 
-Welcome to the Knowledge Transfer document for the LiveAvatar AI Interview POC! If you're an intern getting up to speed, a manager reviewing the architecture, or a senior engineer preparing to extend the system, this guide will walk you through everything you need to know. 
+This document has two parts:
 
-We'll treat this like a guided tour. We won't just look at *what* the code does; we'll explain *why* it's built this way.
+- **Part 1 — Resonance: current status and roadmap.** What we've built so far, how it works in plain language, and what remains. This is the part to read for a status discussion.
+- **Part 2 — Platform foundation deep dive.** The original LiveAvatar interview POC that Resonance is built on top of — architecture, deployment, testing. Read this to actually work on the code.
 
 ---
+
+# Part 1: Resonance — Current Status & Roadmap
+
+## 1.1 What is Resonance?
+
+The project started as a POC where an AI avatar interviews a job candidate about their resume (that system still works and is documented in Part 2). It has now evolved into **Resonance**: a vendor-evaluation platform. A vendor representative fills in a short intake form, then has a live video conversation with an AI avatar that runs a structured evaluation interview — and behind the scenes a team of AI agents scores their answers in real time, researches the company, and recommends whether to book a follow-up meeting.
+
+## 1.2 The one big architectural idea
+
+In the original POC, HeyGen's cloud was the avatar's "brain" — we sent it a prompt and it handled the whole conversation. **In Resonance, our backend is the brain.** We use HeyGen's "Custom LLM" feature to point the avatar at our own server: every time the vendor finishes speaking, HeyGen calls *our* endpoint for the reply. That gives us full control — a deterministic interview flow, our own scoring, our own data — while HeyGen still handles the hard real-time parts (speech-to-text, lip-synced video, text-to-speech).
+
+Two design rules worth mentioning to anyone reviewing this:
+
+- **Code decides, the LLM phrases.** Which question comes next, when to branch, when to stop following up, how scores are averaged and weighted — all of that is deterministic code we can unit-test. Gemini is only asked to phrase the reply and judge the answer, always returning structured JSON.
+- **The avatar never goes silent, and we never lose data.** Any failure in an agent turns into a polite canned reply, not an error. A summary, scoring, or follow-up failure never loses the transcript.
+
+One environment variable (`PUBLIC_BASE_URL`) switches this mode on. Unset it and the app behaves exactly like the original POC — the legacy path is fully preserved and regression-tested.
+
+## 1.3 The four agents
+
+| Agent | What it does | Status |
+|---|---|---|
+| **Host** | Runs the interview: walks a configurable question tree (`data/questionnaire.yaml`), decides when an answer is complete vs. needs a follow-up, and branches based on what the vendor says (e.g. mentions AI/ML → go deeper on AI). | ✅ Done, verified in live sessions |
+| **Appraiser** | Scores the interview 0–5 against a weighted rubric (`data/rubric.yaml`) in **one holistic pass at the end**, using a stronger Gemini Pro model, with supporting quotes per category. The scorecard is revealed in the results view after the session — deliberately not live, so the vendor never watches their own scores move mid-interview and every answer is judged in the context of the whole conversation. | ✅ Done |
+| **Coordinator** | After the interview, applies transparent rules to the final scorecard (strong → advance, middling with weak spots → clarify) and drafts a ready-to-send follow-up meeting: title, agenda, duration, email draft — shown as a card in the UI. | ✅ Done |
+| **Data Scout** | Researches the vendor in the background (uploaded docs + web search) and feeds intel into the Host's questions ("Your website mentions X — tell me more…"). | 🔄 In progress (Karan; work package in `docs/plans/2026-07-17-data-scout-agent-karan.md`) |
+
+## 1.4 What has been done so far
+
+Following the master plan (`docs/plans/2026-07-17-resonance-multi-agent-plan.md`):
+
+1. **Phase 0 — Gateway spike ✅.** Proved with a real session that HeyGen will call our endpoint as its LLM, and documented the exact contract (request shape, streaming, its 10-second timeout) in `docs/llm-gateway-notes.md` before betting the plan on it.
+2. **Phase 1 — Foundation + Host agent ✅.** Interview state store, questionnaire/rubric configs with validation, vendor intake form + endpoint, per-interview LLM registration with HeyGen (including a per-interview secret token so only HeyGen can call our gateway), and the Host state machine. The avatar greets the vendor by name and conducts a branching interview end-to-end.
+3. **Phase 2 — Appraiser scoring ✅ (revised).** Originally scoring fired per answer with a live-updating scorecard panel. We deliberately changed this: scoring now happens **once, at the end of the interview**, as a single holistic pass over the whole transcript using a stronger model (Gemini Pro — latency doesn't matter after the session ends). Why: the vendor was seeing their own scores change mid-interview (bias risk), and judging the whole conversation at once is fairer than judging each answer in isolation. The scorecard (category bars, evidence quotes, overall) now appears in the results view alongside the summary.
+4. **Phase 4 (partial) — Coordinator + enriched record ✅.** The saved interview record now carries the vendor profile, full transcript, scorecard, scout findings, summary, and follow-up proposal. The follow-up card (with copy-able email draft and `mailto:` link) appears when the rules recommend a meeting. *(Deployment and demo hardening from this phase are still open — see 1.5.)*
+5. **First live test + hardening ✅.** The first end-to-end live run surfaced three issues, all diagnosed from logs and fixed:
+   - *"Huge latency"* — Gemini was spending ~470 hidden reasoning tokens per turn. Fixed by lowering its reasoning effort and tightening our timeout to fit inside HeyGen's 10-second window. Server-side turn time dropped from ~3s to ~2s.
+   - *Avatar kept asking "can you repeat that"* — Gemini returned malformed JSON on roughly half the turns, so the safety fallback kept firing. Fixed with strict schema-enforced output, a tolerant parser, and one fast retry.
+   - *Scores not updating* — same root cause as above: because turns kept failing, no answer ever "completed", so scoring never triggered. Fixed by the same fix; verified advancing + scoring in the retest.
+6. **Quality bar held throughout.** Every module has a matching test file; the suite grew from 221 to 237 tests, all green, and runs in CI on every push. Legacy (non-Resonance) mode is regression-tested and untouched.
+
+## 1.5 What's next — the discussion list
+
+In rough priority order:
+
+1. **Deployment (E2, Nehil).** Gateway mode currently runs locally through a tunnel. To deploy: make the Docker image include the questionnaire/rubric YAML files, set `PUBLIC_BASE_URL` to the Cloud Run URL, and verify orphan cleanup also removes per-interview LLM configs/secrets on HeyGen's side. Docs update (this file) is part of it.
+2. **Demo hardening (E3, Nehil).** Three full rehearsals with deliberately different vendor personalities (terse / rambling / off-topic) to tune prompts and follow-up limits; failure drills (kill the Gemini key mid-session — avatar must keep talking; state endpoint down — UI must cope); final latency check.
+3. **Data Scout (Karan, in progress).** Background research agent + insights panel; once Karan has real findings from a live run, Nehil wires them into the Host's prompt (task D2).
+4. **Optional latency polish.** If the demo still feels slow, stream the Host's reply token-by-token so the avatar starts speaking sooner. Deferred deliberately — the timing logs we added will tell us if it's needed.
+5. **Post-POC (first items of a next phase, not this one).** Interview state is in-memory today — a server restart loses an in-flight interview. Accepted for the POC; a database is the first follow-up. Same for a small known session-counter drift in the legacy path.
+
+## 1.6 Known limitations (worth stating upfront)
+
+- **In-memory state:** an interview interrupted by a backend restart starts over. Fine for a POC/demo, not for production.
+- **Latency:** ~2 seconds of our server time per turn, plus HeyGen's speech-to-text/text-to-speech on top (which we don't control). Acceptable in testing; E3 re-checks it.
+- **Gateway mode needs a public URL:** locally that's a tunnel; in production it's the Cloud Run URL (part of E2).
+
+---
+
+# Part 2: Platform Foundation Deep Dive
+
+Everything below describes the underlying platform the Resonance work builds on — the original interview POC. It still runs as-is ("legacy mode") when `PUBLIC_BASE_URL` is unset, and all of its plumbing (session security, resume parsing, transcripts, GCS persistence, deployment) is reused by Resonance.
 
 ## 1. The Big Picture: What Are We Building?
 
@@ -22,7 +85,7 @@ To make this happen seamlessly, we divided the application into two main parts: 
 - **React 19 & TypeScript**: We chose React for its component-based architecture, making it easy to manage complex UI states (like whether the avatar is listening or speaking). TypeScript ensures we catch errors early.
 - **Vite**: A lightning-fast build tool that replaces older tools like Webpack. It makes local development incredibly quick.
 - **Tailwind CSS v4 & Lucide React**: Tailwind allows us to rapidly style the application without leaving our HTML, and Lucide provides clean, modern icons.
-- **`@heygen/liveavatar-web-sdk`**: This is the secret sauce. It handles the extremely complex WebRTC (real-time communication) connection between the user's browser and HeyGen's video streaming servers. We are using **FULL Mode**, which means HeyGen's servers handle the LLM (AI brain) connection for us.
+- **`@heygen/liveavatar-web-sdk`**: This is the secret sauce. It handles the extremely complex WebRTC (real-time communication) connection between the user's browser and HeyGen's video streaming servers. We are using **FULL Mode**, which means HeyGen's servers drive the conversation loop. In legacy mode HeyGen also supplies the LLM (AI brain); in Resonance gateway mode we register a "Custom LLM" so HeyGen calls *our* backend for every reply (see Part 1).
 
 ### The Backend (The Secure Middleman)
 - **Python 3.13 & FastAPI**: Python is the standard for AI applications. FastAPI is incredibly fast and easy to use for building APIs. 
@@ -67,6 +130,8 @@ If you look inside `/liveAvatar/frontend/src/App.tsx`, here are the key concepts
 ## 5. Deep Dive: Backend Mechanics (`app/`)
 
 Inside `/liveAvatar/backend/app/` (routers + services, see `CLAUDE.md` for the module layout), the logic is designed for resilience:
+
+- **Resonance modules (see Part 1 for the concepts):** `routers/vendor.py` (intake), `routers/interview.py` (live state endpoint the scorecard polls), `routers/llm_gateway.py` (the OpenAI-compatible endpoint HeyGen calls, with per-interview bearer-token auth and a "never return an error after auth" rule), and `services/interview_state.py`, `interview_config.py`, `host_agent.py`, `appraiser_agent.py`, `coordinator_agent.py`, `llm_json.py` (shared tolerant JSON parser for all Gemini calls). Question tree and rubric live in `data/questionnaire.yaml` / `data/rubric.yaml`.
 
 - **Concurrency Tracking**: We maintain a simple `active_sessions_count` variable. This helps us monitor if we are hitting LiveKit's concurrency limits.
 - **Garbage Collection (Contexts)**: When a session stops (in `/api/session/stop`), we don't just stop the video. We also send a `DELETE` request to LiveAvatar to destroy the `context_id` we created for that specific resume. If we didn't do this, our LiveAvatar workspace would eventually fill up with thousands of temporary resumes.
