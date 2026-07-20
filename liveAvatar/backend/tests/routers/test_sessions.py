@@ -153,6 +153,19 @@ def test_stop_session_missing_token_is_ignored(client, patch_settings):
 
 
 @respx.mock
+def test_stop_session_missing_token_ignored_even_without_api_key(client, patch_settings):
+    # The no-op "ignored" path makes no network calls and needs no key, so it
+    # must short-circuit before resolve_api_key() would raise.
+    patch_settings(liveavatar_api_key=None, liveavatar_base_url=BASE_URL)
+
+    response = client.post("/api/session/stop", json={})
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ignored"}
+    assert len(respx.calls) == 0
+
+
+@respx.mock
 def test_stop_session_happy_path_decrements_counter(client, patch_settings):
     patch_settings(liveavatar_api_key="live-key", liveavatar_base_url=BASE_URL)
     active_sessions.increment()

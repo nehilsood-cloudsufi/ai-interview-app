@@ -102,10 +102,10 @@ async def create_session(body: CreateSessionRequest):
 @router.post("/api/session/stop")
 async def stop_session_route(body: StopSessionRequest):
     try:
-        liveavatar_key = resolve_api_key()
-
         if not body.session_token:
             return {"status": "ignored"}
+
+        liveavatar_key = resolve_api_key()
 
         res = await stop_session(body.session_token)
 
