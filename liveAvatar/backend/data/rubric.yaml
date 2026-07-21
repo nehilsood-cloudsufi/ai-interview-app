@@ -1,0 +1,30 @@
+# Resonance vendor-evaluation rubric. Weights must sum to 1.0 (+/- 0.01);
+# categories are scored 0-5 by app/services/appraiser_agent.py.
+categories:
+  - id: experience
+    name: Experience & Track Record
+    weight: 0.3
+    description: >
+      Depth and relevance of the vendor's operating history, past
+      engagements, and reference outcomes.
+
+  - id: capability
+    name: Technical Capability
+    weight: 0.3
+    description: >
+      Depth of technical/AI-ML expertise and how well the proposed
+      services fit the engagement's needs.
+
+  - id: delivery
+    name: Delivery & Team
+    weight: 0.2
+    description: >
+      Strength and structure of the team and delivery approach proposed
+      for this engagement.
+
+  - id: credibility
+    name: Credibility & Security
+    weight: 0.2
+    description: >
+      Trustworthiness signals: security posture, compliance, and quality
+      of references.

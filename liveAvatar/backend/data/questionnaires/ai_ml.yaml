@@ -1,0 +1,132 @@
+# Resonance vendor-interview question tree - AI / Machine Learning domain.
+#
+# The interview is a FIXED linear script - no branching, no adaptive
+# machinery - so every vendor is asked the same questions in the same order.
+# Each node is walked deterministically by app/services/host_agent.py: the
+# LLM only phrases the "ask" naturally and judges whether the answer is
+# complete; advancing is a plain `next` hop to the following node id.
+# The FIRST question in this file is the interview's start node. The last
+# node's `next` must be the literal "END".
+#
+# Each domain file is a COMPLETE, standalone script (deliberate duplication
+# of the onboarding/closing nodes across domain files - no shared-prefix
+# compose mechanism - so each file stays admin-legible on its own).
+#
+# The intake form is gone: the vendor profile (contact name, role, company
+# name, website) is no longer submitted up front, so it is captured
+# naturally in conversation instead. `intro` invites the self-introduction
+# and `confirm_profile` reads it back for correction before the scripted
+# questionnaire proper begins - two ordinary linear nodes, no special-case
+# gate. `host_agent.py` extracts the profile via structured output
+# (`profile_updates`) on EVERY turn, not just these two nodes, so a later
+# mention or correction elsewhere in the interview still sticks.
+domain: ai_ml
+title: "AI / Machine Learning"
+questions:
+  - id: intro
+    topic: onboarding
+    ask: >
+      Greet the vendor warmly and invite them to introduce themselves
+      naturally: their name, their role, the company they represent, and
+      that company's website. If their answer leaves any of those out,
+      ask briefly for just what's missing - do NOT read back the details
+      they already gave (a single read-back happens in the next step).
+    rubric_categories: []
+    max_followups: 2
+    next: confirm_profile
+
+  - id: confirm_profile
+    topic: onboarding
+    ask: >
+      In ONE short sentence, read the captured name, role, company, and
+      website back to the vendor and ask if it's all correct. No preamble,
+      and never re-confirm a detail that was already confirmed. If they
+      correct anything, capture the correction.
+    rubric_categories: []
+    max_followups: 1
+    next: company_overview
+
+  - id: company_overview
+    topic: company_overview
+    ask: >
+      Ask for a brief overview of their company: what they do, how long
+      they've been operating, and which industries they serve.
+    rubric_categories: [experience]
+    max_followups: 1
+    next: ai_ml_depth
+
+  - id: ai_ml_depth
+    topic: ai_ml_capability
+    ask: >
+      Ask what AI/ML techniques, models, or platforms they use (if any),
+      and for a concrete example of a project they delivered with them.
+    rubric_categories: [capability]
+    max_followups: 1
+    next: services_offered
+
+  - id: services_offered
+    topic: services_offered
+    ask: >
+      Ask what specific services or products they're proposing for this
+      engagement, and how that fits their company's core strengths.
+    rubric_categories: [capability]
+    max_followups: 1
+    next: delivery_team
+
+  - id: delivery_team
+    topic: delivery_and_team
+    ask: >
+      Ask about the team that would deliver this engagement: its size,
+      seniority, and how they typically structure delivery (onsite,
+      remote, hybrid) and project management.
+    rubric_categories: [delivery]
+    max_followups: 1
+    next: references
+
+  - id: references
+    topic: references_and_track_record
+    ask: >
+      Ask for one or two reference clients or case studies relevant to
+      this kind of engagement, and what outcomes were achieved.
+    rubric_categories: [experience, credibility]
+    max_followups: 1
+    next: data_governance
+
+  - id: data_governance
+    topic: data_governance_and_evaluation
+    ask: >
+      Ask how they handle data governance and model evaluation: how they
+      manage training data quality/provenance, and how they measure and
+      validate model performance before it ships.
+    rubric_categories: [capability]
+    max_followups: 1
+    next: mlops_productionization
+
+  - id: mlops_productionization
+    topic: mlops_and_productionization
+    ask: >
+      Ask how they take a model from prototype to production: their
+      MLOps tooling, deployment/monitoring approach, and how they handle
+      model drift or retraining over time.
+    rubric_categories: [capability]
+    max_followups: 1
+    next: security_posture
+
+  - id: security_posture
+    topic: security_and_compliance
+    ask: >
+      Ask about their security posture and any relevant compliance
+      certifications (for example SOC 2 or ISO 27001) relevant to
+      handling company data.
+    rubric_categories: [credibility]
+    max_followups: 1
+    next: closing
+
+  - id: closing
+    topic: closing
+    ask: >
+      Thank the vendor for their time and let them know the evaluation
+      team will follow up with next steps.
+    rubric_categories: []
+    max_followups: 0
+    next: END
