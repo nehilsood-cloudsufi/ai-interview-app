@@ -1,0 +1,644 @@
+﻿✍️ Quick notes
+SAIL Resonance - Agent Interactions
+
+
+Jul 20, 2026
+
+
+Aditya Sai Srikanth Palaparthy Suryarjuna Gopakumar Karan Tripathi Nehil Sood
+
+
+The team finalized chat-based onboarding workflows, decoupled agent architectures, and sequential processing strategies for the interview platform.
+
+
+Interview and Onboarding Workflow
+* Interview process integrates initial data collection, removing distinct onboarding landing page.
+* Chat functionality serves as primary interview medium, with video fallback support for low bandwidth.
+* Interview interface configured to omit live video display, subject to future configuration flags.
+
+
+System Architecture and Agent Workflow
+* Modular agent architecture implemented to allow independent execution of interview, data scouting, and evaluation tasks.
+* Data Scout Agent operates asynchronously post-interview to ensure unbiased conversation flow.
+* Evaluator Agent processes session transcripts and supplementary data to generate candidate scores.
+* NoSQL format utilized for storing session summaries and transcripts for reference.
+
+
+Implementation and Handoff
+* Gemini 3.5 Flash supports transcript generation; Gemini 3.1 Pro handles evaluation logic.
+* Nehil Sood handing off repository management to Karan Tripathi.
+
+
+Next steps
+* [Nehil Sood] Remove Onboarding Page: Delete the landing page from the workflow. Transition users directly into the interview process.
+* [Suryarjuna Gopakumar] Update Presentation Slides: Modify the project documentation slides to align with the revised interview and agent workflow.
+* [Nehil Sood] Remove Upload Capability: Remove the document upload functionality to simplify the interface.
+* [The group] Build Summary APIs: Develop the necessary accessory APIs for summarizing interview transcripts. Facilitate better visibility within the user interface.
+* [Nehil Sood] Share Repository: Provide access to the functional code repository once the implementation is complete.
+
+
+
+
+
+
+You should review Gemini's notes to make sure they're accurate. Get tips and learn how Gemini takes notes
+How is the quality of these specific notes? Take a short survey to let us know your feedback, including how helpful the notes were for your needs.
+📝 Full notes
+Jul 20, 2026
+SAIL Resonance - Agent Interactions
+Invited Aditya Sai Srikanth Palaparthy Suryarjuna Gopakumar Karan Tripathi Nehil Sood
+Attachments SAIL Resonance - Agent Interactions
+Meeting records Transcript (Some recordings unavailable)
+
+
+
+
+Summary
+The team finalized chat-based onboarding workflows, decoupled agent architectures, and sequential processing strategies for the interview platform.
+
+Interview Flow and Onboarding
+Onboarding processes integrate directly into chat functionality to gather candidate details without document uploads. This approach utilizes a sequence of 20 domain-specific questions to ensure consistent information collection.
+
+Technical Architecture and Execution
+The system utilizes Gemini 3.5 Flash for transcription and Gemini 3.1 Pro for evaluation via a decoupled, sequential pipeline. Task queuing optimizes performance by enabling immediate processing following each interview session.
+
+Agent Responsibilities and UX
+Modular design principles separate internet data scouting from evaluation logic to maintain system flexibility. A decision was made to retain participant video visibility for psychological responsiveness while enabling toggles for configuration.
+
+
+
+
+Decisions
+Aligned
+* Document upload functionality removal The document upload capability is removed from the chat interface, moving to direct data collection through chat.
+* Interview process question structure The interview process is structured to collect four static onboarding questions followed by a predefined set of twenty interview questions.
+* Low bandwidth text fallback implementation A text-based chat fallback mechanism is implemented for low bandwidth situations.
+* Asynchronous Data Scout Agent execution The Data Scout Agent is decoupled from the live interview flow to run as an asynchronous process.
+* System workflow agent sequence The system workflow is established as a sequential process: Interview, followed by Data Scout Agent, then Evaluator Agent, and finally Coordinator Agent.
+* LLM model selection policy The LLM strategy is defined as using Gemini 3.5 Flash for real-time interview hosting and Gemini 3.1 Pro for final evaluation and summary generation.
+* NoSQL JSON data storage Session data, transcripts, and summaries are stored in a NoSQL database using JSON format.
+* Optional user video feed The user video feed display is made optional and controlled by a feature flag.
+* Landing page removal The landing page is removed from the application flow.
+
+
+We've updated the Decisions section using your feedback.
+Let us know what you think: Helpful or Not Helpful
+
+
+
+
+Next steps
+* [Nehil Sood] Remove Onboarding Page: Delete the landing page from the workflow. Transition users directly into the interview process.
+* [Suryarjuna Gopakumar] Update Presentation Slides: Modify the project documentation slides to align with the revised interview and agent workflow.
+* [Nehil Sood] Remove Upload Capability: Remove the document upload functionality to simplify the interface.
+* [The group] Build Summary APIs: Develop the necessary accessory APIs for summarizing interview transcripts. Facilitate better visibility within the user interface.
+* [Nehil Sood] Share Repository: Provide access to the functional code repository once the implementation is complete.
+
+
+
+
+Details
+Did the screenshots in this section make your notes better or worse?
+* Onboarding Setup and Chat Functionality: Nehil Sood proposed a simple onboarding setup that includes capturing details such as company name, website, contact name, and role for a candidate appearing for an interview, along with an option to upload company documents that are not available on the internet. Aditya Sai Srikanth Palaparthy and Suryarjuna Gopakumar clarified that the client requested this process to be completed entirely through chat, noting that the client explicitly rejected having an upload functionality (00:01:11). Consequently, the team reached a consensus to remove the document upload capability and the landing page entirely, opting to collect the person's name, role, company, and website link directly through the initial chat questions (00:02:16) (00:21:22).
+  
+
+* Integration of Onboarding into the Live Interview: Aditya Sai Srikanth Palaparthy explained that onboarding will not be a standalone step but will be combined with the interview process itself. The live agent will ask an initial set of questions to capture the company name, email ID, or website, and will then display a list to the candidate to confirm if the captured details are correct before proceeding with the interview (00:02:16). Suryarjuna Gopakumar summarized the structure, stating that the first four questions of the interview will be static information-gathering questions, which will be followed by a predefined domain-specific set of 20 questions (00:03:13).
+* Natural Conversation Flow and Text-Based Fallback: Nehil Sood raised concerns that asking rigid questions upfront could break the flow of the interview, suggesting instead that the AI gather information naturally (e.g., from an open introduction like "Hi, I'm Nehil Sood from Cloud Sufi...") and then segregate it into a structured response for the agents (00:04:12). Suryarjuna Gopakumar agreed with this approach to ensure a natural flow (00:05:17). Additionally, Suryarjuna Gopakumar highlighted the need for a text-based fallback method for situations with low bandwidth where video is not supported. In this fallback mode, the system will switch from the live avatar to a text screen that asks questions or infers and confirms previously stated information, such as checking if a vendor supports clouds other than GCP (00:06:24).
+  
+
+* Decoupled Architecture and Sequential Agent Processing: The team discussed the timing and execution of the data scout agent. Nehil Sood noted that KI had a different understanding, believing the agent would run asynchronously in the background and tweak the interview in real time (00:09:09) (00:14:35). Suryarjuna Gopakumar argued against this approach, explaining that since the interview strictly follows the predefined 20 questions regardless of the vendor's inputs, running the agent in real time is unnecessary and risks introducing bias (00:08:12) (00:10:10). Suryarjuna Gopakumar emphasized the design principle of building separate "Lego blocks" to keep the system lightweight and unbiased, noting that the blocks can easily be merged in the future if needed. The team agreed on a sequential process where the interview is completed first, followed by the data scout agent gathering internet data, then the evaluator agent assessing the candidate, and finally the coordinator agent aligning with a human evaluator (00:10:10) (00:12:43).
+  
+
+* API Usage and Data Storage Strategy: Nehil Sood outlined the technical execution for the interview API calls, stating that the system will utilize Gemini 3.5 Flash for the live interview transcription and host management due to its efficiency. Once the interview is complete, the entire transcript will be sent to Gemini 3.1 Pro via a single API call for the heavier, more intelligent tasks of evaluation and summary generation (00:14:35). Nehil Sood and Suryarjuna Gopakumar also agreed on the data storage strategy, concluding that transcripts, session summaries, and overall session details must be stored in a proper NoSQL JSON format so that a human evaluator can easily review the session later (00:17:29).
+* Asynchronous Pipeline and Execution Timing: To optimize performance and minimize usage during Peak Application Times (PAS), Suryarjuna Gopakumar suggested exploring bulk processing, such as running data validations and evaluations together every four hours or after a 30-minute delay (00:15:49). Nehil Sood recommended firing the process immediately after an interview by queuing the tasks in a message queue (using a pub/sub methodology), arguing that it only requires two or three sequential Gemini calls and will notify users as soon as the evaluation and summary for a vendor are ready. Suryarjuna Gopakumar agreed to this approach, noting that the user interface will simply need a table to track statuses, such as "pending processing" or "pending evaluation," to keep users informed (00:16:36).
+  
+
+* User Video Visibility and Stakeholder Context: Nehil Sood noted a comment from the client requesting the removal of the user's live video from the top right of the screen, leaving only the AI assistant visible. Suryarjuna Gopakumar critiqued this design, explaining that psychological principles show people are more polite, honest, and responsive when they can see themselves, comparing it to the mirrors placed behind reception desks (00:18:32). Nehil Sood proposed a technical compromise to keep a feature flag or hook in the code so the video can be toggled off easily if the client insists. Additionally, Suryarjuna Gopakumar clarified the roles of the stakeholders involved: Lana is a TPM/mediator from SAIL (a business unit within Aramco), Caddy is a project manager from their end, and G (or Gokati) is from Aramco.ai, which operates as a separate business unit with independent management (00:19:29).
+* Data Scout Agent Responsibilities and Modular Design: Karan Tripathi questioned whether the data scout agent should flag discrepancies or findings within the interview answers. Suryarjuna Gopakumar clarified that the data scout agent's sole responsibility is to independently collect information about a company from the internet and store it, thereafter alerting the evaluator agent that the vendor is ready for processing. Evaluating the interview transcript against the internet findings using a scoring rubric is strictly the evaluator agent's job (00:22:23). Suryarjuna Gopakumar reiterated that maintaining this separation allows the data scout agent to remain modular, enabling it to be repurposed for other tasks in the future, such as acting as a LinkedIn scraper for hiring (00:23:25) (00:25:44).
+* Handover Planning and Wrap-Up: Nehil Sood informed the team that they will be on leave starting December 24th. To ensure project continuity, Nehil Sood confirmed they are keeping Karan Tripathi in the loop and will pass on their current work (00:25:44). Nehil Sood mentioned they are currently managing a separate repository and will share a proper working version of the code once it is ready (00:26:39). Suryarjuna Gopakumar agreed to take over the code and move it forward from there (00:25:44). The meeting concluded with Aditya Sai Srikanth Palaparthy noting that their limited availability was due to managing three concurrent tasks, including an ongoing UAT (00:26:39).
+
+
+
+
+You should review Gemini's notes to make sure they're accurate. Get tips and learn how Gemini takes notes
+How is the quality of these specific notes? Take a short survey to let us know your feedback, including how helpful the notes were for your needs.
+📖 Transcript
+Jul 20, 2026
+SAIL Resonance - Agent Interactions - Transcript
+00:00:08
+
+
+Nehil Sood: okay see my screen right?
+Suryarjuna Gopakumar: Okay. Yes.
+Nehil Sood: Okay so first of all these are the two major I guess the slides on which we have to discuss and let's dive with the flowchart
+Suryarjuna Gopakumar: Mhm.
+Nehil Sood: first. So there is a sign up and login that is okay done onboarding profile here we are also using data scout agent. So what are the expectations data agent and each and every agent on every step we have discussed over
+Aditya Sai Srikanth Palaparthy: up.
+Nehil Sood: here. So we can start one by one. Right.
+Suryarjuna Gopakumar: We can start one by one I would say.
+Nehil Sood: Just one minute a
+Suryarjuna Gopakumar: Yeah.
+Aditya Sai Srikanth Palaparthy: Up couple up.
+Nehil Sood: longer. Okay. Let's start up. Yeah. Um so okay, however you want. Hello
+Suryarjuna Gopakumar: Yep. Neil. Yes. All good.
+Nehil Sood: Surya.
+Suryarjuna Gopakumar: I think we can start with onboarding agent. Uh
+Nehil Sood: So on boarding is how we are looking forward.
+
+
+
+
+00:01:11
+
+
+Suryarjuna Gopakumar: okay.
+Nehil Sood: I I can also refer with the prototype build so far.
+Suryarjuna Gopakumar: Yeah.
+Nehil Sood: So now I am thinking of like something that we can provide. There's a simple uh onboarding setup like company name, website, contact name, role. It's a for a candidate who is appearing for the interview that who are you which company you are presenting and company
+Suryarjuna Gopakumar: Mhm.
+Nehil Sood: documents that if you want to upload somehow like resumeum for the company or what we can say is like uh uh turnover or any documents which are not available over the internet and you want to share and show your well done by the things done by a company.
+Aditya Sai Srikanth Palaparthy: Yeah, seems to be through chat,
+Nehil Sood: Okay.
+Aditya Sai Srikanth Palaparthy: right? I think that that that was their comment.
+Suryarjuna Gopakumar: They want to do it through chat.
+Nehil Sood: Yes.
+Suryarjuna Gopakumar: But in our chat screen,
+Aditya Sai Srikanth Palaparthy: Yes,
+Suryarjuna Gopakumar: we're not showing at any point any upload functionality or you know like
+Aditya Sai Srikanth Palaparthy: I think they mentioned they mentioned they did not want an upgrade functionality.
+
+
+
+
+00:02:16
+
+
+Aditya Sai Srikanth Palaparthy: I've asked that question specifically if they wanted people to some they said they don't want
+Suryarjuna Gopakumar: Okay, perfect. So if if that's the case,
+Aditya Sai Srikanth Palaparthy: them.
+Suryarjuna Gopakumar: then our only reference is uh the name of the person, uh the role of the person, the company, and the company's website
+Aditya Sai Srikanth Palaparthy: Yes.
+Suryarjuna Gopakumar: link.
+Aditya Sai Srikanth Palaparthy: And that should be done through uh so that should be done through either the a live agent
+Suryarjuna Gopakumar: Yeah.
+Aditya Sai Srikanth Palaparthy: itself.
+Suryarjuna Gopakumar: So that that happens during the interview process
+Aditya Sai Srikanth Palaparthy: Yeah.
+Suryarjuna Gopakumar: itself.
+Aditya Sai Srikanth Palaparthy: It should be the initial set of questions which and then finally there'll be a confirmation whether it captured everything properly or like the company name, company email id or the website. So it will display the list of that saying this is what I captured regarding your company is this correct or not and uh once they click yeah once they click accept or the
+Suryarjuna Gopakumar: Okay.
+Aditya Sai Srikanth Palaparthy: details whatever uh so then it'll proceed with the interview and data scout agent should take this information and then go
+
+
+
+
+00:03:13
+
+
+Suryarjuna Gopakumar: Okay.
+Aditya Sai Srikanth Palaparthy: online and then search so onboarding there's no onboarding steping step is combine with
+Suryarjuna Gopakumar: Okay.
+Aditya Sai Srikanth Palaparthy: interview.
+Suryarjuna Gopakumar: So let's say this is how it is. Uh first four questions of the interview are static questions. That's just information collected and then based on the domain they pick up there is
+Aditya Sai Srikanth Palaparthy: Yeah. Yes.
+Suryarjuna Gopakumar: another predefined set of 20 questions. Let's assume is is that what it is? The questions are predefined.
+Aditya Sai Srikanth Palaparthy: Yes.
+Suryarjuna Gopakumar: Right? That's something that we understand clearly.
+Aditya Sai Srikanth Palaparthy: Yeah. I think I think they wanted them to I
+Suryarjuna Gopakumar: No like yeah I mean like is confirming that's that's what that's that's what they want. So there are 20 questions. We are expecting answers for these 20 questions. Our job is just to transcribe the text to speech sorry speech to text and then write it down in a D. Fair.
+Aditya Sai Srikanth Palaparthy: Yes.
+
+
+
+
+00:04:12
+
+
+Aditya Sai Srikanth Palaparthy: So there are specific set of questions and then admins can make changes. Yeah.
+Suryarjuna Gopakumar: Uh good so far. So we know what is there in onboarding and what is there in the interview
+Nehil Sood: Okay. So it would be like a initial set of questions.
+Suryarjuna Gopakumar: screen.
+Nehil Sood: The basic question would be like tell me about yourself, right?
+Suryarjuna Gopakumar: No no intelligence in there. Basically just uh asking questions one after the other.
+Nehil Sood: Okay. um I guess but uh it would be like breaking the flow of the internet if you just think of like the first of all it is speaking like rigorously and asking questions and then it starts like okay now it's like morely of a llm so I would like that we can capture this information if you're capturing in the interview live then only we can give it a set of predefined questions before that the would be asking that this you need to ask and gather this information and it would be answered like hi I'm nil s I'm from cloud sufi and I'm working on this project and we would our company has done working for a couple of years over the AI innovations so this is how
+
+
+
+
+00:05:17
+
+
+Suryarjuna Gopakumar: That's
+Nehil Sood: we can gather and then we can segregate it mean like in a structured response once we have this data we can uh break it into the structured response and then feed it into the data scout agent or other agents which would evaluating
+Suryarjuna Gopakumar: Good, good thinking. Uh, so what you're saying is that I know what are the 20 questions I need to answer for. Uh,
+Nehil Sood: Yes.
+Suryarjuna Gopakumar: I just need those answers to be populated. I'll have to make it look as natural as I can. Okay,
+Nehil Sood: Yes.
+Suryarjuna Gopakumar: good. uh that that does make sense. Uh there are some engineering confirmation we would want to make. wonders. If we go to a textbased route, you know, there is no person over there and it's basically just happens through chat then what happens then do we just uh you know because they wouldn't type much then it'll have to be questionnaire right I mean chat is basically for what you asked I'll tell you in as less words as I can because it's typing I don't want to do
+
+
+
+
+00:06:24
+
+
+Nehil Sood: Okay. So you mean like there should be a chat means like we have to write it down or the human would be saying it to
+Suryarjuna Gopakumar: uh in chat. So when do they go for chat?
+Nehil Sood: us.
+Suryarjuna Gopakumar: When there is low bandwidth and the video is not supported then they go to the text mode.
+Nehil Sood: Okay. So it's like fallback method,
+Suryarjuna Gopakumar: It's a fallback method.
+Nehil Sood: right?
+Suryarjuna Gopakumar: It's a fallback method.
+Nehil Sood: Okay.
+Suryarjuna Gopakumar: we we'll have to prepare for the fallback method as well where the questions you know like they in in fallback questions you can ask them the questions hey this is what's happening if they've previously answered it obviously infer and tell them that hey just confirming are you you know you did mention that you're on GCP do you support other clouds as well or is it just GCP something of that sort right when
+Nehil Sood: Okay.
+Suryarjuna Gopakumar: yeah that's just an implementation detail
+Nehil Sood: So it is mostly like discussing it with another model but we just keep live avatar aside and it would be like a screen over there which would be asking question answer.
+
+
+
+
+00:07:17
+
+
+Suryarjuna Gopakumar: Yes.
+Nehil Sood: It would be all back methods was
+Suryarjuna Gopakumar: Yeah.
+Nehil Sood: fine.
+Suryarjuna Gopakumar: It it is just an implementation detail. It could it could work both ways. But what we understand right now is that we are only interested in capturing who are you uh on the onboarding. Again happens to the interviewer itself and then just go on shooting the 20 questions that you're supposed to ask in whatever feels the most natural way to ask those questions.
+Nehil Sood: Okay,
+Suryarjuna Gopakumar: Once this is done,
+Nehil Sood: that's Mhm.
+Suryarjuna Gopakumar: the data is captured and the data is there in the DB. Right now,
+Nehil Sood: Okay.
+Suryarjuna Gopakumar: post a conversation has happened for a user and once we know that the interview is complete, that is when we should initiate a data scout agent. You know, hey, this this data is available data scout for data scout agent. We are ready to pick up this, you know, or you know, we are ready for data scope agent to start uh procuring information about this particular client.
+
+
+
+
+00:08:12
+
+
+Nehil Sood: Okay.
+Suryarjuna Gopakumar: So that's basically uh the fetch and then data scout agent brings in supplementary data that is required and then brings it back and then says that now we are ready for evaluator to check it
+Nehil Sood: So it would be step by step method method right no working in a background
+Suryarjuna Gopakumar: would like you want it to run parallel why because one uh just because let's say I I start an interview and then say that you know like the companies his name is Claus Sufi and uh or I just spell it wrong or something. We don't want the interview to be biased saying that well I don't think you're a valid company dude I don't want to carry this forward right something we don't we are not doing any of those intelligences we're not interrupting we're not changing the course of question just because of it hey I see you've done some projects with Google tell me more about it none of that is happening right we are still sticking to the script of original 20 questions so we don't need to complicate the model by bringing in more context so it makes sense for us to separate it now in the future if we want to merge
+
+
+
+
+00:09:09
+
+
+Nehil Sood: Okay.
+Suryarjuna Gopakumar: them together it's not a hard job for us the call is happening in sync we can just switch this
+Nehil Sood: Okay.
+Suryarjuna Gopakumar: also to happen in real time we can trigger this API in real time to fetch that information and then squeeze it in right it's not It's not going to break our flow, but right now to make it lightweight, this makes the most sense. Separate it
+Nehil Sood: Uh uh actually I guess Ki is on the different page now that she when I talked
+Suryarjuna Gopakumar: up.
+Nehil Sood: to her in the evening she mentioned in her message. Let me just open that.
+Suryarjuna Gopakumar: I responded to them same message itself right on the group.
+Nehil Sood: Yes. Yes.
+Suryarjuna Gopakumar: Yeah.
+Nehil Sood: Yeah.
+Suryarjuna Gopakumar: So I I think what KI has is a different uh yeah this understanding is wrong. That's what I would say because they want it in no because we are not okay. So the way to break down this question is not when should the data scout agent run, right?
+
+
+
+
+00:10:10
+
+
+Suryarjuna Gopakumar: We can make the data scout agent run whenever we want it to run. It's it's not a thing. It's just an implementation detail. Is there a requirement of the data that we have from data scout agent in real time during
+Nehil Sood: Yes.
+Suryarjuna Gopakumar: the interview? No. Why? because we are still asking the same 20 questions. It doesn't matter who's coming and talking to me. If you're talking about quantum, I have 15 questions for you. I'm going to ask you that. I just want answers for those 15 questions. Nothing more, nothing less. So what is the relevance of me running it in background or not?
+Nehil Sood: Okay.
+Suryarjuna Gopakumar: It doesn't affect the flow. So we should separate it, right? I mean principle of design, Lego blocks build up separately. What is required needs to be squeezed. What is not required doesn't have to be you know like merging together at any
+Nehil Sood: Yeah,
+Suryarjuna Gopakumar: point.
+Nehil Sood: if you are suggesting like that implementation would be much easier if you're not working as an asynchronous job over here that is
+
+
+
+
+00:11:01
+
+
+Suryarjuna Gopakumar: Exactly.
+Nehil Sood: running and sharing the state with the interview conversation
+Suryarjuna Gopakumar: Exactly correct. Now if it is an HR round or if it's a tech interview,
+Nehil Sood: context.
+Suryarjuna Gopakumar: right, for a job, I will ask you what is a rack and you say something uh something wrong and like okay you know what you use this word what does that mean really right and then that's that's how I get you into that rabbit hole of questions right we don't need that here and and and especially and another thing about this product design
+Nehil Sood: Okay.
+Suryarjuna Gopakumar: is uh I want to work with you and you want to work with me right like we have to sit with that So the notion of what is what is it that we are avoiding?
+Nehil Sood: Mhm.
+Suryarjuna Gopakumar: Are we avoiding false positives? Are we avoiding true negatives? No, we're not. We are open to false positives here. We are open to welcoming you. Right? So I have to interview without bias. Whatever you tell me nil uh probably it's like hey I'm straight out of college.
+
+
+
+
+00:11:52
+
+
+Suryarjuna Gopakumar: I I've done c certain certain projects. I don't have a website, but I'm really interested in working with you guys and you know these are my projects and stuff and if that's interesting enough I think we should still try and talk to you right so we should approach this problem statement with a with a common design principle that the interviewer is going to be unbiased of your credentials I'm going to talk I'm going to collect information I am basically just your hiring person right I mean I just talk to
+Nehil Sood: Mhm.
+Suryarjuna Gopakumar: you and say what's the like you know what I what is your expected salary what extracts do you know I'm not interviewing you I want to know you right so that I can actually send you to the right candidate who will talk to you once I collect your resume someone screening you right and then telling you is this guy worth my time or not I mean it's okay as a greeter my job is to still welcome you inside right and that's how we should keep these things so just don't uh what I would say
+
+
+
+
+00:12:43
+
+
+Nehil Sood: Okay. So,
+Suryarjuna Gopakumar: is don't burden ourselves just with the technicalities of these things also understand the principle of why we're building you know how to approach these products right otherwise we just get into that we just get too techy into these things and just forget the requirement altogether. So let's let's keep it separate, right? And even even if tomorrow we want to merge it, it becomes easier for us. We have two Lego blocks. All we need to do is merge them when you ask for
+Nehil Sood: correct. Yeah, totally agreed with you.
+Suryarjuna Gopakumar: it.
+Nehil Sood: So in my understanding I think you trying to say is like interview would be a process. It would be first of all completed with a whole script we have managed. Then we would be doing a data scout agent.
+Suryarjuna Gopakumar: Yep.
+Nehil Sood: Data SC agent will be collecting the data from the all the sources on the internet or other sources which could be relevant for the candidate. And third would be like appraiser agent or we would evaluate agent is
+
+
+
+
+00:13:33
+
+
+Suryarjuna Gopakumar: Yes, evaluator.
+Nehil Sood: the better.
+Suryarjuna Gopakumar: Yeah, we just call it as evaluator agent looks at the what has been answered in the interview.
+Nehil Sood: Yeah.
+Suryarjuna Gopakumar: Looks at the scoring rubric that we've decided for scoring it. Looks at the available information. Just puts a score to
+Nehil Sood: Yes. And next and last would be coordinator agent would would be doing like what is the score is it matching with the
+Suryarjuna Gopakumar: it.
+Nehil Sood: threshold or is it going down or what however it would be mainly would be coordinating with human evaluator who will be finalizing that event should we give the green flag or the red flag for the or the candidate we are referring to
+Suryarjuna Gopakumar: Correct. That that's
+Nehil Sood: right okay that's means like it is uh now it would be like a simple and
+Suryarjuna Gopakumar: Yeah.
+Nehil Sood: straightforward process and
+Suryarjuna Gopakumar: It is we we will need to build certain accessory APIs which would be summarizing the transcript and things like that that will have to happen if required for the UI right and to facilitate some of these visibilities other than that it's a very very straightforward flow for
+
+
+
+
+00:14:35
+
+
+Nehil Sood: Yes. Even like if I went ahead with the interview, whole interview, right? At the end of the interview, it just takes the transcript and then send it to the Gemini 3.1 Pro. For the whole interview, I'm taking 3.5 flash. Then for evaluating and doing means like a more intelligent work I am using 3.1 because it is like only single call would be there and 3 flash five flash is That's better for a host.
+Suryarjuna Gopakumar: transfer stuff. Yes, more than enough. Yeah.
+Nehil Sood: Yes. So it is like an single API call would be going toward there. So yeah that's how it's working.
+Suryarjuna Gopakumar: Yeah,
+Nehil Sood: Uh even for it would be easy to migrate with UI and the back end we
+Suryarjuna Gopakumar: perfect.
+Nehil Sood: have
+Suryarjuna Gopakumar: Perfect. Any questions that we have
+Nehil Sood: okay no not yet.
+Suryarjuna Gopakumar: technically?
+Nehil Sood: I just want to confirm the flow over here cuz uh while I already prepared the plan according to this one that uh here it was mentioning that asynchronously it would be working in the background and mostly it's more be like it would be tweaking the interview but uh as we discussed it would be really straightforward and uh appropriate flow for the vendor that would be unbiased according to what answers he or she is giving and then uh it would be evaluating over the whole transcript not
+
+
+
+
+00:15:49
+
+
+Nehil Sood: just a chunks between
+Suryarjuna Gopakumar: Correct. Correct. Another thing to look at is data scout agent. uh like we discussed uh in today's call,
+Nehil Sood: it.
+Suryarjuna Gopakumar: it could actually run all the uh you know data validations and evaluations together for a day. That is also something that we should be looking at so as to minimize the flow during PAS or minimize the you know usage during PAS. Some of these
+Nehil Sood: We set up a chron job,
+Suryarjuna Gopakumar: things
+Nehil Sood: right? We once the interview is done we would be setting up the chron jobs after it whenever inside like quing up
+Suryarjuna Gopakumar: Yes.
+Nehil Sood: in the pipeline and whenever our instance will it's like using a message queue or something like that
+Suryarjuna Gopakumar: Correct. Correct.
+Nehil Sood: for that.
+Suryarjuna Gopakumar: Something of that sort is more than enough for us to cater to it. Uh again, their call on how they want it. If they want it immediately,
+Nehil Sood: Yes.
+Suryarjuna Gopakumar: we can fire it up immediately.
+
+
+
+
+00:16:36
+
+
+Suryarjuna Gopakumar: You know, like after 30 minutes, just run this thing or you know like do a bulk job of uh all the flows that's happened so far every four hours,
+Nehil Sood: I would say that we can do it immediately.
+Suryarjuna Gopakumar: right?
+Nehil Sood: Uh I'm saying that because it's just a single I mean like two or three Gemini calls one and after the other. So if uh it can handle the parallel calls or the best way would be like queuing it in the message queue. So once the queue is uh means like it's like a pubsubs type of methodology. So it won't take much time. You can get you will get a notification that the evaluation and the summary is now ready. Please have a look for the vendor A,
+Suryarjuna Gopakumar: Yep.
+Nehil Sood: vendor B, vendor C according to they are they are entering in the queue.
+Suryarjuna Gopakumar: Yep, that makes sense.
+Nehil Sood: Yes.
+Suryarjuna Gopakumar: We'll just need a table that shows a status, right? I mean, someone has interviewed, someone's information is processed or not.
+
+
+
+
+00:17:29
+
+
+Suryarjuna Gopakumar: That's that's the only reference, you know, the user needs to know that, hey, certain things are processed, you know, pending pending processing or pending evaluation, but they've uh gone through the flow, right? I mean, that's all they need to really know.
+Nehil Sood: Yes, that would be means like how we are dealing with the database, how we are storing, we need to store everything I guess the transcript and the session summary and how the session went everything in a proper in a JSON format it would be better nosql And then
+Suryarjuna Gopakumar: Yeah.
+Nehil Sood: uh uh anyone can refer that for that session. How it means an human evaluator can easily go through the whole session.
+Suryarjuna Gopakumar: Yeah, that does make
+Nehil Sood: Yes. So I guess uh currently all okay for me.
+Suryarjuna Gopakumar: sense.
+Nehil Sood: I guess we are on we do need to mean like tweak it a bit uh in the slides and
+Suryarjuna Gopakumar: Yeah, I uh I'll just change the slides. Is it okay if I change the slide? I think I know you've shared the high ones.
+
+
+
+
+00:18:32
+
+
+Suryarjuna Gopakumar: I'll just run that. Yes, currently you had a question.
+Nehil Sood: I also a few questions according to the comments we received from the code client. So they are asking first of all it's like a is like a I don't know why they want right it
+Suryarjuna Gopakumar: Yeah.
+Nehil Sood: feels much natural when we can see our own video but they are asking that there won't be a live video of the user top right so it would be just a AI assistant sitting in front of him
+Suryarjuna Gopakumar: Correct. But it's uh so I I I think it's it's a bad design principle to be honest uh for them to not see themselves because usually when people see themselves they are more responsive, honest and are more polite like you know these are all psychological principles. There's a reason why behind a lot of uh reception desks you see a mirror huge mirror you know you you you tend to be more polite you see yourself uh yeah I think we should we
+Nehil Sood: Yes.
+Suryarjuna Gopakumar: should tell them that if this is required if not it's
+
+
+
+
+00:19:29
+
+
+Nehil Sood: Yeah. We can keep a means like a hook over here.
+Suryarjuna Gopakumar: Yeah.
+Nehil Sood: If they don't require, we will remove the hook means I keep it as flag for flag would be turned off and then the video would not be there. Simply that.
+Suryarjuna Gopakumar: Correct.
+Nehil Sood: And the other is like I don't know I didn't understand that we asked this question and uh did she just ask the question back to us or
+Suryarjuna Gopakumar: Yeah. This is this this is she's she's asking this question for us.
+Nehil Sood: or
+Suryarjuna Gopakumar: She's asking this question for our sake.
+Nehil Sood: okay from our side to others do this got it done.
+Suryarjuna Gopakumar: Yeah. So,
+Nehil Sood: So
+Suryarjuna Gopakumar: Lana is so there are three companies involved like sale is a business unit inside Aramco and sale is who we are working with.
+Nehil Sood: yeah,
+Suryarjuna Gopakumar: Lana is from SAIL. Now the resonance is from Aramco.ai which is like a separate business unit altogether you know
+Nehil Sood: okay.
+Suryarjuna Gopakumar: like they are paid uh you know all their management is a different team altogether.
+
+
+
+
+00:20:24
+
+
+Suryarjuna Gopakumar: So Lana is working as a coordinator between the three of us.
+Nehil Sood: So she is more like a Yeah. mediator.
+Suryarjuna Gopakumar: Yeah, she's a P TPM/mediator. That's why you have Caddy again who's a project manager from their end as well. So, we have like three project managers in the loop.
+Nehil Sood: Okay. So, have we received anything? Okay. Nice to have we get documents.
+Suryarjuna Gopakumar: Okay. No, I mean Kati should not be responding to this, but Okay, no worries. No worries. I think she got confused somewhere. That's okay.
+Nehil Sood: just
+Aditya Sai Srikanth Palaparthy: uh that is the internal rights
+Suryarjuna Gopakumar: That that's that's from G, right? That's that's whatever BMA uh sent out. I don't know what to call him,
+Aditya Sai Srikanth Palaparthy: of
+Suryarjuna Gopakumar: man. Gokati like uh all of them look like I would misspell it if I say it. G is what they're calling him, right?
+Nehil Sood: just carry a Arabic accent and just what I
+
+
+
+
+00:21:22
+
+
+Suryarjuna Gopakumar: Yeah. Yeah.
+Nehil Sood: call No, sorry.
+Suryarjuna Gopakumar: Nice angle.
+Aditya Sai Srikanth Palaparthy: but did not reply anything to Lana.
+Suryarjuna Gopakumar: Reply anything. Okay, I think uh we
+Aditya Sai Srikanth Palaparthy: I don't think we ask questions
+Suryarjuna Gopakumar: should
+Nehil Sood: And for this like that uh this landing page should I remove this or
+Aditya Sai Srikanth Palaparthy: actually.
+Nehil Sood: should I keep it?
+Suryarjuna Gopakumar: think we should remove this. We don't need it.
+Nehil Sood: Yes. Okay.
+Suryarjuna Gopakumar: We should expect this information.
+Nehil Sood: the document
+Suryarjuna Gopakumar: Yeah,
+Nehil Sood: uploading.
+Suryarjuna Gopakumar: we should remove the whole uh document upload capability based on what AI said. Uh we should just keep it to you know data collection directly from the chat.
+Nehil Sood: So it would be like uh the this page would be removed and the next would be like the straightforward we will jump into the interview.
+Suryarjuna Gopakumar: Correct.
+Nehil Sood: Okay, great. I will remove this one. Yeah. Okay. Karan do you have any question regarding the data scout agent?
+
+
+
+
+00:22:23
+
+
+Nehil Sood: Have you got clarity?
+Karan Tripathi: Yes. So
+Nehil Sood: Now it be like uh we would be doing asynchronously.
+Karan Tripathi: it
+Nehil Sood: We would be just carrying all the conversation and the transcript and then uh the agent would be shooting up the questions to the web search tool.
+Karan Tripathi: so like just uh agent collect information and set their findings to evaluator.
+Nehil Sood: Yes.
+Suryarjuna Gopakumar: Yes, let's treat this as two separate flows. Current uh we need the agent to collect information and store it and then pass the you know like knowledge back to the third agent like know it should just let the know uh third agent know that this vendor is now ready for processing. That's that's how we want to hand it off.
+Karan Tripathi: like uh it send its finding to evaluator and it should not mark any flag in like interview answers like it's find any flag in interview answer.
+Suryarjuna Gopakumar: No, that's that's for the evaluator to do, right? I mean,
+Karan Tripathi: Yeah.
+Suryarjuna Gopakumar: the agent Yeah. the the agent just brings in what what data do I have about this particular company, right?
+
+
+
+
+00:23:25
+
+
+Suryarjuna Gopakumar: I mean, otherwise otherwise we will club the data scout agent with the interviewer.
+Karan Tripathi: Yeah.
+Suryarjuna Gopakumar: It's not clubed, right? We should be able think of it this way. In the future, we should be able to do use data scout agent to just fetch information about any company that I want to know, right? I mean, I want to know about Google.com or you know like Google as a company. That's that's basically data science job. It it brings you an independent analysis of what the SC is.
+Karan Tripathi: Okay.
+Suryarjuna Gopakumar: Now what the evaluator does is I have this interval and I have this information that I have probably like you know reading a Wikipedia page and reading what what had told us about himself. Does this make sense? Or okay, based on what I know about these two things, do these do this company pass the threshold of working with us based on this rubric that I have. That's how you want it to work, right? Independent. So, how does uh how does scoring really work?
+
+
+
+
+00:24:19
+
+
+Karan Tripathi: Good.
+Suryarjuna Gopakumar: Scoring works when each data is unbiased and whatever can be fed, right? I mean, independent evaluations, that's that's what we should treat them as. So interview Nahil's proof of who Nihil is what data scout brings in what what data scout agent thinks or what what the internet tells us nil is this is what I have based on this what do I have as an evaluator I have a particular job for nil will nil fit based on what nil is telling us and what is telling us yes that's what the evaluator does all of
+Karan Tripathi: What?
+Suryarjuna Gopakumar: the individual analysis why does this work in this fashion now if I want a specific specific interview to you know like search information about Nahil that Nah has told us search citations for what Nahil has claimed for from the internet that could be a separate agent's job altogether right has n done GCP deployments before read you know like read his uh GitHub and to find these information you you can customize these things in as many blocks but the principle of design is keep things as separate as you can because they are Lego blocks that can be plugged in any place anywhere it's it's not hard right I mean these are all configurators the moment you start thinking of these things as a very coupled piece it becomes very difficult for you to abstract information or even to see them as okay how can I make this work for larger
+
+
+
+
+00:25:44
+
+
+Suryarjuna Gopakumar: larger pieces now data scout agent I can mold my data scout agent to be a LinkedIn reader when I start for hiring people right scrape this person's LinkedIn understand who he is you know like what kind of metadata do we about it. So, uh it's always better for us to separate things as much as possible when you're working on web applications. When you're building things for mobile, merge as much as possible because you don't need to do a lot of things on mobile. You want things to plug. But for web apps, separate them as much as possible.
+Karan Tripathi: Yeah. Okay. Thank you.
+Suryarjuna Gopakumar: Yeah. Okay. All good so far.
+Nehil Sood: Yes. Um,
+Suryarjuna Gopakumar: And I know you're on leave from fourth day onwards,
+Nehil Sood: look.
+Suryarjuna Gopakumar: right? 24 onwards, right?
+Nehil Sood: Yes. Yes.
+Suryarjuna Gopakumar: Yeah. So, just pass on whatever it is that you're doing and then whatever I can move ahead,
+Nehil Sood: Yeah.
+Suryarjuna Gopakumar: I'll I'll do that.
+
+
+
+
+00:26:39
+
+
+Nehil Sood: Sure. rather on two then I I'm already keeping Karan in the loop.
+Suryarjuna Gopakumar: Perfect. Perfect.
+Nehil Sood: So yes
+Suryarjuna Gopakumar: Give me check your code and then I'll take it from
+Nehil Sood: actually I'm managing a different repo at this moment.
+Suryarjuna Gopakumar: Sure.
+Nehil Sood: I not so once I means like have a proper working one then I will share it.
+Suryarjuna Gopakumar: Perfect. No worries. No worries at all.
+Nehil Sood: Okay.
+Suryarjuna Gopakumar: Okay. Are you all you good with things so
+Aditya Sai Srikanth Palaparthy: ES.
+Nehil Sood: Yeah.
+Suryarjuna Gopakumar: far?
+Nehil Sood: Karan,
+Suryarjuna Gopakumar: I'm going to assume that you know like things are good with that's a bet.
+Nehil Sood: I will discuss with him later if he has any problem.
+Suryarjuna Gopakumar: Sure.
+Nehil Sood: Okay.
+Suryarjuna Gopakumar: All right.
+Nehil Sood: Thank you.
+Aditya Sai Srikanth Palaparthy: Thank
+Nehil Sood: Have a great evening.
+Aditya Sai Srikanth Palaparthy: you.
+Karan Tripathi: Yeah.
+Suryarjuna Gopakumar: It's very difficult to get your time, man. Your calendar is like the most uh thing that I've seen
+Karan Tripathi: Thank you.
+Aditya Sai Srikanth Palaparthy: So, yeah,
+Suryarjuna Gopakumar: today.
+Aditya Sai Srikanth Palaparthy: there's M UAT going on as well.
+Suryarjuna Gopakumar: Yeah.
+Aditya Sai Srikanth Palaparthy: So,
+Suryarjuna Gopakumar: No, no worries. No worries.
+Aditya Sai Srikanth Palaparthy: three things for me to do.
+Suryarjuna Gopakumar: Absolutely no worries. It's okay.
+Aditya Sai Srikanth Palaparthy: Okay.
+Suryarjuna Gopakumar: Yeah.
+
+
+
+
+Transcription ended after 00:27:41
+
+
+This editable transcript was computer generated and might contain errors. People can also change the text after it was created.

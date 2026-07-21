@@ -1,5 +1,6 @@
-import { X, Download, Loader2, AlertTriangle } from 'lucide-react';
-import type { FollowupProposal, ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
+import { X, Download, Loader2, AlertTriangle, Check, ExternalLink } from 'lucide-react';
+import type { FollowupRecommendation, PipelineStatus, ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
+import { SESSIONS_SHEET_URL } from '../config';
 import { downloadTranscript } from '../utils/downloadTranscript';
 import { FollowupPanel } from './FollowupPanel';
 import { ScorecardPanel } from './ScorecardPanel';
@@ -11,12 +12,80 @@ interface SummaryPanelProps {
   turns: TranscriptTurn[];
   sessionId: string | null;
   error: string | null;
-  // Gateway mode only: final values from the finalize response, included in
-  // the downloadable Markdown record.
+  // Gateway mode: pipeline progress + the values it fills in as it runs. All
+  // included in the downloadable Markdown record.
+  pipelineStatus?: PipelineStatus | null;
   scorecard?: ScorecardData | null;
   insights?: ScoutFinding[] | null;
-  followup?: FollowupProposal | null;
+  recommendation?: FollowupRecommendation | null;
   onDismiss: () => void;
+}
+
+// Ordered post-interview pipeline steps shown in the strip. "interviewed" is
+// the pre-scouting handoff state; it maps to the Scouting step being active.
+const STEPS: { key: PipelineStatus; label: string }[] = [
+  { key: 'scouting', label: 'Scouting' },
+  { key: 'evaluating', label: 'Evaluating' },
+  { key: 'ready', label: 'Ready' },
+];
+
+function activeIndex(status: PipelineStatus): number {
+  switch (status) {
+    case 'interviewed':
+    case 'scouting':
+      return 0;
+    case 'evaluating':
+      return 1;
+    case 'ready':
+      return STEPS.length; // all complete
+    default:
+      return -1;
+  }
+}
+
+function PipelineStrip({ status }: { status: PipelineStatus }) {
+  const failed = status === 'failed';
+  const current = activeIndex(status);
+
+  return (
+    <section className="space-y-2">
+      {!failed && (
+        <div className="flex items-center gap-2">
+          {STEPS.map((step, i) => {
+            const done = i < current;
+            const active = i === current;
+            return (
+              <div key={step.key} className="flex items-center gap-2">
+                <div
+                  className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border ${
+                    done
+                      ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/25'
+                      : active
+                        ? 'text-indigo-200 bg-indigo-500/10 border-indigo-500/25'
+                        : 'text-slate-500 bg-slate-800/40 border-slate-700/50'
+                  }`}
+                >
+                  {done ? (
+                    <Check className="w-3 h-3" />
+                  ) : active ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : null}
+                  {step.label}
+                </div>
+                {i < STEPS.length - 1 && <span className="text-slate-600">→</span>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {failed && (
+        <div className="flex items-start gap-2 text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span className="text-sm">Post-interview analysis failed — transcript and summary were saved.</span>
+        </div>
+      )}
+    </section>
+  );
 }
 
 export function SummaryPanel({
@@ -26,9 +95,10 @@ export function SummaryPanel({
   turns,
   sessionId,
   error,
+  pipelineStatus,
   scorecard,
   insights,
-  followup,
+  recommendation,
   onDismiss,
 }: SummaryPanelProps) {
   if (!visible) return null;
@@ -40,8 +110,19 @@ export function SummaryPanel({
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700/50 shrink-0">
           <h2 className="text-lg font-bold text-white">Interview Summary</h2>
           <div className="flex items-center gap-2">
+            {SESSIONS_SHEET_URL && (
+              <a
+                href={SESSIONS_SHEET_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-semibold px-3 py-1.5 rounded-lg border border-slate-700/50 transition-colors"
+              >
+                <ExternalLink className="w-4 h-4" />
+                All sessions
+              </a>
+            )}
             <button
-              onClick={() => downloadTranscript(summary, turns, sessionId, { scorecard, insights, followup })}
+              onClick={() => downloadTranscript(summary, turns, sessionId, { scorecard, insights, recommendation })}
               disabled={isGenerating}
               className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 text-sm font-semibold px-3 py-1.5 rounded-lg border border-slate-700/50 transition-colors"
             >
@@ -84,11 +165,14 @@ export function SummaryPanel({
             )}
           </section>
 
+          {/* Post-interview pipeline progress (gateway mode only) */}
+          {!isGenerating && pipelineStatus && <PipelineStrip status={pipelineStatus} />}
+
           {/* Final scorecard from the holistic end-of-interview scoring pass */}
           {!isGenerating && <ScorecardPanel scorecard={scorecard} />}
 
-          {/* Coordinator follow-up card (only when a follow-up was recommended) */}
-          {!isGenerating && <FollowupPanel followup={followup} />}
+          {/* Follow-up recommendation card (only when one was recommended) */}
+          {!isGenerating && <FollowupPanel recommendation={recommendation} />}
 
           {/* Full transcript section */}
           <section>

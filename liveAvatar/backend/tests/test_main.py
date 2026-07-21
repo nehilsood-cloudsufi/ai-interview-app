@@ -1,5 +1,4 @@
-from app.main import app, lifespan
-from app.services import gemini_provisioning
+from app.main import app
 
 
 def _all_paths(routes):
@@ -23,11 +22,13 @@ def test_all_expected_routes_registered():
     paths = _all_paths(app.routes)
     expected = {
         "/api/concurrency",
-        "/api/upload-resume",
         "/api/session",
         "/api/session/stop",
         "/api/transcript/finalize",
         "/api/transcript/{session_id}",
+        "/api/interview",
+        "/api/interview/{interview_id}/state",
+        "/api/interview/{interview_id}/chat",
     }
     assert expected.issubset(paths)
 
@@ -43,21 +44,3 @@ def test_cors_configured_to_allow_any_origin(client):
     )
     assert response.headers.get("access-control-allow-origin") == "http://example.com"
     assert response.headers.get("access-control-allow-credentials") == "true"
-
-
-async def test_lifespan_calls_provision_then_deprovision(monkeypatch):
-    calls = []
-
-    async def fake_provision():
-        calls.append("provision")
-
-    async def fake_deprovision():
-        calls.append("deprovision")
-
-    monkeypatch.setattr(gemini_provisioning, "provision_gemini", fake_provision)
-    monkeypatch.setattr(gemini_provisioning, "deprovision_gemini", fake_deprovision)
-
-    async with lifespan(app):
-        assert calls == ["provision"]
-
-    assert calls == ["provision", "deprovision"]

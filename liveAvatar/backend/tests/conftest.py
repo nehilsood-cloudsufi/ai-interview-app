@@ -19,18 +19,15 @@ _SETTINGS_IMPORTERS = [
     "app.config",
     "app.main",
     "app.dependencies",
+    "app.routers.interview",
     "app.routers.llm_gateway",
-    "app.routers.resume",
     "app.routers.sessions",
-    "app.routers.vendor",
     "app.services.interview_config",
-    "app.services.resume_parser",
     "app.services.liveavatar_client",
-    "app.services.gemini_provisioning",
     "app.services.gemini_client",
     "app.services.host_agent",
-    "app.services.appraiser_agent",
-    "app.services.coordinator_agent",
+    "app.services.evaluator_agent",
+    "app.services.scout_agent",
     "app.services.transcript_store",
     "app.services.summary_service",
 ]
@@ -54,10 +51,6 @@ def patch_settings(monkeypatch):
 
 @pytest.fixture
 def client():
-    # Deliberately NOT `with TestClient(app) as client:` - entering the
-    # context manager would trigger FastAPI's lifespan (provision/deprovision
-    # Gemini), which makes real network calls if unmocked. Ordinary router
-    # tests don't want that.
     return TestClient(app)
 
 
@@ -98,6 +91,22 @@ def fake_gcs_client(monkeypatch):
     fake_client = FakeStorageClient()
     monkeypatch.setattr(storage, "Client", lambda: fake_client)
     return fake_client
+
+
+@pytest.fixture(autouse=True)
+def clear_questionnaire_caches():
+    """Every lru_cache'd loader in interview_config needs its cache cleared
+    around each test - otherwise a domain/questionnaire/rubric loaded (or
+    monkeypatched away) in one test leaks into the next."""
+    from app.services.interview_config import get_questionnaire, get_rubric, list_domains
+
+    get_questionnaire.cache_clear()
+    get_rubric.cache_clear()
+    list_domains.cache_clear()
+    yield
+    get_questionnaire.cache_clear()
+    get_rubric.cache_clear()
+    list_domains.cache_clear()
 
 
 @pytest.fixture

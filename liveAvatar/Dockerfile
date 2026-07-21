@@ -3,6 +3,13 @@ FROM node:20-alpine as frontend-builder
 
 WORKDIR /app/frontend
 
+# Build-time Vite flags (see frontend/src/config.ts). Defaults preserve
+# current behavior: self-view camera panel shown, sessions-sheet link hidden.
+ARG VITE_SHOW_SELF_VIEW=true
+ARG VITE_SESSIONS_SHEET_URL=""
+ENV VITE_SHOW_SELF_VIEW=${VITE_SHOW_SELF_VIEW}
+ENV VITE_SESSIONS_SHEET_URL=${VITE_SESSIONS_SHEET_URL}
+
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install
 

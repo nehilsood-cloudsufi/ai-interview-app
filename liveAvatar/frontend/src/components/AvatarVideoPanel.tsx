@@ -5,11 +5,10 @@ import type { SessionStatus, SpeakingState } from '../types';
 interface AvatarVideoPanelProps {
   status: SessionStatus;
   speakingState: SpeakingState;
-  isUploading: boolean;
   videoRef: RefObject<HTMLVideoElement | null>;
 }
 
-export function AvatarVideoPanel({ status, speakingState, isUploading, videoRef }: AvatarVideoPanelProps) {
+export function AvatarVideoPanel({ status, speakingState, videoRef }: AvatarVideoPanelProps) {
   return (
       <div className={`flex-1 relative flex items-center justify-center rounded-3xl overflow-hidden shadow-2xl transition-all duration-300 ${
           status === 'disconnected' ? 'bg-slate-900/50 border border-slate-800' : 'bg-black'
@@ -30,7 +29,7 @@ export function AvatarVideoPanel({ status, speakingState, isUploading, videoRef 
           {status === 'connecting' && (
              <div className="flex flex-col items-center text-slate-400 bg-slate-900/50 w-full h-full justify-center backdrop-blur-sm">
                  <Loader2 className="w-12 h-12 mb-6 animate-spin text-indigo-500" />
-                 <p className="text-lg font-medium">{isUploading ? 'Uploading context...' : 'Connecting to avatar...'}</p>
+                 <p className="text-lg font-medium">Connecting to avatar...</p>
              </div>
           )}
           <video ref={videoRef} autoPlay playsInline className={`w-full h-full object-cover ${status === 'connected' ? 'opacity-100' : 'opacity-0 absolute'}`} />

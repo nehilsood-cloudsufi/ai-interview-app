@@ -15,9 +15,6 @@ def test_settings_defaults():
     fresh = Settings(liveavatar_api_key=None, gemini_api_key=None, gcs_bucket=None)
     assert fresh.liveavatar_base_url == "https://api.liveavatar.com/v1"
     assert fresh.avatar_id == "dd73ea75-1218-4ef3-92ce-606d5f7fbc0a"
-    assert fresh.max_files == 5
-    assert fresh.max_file_size_bytes == 5 * 1024 * 1024
-    assert fresh.max_pdf_pages == 10
     assert fresh.transcripts_local_dir == "transcripts"
     assert fresh.gemini_model == "gemini-flash-latest"
     assert fresh.gemini_model_fallback == "gemini-3.5-flash"
@@ -35,6 +32,31 @@ def test_settings_env_overrides(monkeypatch):
     assert fresh.gcs_bucket == "my-bucket"
 
 
+def test_host_streaming_disabled_by_default():
+    fresh = Settings(liveavatar_api_key=None, gemini_api_key=None, gcs_bucket=None)
+    assert fresh.host_streaming_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("true", True), ("True", True), ("1", True), ("false", False), ("0", False), ("", False)],
+)
+def test_host_streaming_env_override(monkeypatch, value, expected):
+    monkeypatch.setenv("HOST_STREAMING_ENABLED", value)
+    assert Settings().host_streaming_enabled is expected
+
+
 def test_settings_prompt_content():
     assert "Topics Covered" in settings.interview_summary_prompt
-    assert "AI Engineering role" in settings.interview_base_prompt
+
+
+def test_host_chat_mode_prompt_default():
+    fresh = Settings(liveavatar_api_key=None, gemini_api_key=None, gcs_bucket=None)
+    assert "typing in a text chat" in fresh.host_chat_mode_prompt
+    assert "concise" in fresh.host_chat_mode_prompt.lower()
+
+
+def test_host_chat_mode_prompt_env_override(monkeypatch):
+    monkeypatch.setenv("HOST_CHAT_MODE_PROMPT", "Custom chat-mode instructions.")
+    fresh = Settings()
+    assert fresh.host_chat_mode_prompt == "Custom chat-mode instructions."

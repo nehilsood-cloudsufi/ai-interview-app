@@ -1,6 +1,5 @@
 import logging
 import os
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,8 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.logging_config import configure_logging
-from app.routers import concurrency, interview, llm_gateway, resume, sessions, transcripts, vendor
-from app.services import gemini_provisioning
+from app.routers import concurrency, interview, llm_gateway, sessions, transcripts
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -19,14 +17,7 @@ if not settings.liveavatar_api_key:
     logger.warning("LIVEAVATAR_API_KEY is missing from the environment variables. Users will need to provide their own.")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await gemini_provisioning.provision_gemini()
-    yield  # Let the app run
-    await gemini_provisioning.deprovision_gemini()
-
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,10 +29,8 @@ app.add_middleware(
 
 app.include_router(concurrency.router)
 app.include_router(interview.router)
-app.include_router(resume.router)
 app.include_router(sessions.router)
 app.include_router(transcripts.router)
-app.include_router(vendor.router)
 app.include_router(llm_gateway.router)
 
 # Serve React Frontend in production

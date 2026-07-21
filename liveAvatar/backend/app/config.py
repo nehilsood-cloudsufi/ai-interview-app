@@ -12,29 +12,33 @@ class Settings:
     gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     liveavatar_base_url: str = "https://api.liveavatar.com/v1"
     avatar_id: str = "dd73ea75-1218-4ef3-92ce-606d5f7fbc0a"
-    max_files: int = 5
-    max_file_size_bytes: int = 5 * 1024 * 1024
-    max_pdf_pages: int = 10
-    interview_base_prompt: str = (
-        "You are an experienced technical interviewer assessing a candidate for an "
-        "AI Engineering role. Ask them a few simple, basic questions about RAG "
-        "(Retrieval-Augmented Generation), fundamentals of Large Language Models (LLMs), "
-        "and general Generative AI basics. Keep your responses concise and conversational. "
-        "Do not output markdown, speak naturally."
-    )
 
     # --- Resonance multi-agent interview ---
     # Externally reachable base URL of this backend (Cloud Run URL or a dev
-    # tunnel). Unset -> legacy mode: sessions fall back to today's
-    # Gemini-provisioned behavior so local dev without a tunnel still works.
+    # tunnel), so HeyGen can call back into /llm/{interview_id}/v1. Required
+    # for session creation - gateway mode is the only mode.
     public_base_url: str | None = field(default_factory=lambda: os.getenv("PUBLIC_BASE_URL"))
-    questionnaire_path: str = field(default_factory=lambda: os.getenv("QUESTIONNAIRE_PATH", "data/questionnaire.yaml"))
+    # Per-domain questionnaires: production assigns each vendor's interview a
+    # domain (e.g. "ai_ml"), and `{questionnaires_dir}/{domain}.yaml` is the
+    # complete, standalone linear script for that domain. See
+    # app.services.interview_config.get_questionnaire/list_domains.
+    questionnaires_dir: str = field(
+        default_factory=lambda: os.getenv("QUESTIONNAIRES_DIR", "data/questionnaires")
+    )
+    default_domain: str = field(default_factory=lambda: os.getenv("DEFAULT_DOMAIN", "ai_ml"))
     rubric_path: str = field(default_factory=lambda: os.getenv("RUBRIC_PATH", "data/rubric.yaml"))
     scout_enabled: bool = field(default_factory=lambda: os.getenv("SCOUT_ENABLED", "true").lower() != "false")
+    # Optional latency polish: when enabled, the gateway streams the Host's
+    # reply to HeyGen token-by-token (avatar starts speaking sooner) instead of
+    # emitting the whole reply in one chunk. Default off so production behavior
+    # is unchanged until explicitly turned on.
+    host_streaming_enabled: bool = field(
+        default_factory=lambda: os.getenv("HOST_STREAMING_ENABLED", "false").lower() in ("1", "true", "yes")
+    )
 
     # System prompt for the Host agent's per-turn Gemini call. The service
-    # appends the vendor profile, current question, and any Scout intel as
-    # structured blocks after this text.
+    # appends the vendor profile and current question as structured blocks
+    # after this text.
     host_system_prompt: str = (
         "You are a professional, friendly AI host conducting a structured "
         "vendor-qualification interview on behalf of a procurement team. You "
@@ -44,18 +48,24 @@ class Settings:
         "output markdown, and keep each reply to a few spoken sentences. "
         "Judge whether the vendor's latest message fully answers the current "
         "question: if it does, acknowledge it briefly and then, IN THE SAME "
-        "reply, naturally ask the next question listed for the branch signal "
-        "you chose (or deliver a warm closing if that branch ends the "
-        "interview). Never end a reply with a bare acknowledgment - the "
-        "vendor must always hear a question or a closing, or the conversation "
-        "stalls. If the answer is not complete, ask one focused follow-up. "
-        "The interview flow itself is controlled by the system, not by you - "
-        "report your judgement only through the JSON fields described below.\n\n"
+        "reply, naturally ask the next question given to you (or deliver a "
+        "warm closing if there is no next question). Never end a reply with "
+        "a bare acknowledgment - the vendor must always hear a question or a "
+        "closing, or the conversation stalls. Keep acknowledgments to a few "
+        "words and never repeat or re-confirm information that was already "
+        "confirmed earlier in the conversation - a human interviewer says "
+        "things once. If the answer is not complete, "
+        "ask one focused follow-up. The interview flow itself is a fixed "
+        "script controlled by the system, not by you - report your judgement "
+        "only through the JSON fields described below.\n\n"
         "Always respond with a single JSON object of exactly this shape: "
         '{"reply": "<what you say to the vendor next>", '
         '"answer_complete": <true if the current question is fully answered>, '
-        '"branch_signal": "<one of the allowed branch signals for the current '
-        'question>"}'
+        '"profile_updates": {"company_name": <string or null>, '
+        '"website": <string or null>, "contact_name": <string or null>, '
+        '"contact_role": <string or null>}}. Set each profile_updates field '
+        "to the vendor's own words only when they just stated or corrected "
+        "that detail this turn; otherwise leave it null."
     )
     # Spoken by the Host without an LLM call once the interview has already
     # reached the END node.
@@ -66,15 +76,31 @@ class Settings:
     # Safe reply when the Gemini turn fails (HTTP error or unparsable JSON);
     # state is left untouched so the vendor can simply repeat themselves.
     host_fallback_reply: str = "I'm sorry, could you say that again?"
+    # Appended to host_system_prompt only when the Host is driving the
+    # text-chat fallback (mode="chat" in host_agent.handle_turn/stream_turn).
+    # Per the 2026-07-20 meeting: typed answers are terse, so the avatar-mode
+    # prompt's "ask one focused follow-up" instinct must not fire on short but
+    # complete typed answers.
+    host_chat_mode_prompt: str = field(
+        default_factory=lambda: os.getenv(
+            "HOST_CHAT_MODE_PROMPT",
+            "The vendor is typing in a text chat, not speaking. Treat concise "
+            "answers as complete rather than pressing for elaboration, and "
+            "keep your own replies brief. If a detail was already stated "
+            "earlier, infer it and confirm it instead of re-asking (for "
+            "example: 'You mentioned GCP earlier - do you support other "
+            "clouds too?').",
+        )
+    )
 
-    # System prompt for the Appraiser agent's single holistic scoring call,
+    # System prompt for the Evaluator agent's single holistic scoring call,
     # made once at finalize over the WHOLE transcript (not per answer - a
     # deliberate design choice so early answers are judged in the context of
     # the full conversation). The service appends the rubric categories (ids,
     # names, descriptions) as a structured block after this text; scores are
     # clamped/filtered in code regardless of what comes back.
-    appraiser_system_prompt: str = (
-        "You are a strict, impartial appraiser evaluating a completed "
+    evaluator_system_prompt: str = (
+        "You are a strict, impartial evaluator assessing a completed "
         "vendor-qualification interview. You are given the full interview "
         "transcript and the rubric categories to score. Judge the interview "
         "as a whole: weigh everything the vendor said across the entire "
@@ -85,32 +111,13 @@ class Settings:
         "reward vague claims without substance. If a category was never "
         "meaningfully discussed in the interview, OMIT it entirely rather "
         "than guessing a score. For each scored category, quote one to three "
-        "short supporting excerpts from the vendor's own words.\n\n"
+        "short supporting excerpts from the vendor's own words. Independent "
+        "research findings may also be provided; weigh the vendor's claims "
+        "against them where relevant.\n\n"
         "Always respond with a single JSON object of exactly this shape: "
         '{"categories": {"<category_id>": {"score": <0-5>, '
         '"evidence": ["<short quote>", ...], '
         '"rationale": "<one or two sentences>"}, ...}}'
-    )
-
-    # System prompt for the Coordinator agent's invite-drafting Gemini call.
-    # The service appends the vendor profile, the follow-up recommendation,
-    # the focus categories with supporting evidence quotes, and any Scout
-    # findings as structured blocks after this text.
-    coordinator_invite_prompt: str = (
-        "You are a coordinator preparing a follow-up meeting package after a "
-        "vendor-qualification interview, on behalf of a procurement team. You "
-        "are given the vendor's profile, the follow-up recommendation (advance "
-        "to a next-round deep-dive, or clarify weak areas), the focus "
-        "categories with supporting evidence from the interview, and any "
-        "research findings. Draft a concise, professional meeting package: a "
-        "short meeting title, a focused agenda covering the focus categories, "
-        "a sensible meeting duration in minutes, and an invitation email "
-        "addressed to the vendor contact by name. The email must be "
-        "professional and brief, and its body must be plain text with no "
-        "markdown formatting.\n\n"
-        "Always respond with a single JSON object of exactly this shape: "
-        '{"title": "<meeting title>", "agenda": ["<agenda item>", ...], '
-        '"duration_minutes": <integer>, "email_draft": "<plain-text email>"}'
     )
 
     # --- Transcript + summary feature ---
@@ -121,7 +128,16 @@ class Settings:
     # Gemini's OpenAI-compatible endpoint (same base already used to provision the
     # LiveAvatar LLM config). Reused here for direct summary generation via httpx.
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
-    # Fast tier (Host turns, Coordinator drafting) and pro tier (holistic
+    # Gemini's NATIVE REST endpoint (not the OpenAI-compat one above) - only this
+    # endpoint supports the `google_search` grounding tool, which the Data Scout
+    # needs. Kept as its own setting rather than derived by string-munging
+    # gemini_base_url, so the two can diverge independently.
+    gemini_native_base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "GEMINI_NATIVE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/"
+        )
+    )
+    # Fast tier (Host turns) and pro tier (holistic
     # scoring + summary at finalize, where latency doesn't matter). Both use
     # Gemini's auto-tracking "-latest" aliases so we stop hand-bumping
     # versions; the pinned *_fallback names are retried automatically by
@@ -146,6 +162,27 @@ class Settings:
         "Use short bullet points under each heading (a sentence or two each). If a "
         "section has nothing to report from the transcript, write '- N/A'. Keep the "
         "whole summary tight and scannable."
+    )
+
+    # Prompt for the Data Scout's single Gemini native-API call with Google
+    # Search grounding enabled. Structured output can't be combined with the
+    # google_search tool, so the JSON contract is asked for in-prompt and
+    # parsed with app.services.llm_json.parse_llm_json instead of a schema.
+    # The contract is a JSON *object* wrapping the findings array (not a bare
+    # top-level array) so parse_llm_json - which only ever extracts a
+    # top-level JSON object, by design - can be reused unmodified; a bare
+    # array of objects would otherwise silently decode to just its first
+    # element (raw_decode stops at the first complete JSON value it finds).
+    scout_research_prompt: str = (
+        "Research the following vendor company on the web, using the company "
+        "name (and website, if given) below. Cover: company overview; "
+        "products/services offered; notable clients or recent news; and any "
+        "red flags (disputes, controversies, credibility concerns). Respond "
+        "with STRICTLY a single JSON object (no prose, no markdown fences) of "
+        'exactly this shape: {"findings": [{"topic": "<short topic label>", '
+        '"summary": "<1-3 sentence summary>", "source_url": "<url or null>"}, '
+        "...]}. Include 3 to 8 findings, each summary 1 to 3 sentences. If you "
+        'genuinely find nothing credible about the company, return {"findings": []}.'
     )
 
 

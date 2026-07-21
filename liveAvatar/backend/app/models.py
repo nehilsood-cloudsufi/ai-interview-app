@@ -4,40 +4,19 @@ from pydantic import BaseModel
 
 
 class CreateSessionRequest(BaseModel):
-    context_id: str | None = None
-    llm_configuration_id: str | None = None
     avatar_id: str | None = None
-    api_key: str | None = None
-    # Set (with PUBLIC_BASE_URL configured) to run in gateway mode: the session
-    # gets a per-interview Custom LLM pointing back at our /llm/{id}/v1 gateway.
+    # Identifies the interview whose gateway session should be created; the
+    # session gets a per-interview Custom LLM pointing back at our
+    # /llm/{id}/v1 gateway.
     interview_id: str | None = None
-
-
-class CreateSessionResponse(BaseModel):
-    session_token: str
-    session_id: str
 
 
 class StopSessionRequest(BaseModel):
     session_token: str | None = None
     context_id: str | None = None
-    api_key: str | None = None
     # Gateway mode: identifies the interview whose LLM config/secret/context
     # should be torn down best-effort on stop.
     interview_id: str | None = None
-
-
-class StopSessionResponse(BaseModel):
-    status: str
-    api_status: int | None = None
-
-
-class UploadResumeResponse(BaseModel):
-    context_id: str
-
-
-class VendorProfileResponse(BaseModel):
-    interview_id: str
 
 
 class ConcurrencyResponse(BaseModel):
@@ -45,7 +24,7 @@ class ConcurrencyResponse(BaseModel):
 
 
 class TranscriptTurn(BaseModel):
-    role: Literal["interviewer", "candidate"]
+    role: Literal["interviewer", "candidate", "system"]
     text: str
     timestamp: float | None = None
 
@@ -83,31 +62,86 @@ class FollowupRecommendationModel(BaseModel):
     focus_categories: list[str]
 
 
-class FollowupProposalModel(BaseModel):
-    recommendation: FollowupRecommendationModel
-    title: str
-    agenda: list[str]
-    duration_minutes: int
-    email_draft: str
-
-
 class FinalizeTranscriptResponse(BaseModel):
     summary: str
     # False when summary generation failed but the transcript was still saved.
     summary_ok: bool = True
-    # Present only in gateway mode (interview_id resolved to a live interview);
-    # the final values so the UI needs no extra state poll.
+    # Gateway mode: "interviewed" once finalize hands the interview to the
+    # background pipeline, progressing to "ready"/"failed" as it runs -
+    # polled via GET /api/interview/{id}/state. None for the legacy
+    # (no/unknown interview_id) path, which has no pipeline at all.
+    pipeline_status: str | None = None
+    # Scorecard/insights/recommendation now arrive via polling, not in this
+    # response - the pipeline runs in the background after finalize returns,
+    # so these are always None in gateway mode too.
     scorecard: ScorecardModel | None = None
     insights: list[ScoutFindingModel] | None = None
-    # Coordinator follow-up proposal; None when nothing is recommended, the
-    # coordinator failed (soft-fail), or in legacy mode.
-    followup: FollowupProposalModel | None = None
+    recommendation: FollowupRecommendationModel | None = None
+
+
+class CreateInterviewRequest(BaseModel):
+    # Optional: missing/null resolves to settings.default_domain. An unknown
+    # domain is rejected with a 400 by the router.
+    domain: str | None = None
+
+
+class CreateInterviewResponse(BaseModel):
+    interview_id: str
+
+
+class DomainInfo(BaseModel):
+    id: str
+    title: str
+
+
+class DomainsResponse(BaseModel):
+    domains: list[DomainInfo]
+
+
+class VendorProfileModel(BaseModel):
+    company_name: str
+    website: str | None
+    contact_name: str
+    contact_role: str | None
 
 
 class InterviewStateResponse(BaseModel):
     status: Literal["created", "active", "finished"]
+    domain: str
     # Topic of the current questionnaire node; None when the interview has
     # reached END (or the node id is unknown).
     current_topic: str | None
     insights: list[ScoutFindingModel]
     updated_at: str  # ISO-8601 UTC timestamp of this snapshot
+    # Post-interview pipeline progress (None until finalize hands the
+    # interview to app.services.pipeline); the UI polls this endpoint for it.
+    pipeline_status: str | None = None
+    scorecard: ScorecardModel | None = None
+    recommendation: FollowupRecommendationModel | None = None
+    vendor_profile: VendorProfileModel
+
+
+class ChatRequest(BaseModel):
+    text: str
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    # True once the questionnaire has reached host_agent.END_NODE_ID.
+    done: bool
+
+
+class UpdateProfileRequest(BaseModel):
+    # None = "not provided" (leave alone); a provided string (even empty
+    # after strip) IS applied and locks the field against the LLM.
+    company_name: str | None = None
+    website: str | None = None
+    contact_name: str | None = None
+    contact_role: str | None = None
+
+
+class UpdateProfileResponse(BaseModel):
+    vendor_profile: VendorProfileModel
+    # Sorted for determinism - the full set of profile fields ever manually
+    # edited, which the Host's profile_updates merge will never overwrite.
+    manually_edited_fields: list[str]

@@ -4,49 +4,24 @@ from pydantic import ValidationError
 from app.models import (
     ConcurrencyResponse,
     CreateSessionRequest,
-    CreateSessionResponse,
     FinalizeTranscriptRequest,
     FinalizeTranscriptResponse,
     StopSessionRequest,
-    StopSessionResponse,
     TranscriptTurn,
-    UploadResumeResponse,
 )
 
 
 def test_create_session_request_all_optional():
     req = CreateSessionRequest()
-    assert req.context_id is None
-    assert req.llm_configuration_id is None
     assert req.avatar_id is None
-    assert req.api_key is None
-
-
-def test_create_session_response_requires_fields():
-    with pytest.raises(ValidationError):
-        CreateSessionResponse(session_token="tok")
-    resp = CreateSessionResponse(session_token="tok", session_id="sid")
-    assert resp.session_token == "tok"
-    assert resp.session_id == "sid"
+    assert req.interview_id is None
 
 
 def test_stop_session_request_all_optional():
     req = StopSessionRequest()
     assert req.session_token is None
     assert req.context_id is None
-    assert req.api_key is None
-
-
-def test_stop_session_response_defaults():
-    resp = StopSessionResponse(status="stopped")
-    assert resp.api_status is None
-
-
-def test_upload_resume_response_requires_context_id():
-    with pytest.raises(ValidationError):
-        UploadResumeResponse()
-    resp = UploadResumeResponse(context_id="ctx-1")
-    assert resp.context_id == "ctx-1"
+    assert req.interview_id is None
 
 
 def test_concurrency_response():
@@ -59,6 +34,13 @@ def test_transcript_turn_valid_roles():
     assert turn.timestamp is None
     turn2 = TranscriptTurn(role="candidate", text="hello", timestamp=1.5)
     assert turn2.timestamp == 1.5
+
+
+def test_transcript_turn_accepts_system_role():
+    # Manual profile-edit note turns (app.routers.interview.update_profile)
+    # use role="system", so finalize requests carrying one must validate too.
+    turn = TranscriptTurn(role="system", text="[Vendor manually corrected their profile: ...]")
+    assert turn.role == "system"
 
 
 def test_transcript_turn_rejects_invalid_role():

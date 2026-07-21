@@ -4,7 +4,14 @@ import pytest
 import yaml
 
 from app.config import settings
-from app.services.interview_config import get_questionnaire, get_rubric, load_questionnaire, load_rubric
+from app.services.interview_config import (
+    get_questionnaire,
+    get_rubric,
+    get_start_node_id,
+    list_domains,
+    load_questionnaire,
+    load_rubric,
+)
 
 
 def _write_yaml(path: Path, data: dict) -> Path:
@@ -12,15 +19,17 @@ def _write_yaml(path: Path, data: dict) -> Path:
     return path
 
 
-def _valid_questionnaire_data() -> dict:
+def _valid_questionnaire_data(domain: str = "company_overview", title: str = "Test Domain") -> dict:
     return {
+        "domain": domain,
+        "title": title,
         "questions": [
             {
-                "id": "verify_identity",
-                "topic": "identity_verification",
-                "ask": "Confirm the vendor's details.",
+                "id": "company_overview",
+                "topic": "company_overview",
+                "ask": "Ask for a brief overview of the company.",
                 "rubric_categories": [],
-                "branches": [{"signal": "default", "next": "closing"}],
+                "next": "closing",
             },
             {
                 "id": "closing",
@@ -28,9 +37,9 @@ def _valid_questionnaire_data() -> dict:
                 "ask": "Thank the vendor for their time.",
                 "rubric_categories": [],
                 "max_followups": 0,
-                "branches": [{"signal": "finished", "next": "END"}],
+                "next": "END",
             },
-        ]
+        ],
     }
 
 
@@ -44,65 +53,69 @@ def _valid_rubric_data() -> dict:
 
 
 def test_load_questionnaire_valid(tmp_path):
-    path = _write_yaml(tmp_path / "q.yaml", _valid_questionnaire_data())
+    path = _write_yaml(tmp_path / "company_overview.yaml", _valid_questionnaire_data())
 
-    nodes = load_questionnaire(path)
+    questionnaire = load_questionnaire(path)
 
-    assert set(nodes) == {"verify_identity", "closing"}
-    assert nodes["verify_identity"].branches[0].next == "closing"
-    assert nodes["closing"].max_followups == 0
-    assert nodes["closing"].branches[0].next == "END"
+    assert questionnaire.domain == "company_overview"
+    assert questionnaire.title == "Test Domain"
+    assert set(questionnaire.nodes) == {"company_overview", "closing"}
+    assert questionnaire.nodes["company_overview"].next == "closing"
+    assert questionnaire.nodes["closing"].max_followups == 0
+    assert questionnaire.nodes["closing"].next == "END"
+
+
+def test_load_questionnaire_domain_stem_mismatch_raises(tmp_path):
+    path = _write_yaml(tmp_path / "some_other_name.yaml", _valid_questionnaire_data(domain="company_overview"))
+
+    with pytest.raises(ValueError, match="does not match filename"):
+        load_questionnaire(path)
 
 
 def test_load_questionnaire_empty_raises(tmp_path):
     data = _valid_questionnaire_data()
     data["questions"] = []
-    path = _write_yaml(tmp_path / "q.yaml", data)
+    path = _write_yaml(tmp_path / "company_overview.yaml", data)
 
     with pytest.raises(ValueError, match="at least one question"):
         load_questionnaire(path)
 
 
-def test_load_questionnaire_unknown_branch_target_raises(tmp_path):
+def test_load_questionnaire_unknown_next_target_raises(tmp_path):
     data = _valid_questionnaire_data()
-    data["questions"][0]["branches"] = [{"signal": "default", "next": "nonexistent_question"}]
-    path = _write_yaml(tmp_path / "q.yaml", data)
+    data["questions"][0]["next"] = "nonexistent_question"
+    path = _write_yaml(tmp_path / "company_overview.yaml", data)
 
     with pytest.raises(ValueError, match="unknown question"):
         load_questionnaire(path)
 
 
-def test_load_questionnaire_missing_default_branch_raises(tmp_path):
+def test_load_questionnaire_orphan_node_raises(tmp_path):
+    # A third node exists but nothing in the chain from the start node ever
+    # points to it - unreachable, which a fixed linear script must not allow.
     data = _valid_questionnaire_data()
-    # Real branching (more than one live signal) without a "default" catch-all.
-    data["questions"][0]["branches"] = [
-        {"signal": "mentions_ai_ml", "next": "closing"},
-        {"signal": "mentions_security", "next": "closing"},
-    ]
-    path = _write_yaml(tmp_path / "q.yaml", data)
+    data["questions"].append(
+        {
+            "id": "orphan",
+            "topic": "orphan",
+            "ask": "Never reached.",
+            "rubric_categories": [],
+            "next": "END",
+        }
+    )
+    path = _write_yaml(tmp_path / "company_overview.yaml", data)
 
-    with pytest.raises(ValueError, match="default"):
+    with pytest.raises(ValueError, match="unreachable"):
         load_questionnaire(path)
 
 
-def test_load_questionnaire_terminal_node_without_default_signal_name_is_allowed(tmp_path):
-    # A node whose only branch points straight to END doesn't need the
-    # literal signal name "default" - there's nowhere else it could go.
+def test_load_questionnaire_cycle_raises(tmp_path):
     data = _valid_questionnaire_data()
-    path = _write_yaml(tmp_path / "q.yaml", data)
+    # closing now points back at company_overview instead of END - a cycle.
+    data["questions"][1]["next"] = "company_overview"
+    path = _write_yaml(tmp_path / "company_overview.yaml", data)
 
-    nodes = load_questionnaire(path)
-
-    assert nodes["closing"].branches[0].signal == "finished"
-    assert nodes["closing"].branches[0].next == "END"
-
-
-def test_load_questionnaire_node_with_no_branches_raises(tmp_path):
-    data = _valid_questionnaire_data()
-    data["questions"][1]["branches"] = []
-    path = _write_yaml(tmp_path / "q.yaml", data)
-
-    with pytest.raises(ValueError, match="no branches"):
+    with pytest.raises(ValueError, match="cycle"):
         load_questionnaire(path)
 
 
@@ -136,43 +149,95 @@ def test_load_rubric_weights_within_tolerance_is_allowed(tmp_path):
     assert len(categories) == 2
 
 
-def test_shipped_questionnaire_loads_and_validates():
-    nodes = load_questionnaire(Path(settings.questionnaire_path))
-    # The shipped tree starts at company_overview - identity verification was
-    # deliberately removed (the intake form is the source of truth).
-    assert "verify_identity" not in nodes
-    assert next(iter(nodes)) == "company_overview"
-    assert nodes["company_overview"].branches
-
-
 def test_shipped_rubric_loads_and_weights_sum_to_one():
     categories = load_rubric(Path(settings.rubric_path))
     assert abs(sum(c.weight for c in categories.values()) - 1.0) < 0.01
 
 
+# --- Per-domain loading (app.services.interview_config.get_questionnaire) ---
+
+
 @pytest.fixture
-def clear_config_cache():
-    get_questionnaire.cache_clear()
-    get_rubric.cache_clear()
-    yield
-    get_questionnaire.cache_clear()
-    get_rubric.cache_clear()
+def domains_dir(tmp_path, patch_settings):
+    directory = tmp_path / "questionnaires"
+    directory.mkdir()
+    patch_settings(questionnaires_dir=str(directory))
+    return directory
 
 
-def test_get_questionnaire_and_rubric_are_cached_singletons(clear_config_cache):
-    questionnaire = get_questionnaire()
-    rubric = get_rubric()
-
-    assert "company_overview" in questionnaire
-    assert abs(sum(c.weight for c in rubric.values()) - 1.0) < 0.01
-    assert get_questionnaire() is questionnaire
-    assert get_rubric() is rubric
+def _seed_domain(directory: Path, domain: str, title: str = "Some Domain") -> Path:
+    return _write_yaml(directory / f"{domain}.yaml", _valid_questionnaire_data(domain=domain, title=title))
 
 
-def test_get_questionnaire_resolves_relative_to_backend_root(clear_config_cache, tmp_path, monkeypatch):
-    # The default paths are relative ("data/questionnaire.yaml"); loading must
-    # not depend on the process CWD.
-    monkeypatch.chdir(tmp_path)
+def test_get_questionnaire_loads_domain_file(domains_dir):
+    _seed_domain(domains_dir, "widgets")
 
-    assert "company_overview" in get_questionnaire()
-    assert get_rubric()
+    nodes = get_questionnaire("widgets")
+
+    assert set(nodes) == {"company_overview", "closing"}
+
+
+def test_get_questionnaire_is_cached_per_domain(domains_dir):
+    _seed_domain(domains_dir, "widgets")
+
+    first = get_questionnaire("widgets")
+    assert get_questionnaire("widgets") is first
+
+
+def test_get_questionnaire_unknown_domain_raises_key_error(domains_dir):
+    with pytest.raises(KeyError):
+        get_questionnaire("does_not_exist")
+
+
+def test_get_questionnaire_rejects_non_slug_domain(domains_dir):
+    for bogus in ("../secrets", "a/b", "Weird-Domain", "with space", ""):
+        with pytest.raises(KeyError):
+            get_questionnaire(bogus)
+
+
+def test_get_start_node_id_resolves_domain_first_node(domains_dir):
+    _seed_domain(domains_dir, "widgets")
+
+    assert get_start_node_id("widgets") == "company_overview"
+
+
+def test_list_domains_sorted_by_id(domains_dir):
+    _seed_domain(domains_dir, "zeta", title="Zeta Domain")
+    _seed_domain(domains_dir, "alpha", title="Alpha Domain")
+
+    domains = list_domains()
+
+    assert domains == [("alpha", "Alpha Domain"), ("zeta", "Zeta Domain")]
+
+
+def test_list_domains_is_cached(domains_dir):
+    _seed_domain(domains_dir, "alpha", title="Alpha Domain")
+
+    first = list_domains()
+    _seed_domain(domains_dir, "beta", title="Beta Domain")
+
+    assert list_domains() is first
+
+
+# --- Real shipped questionnaire files under data/questionnaires/ ---
+
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_all_shipped_questionnaires_load_and_validate():
+    directory = _BACKEND_ROOT / "data" / "questionnaires"
+    rubric = load_rubric(_BACKEND_ROOT / settings.rubric_path)
+    yaml_files = sorted(directory.glob("*.yaml"))
+
+    assert len(yaml_files) == 3
+
+    for path in yaml_files:
+        questionnaire = load_questionnaire(path)
+        assert questionnaire.domain == path.stem
+        assert questionnaire.title
+        assert next(iter(questionnaire.nodes)) == "intro"
+        for node in questionnaire.nodes.values():
+            for category_id in node.rubric_categories:
+                assert category_id in rubric, (
+                    f"{path.name} question '{node.id}' references unknown rubric category '{category_id}'"
+                )

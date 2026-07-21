@@ -4,9 +4,15 @@ structured Gemini turn.
 Per user utterance, `handle_turn` makes a single call to Gemini's
 OpenAI-compatible chat endpoint (same raw-httpx pattern as
 `summary_service`) asking for JSON `{"reply", "answer_complete",
-"branch_signal"}`. The LLM only phrases the reply and reports its
-judgement - all state mutation (appending turns, resolving branches,
-advancing `current_node_id`, follow-up accounting) is done here in code.
+"profile_updates"}`. The LLM only phrases the reply, judges whether the
+current question is fully answered, and reports any vendor profile details
+just stated/corrected - all state mutation (appending turns, advancing
+`current_node_id` along the fixed linear script, follow-up accounting,
+merging profile_updates into `state.vendor_profile`) is done here in code.
+Fields the vendor has manually corrected via `PATCH
+/api/interview/{id}/profile` (tracked in `state.manually_edited_fields`) are
+permanently locked against this merge - manual edits always win, though the
+vendor can always re-edit that field manually again.
 
 Answer-text collection: `state.followup_count` counts the follow-up rounds
 already exchanged for the current question, and each round appended exactly
@@ -20,19 +26,21 @@ again" reply is returned and the state is left completely unchanged.
 """
 
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Literal
 
 from app.config import settings
 from app.models import TranscriptTurn
 from app.services import gemini_client
 from app.services.interview_config import QuestionNode, RubricCategory
-from app.services.interview_state import InterviewState
+from app.services.interview_state import InterviewState, VendorProfile
 from app.services.llm_json import parse_llm_json
+from app.services.reply_stream import ReplyStreamExtractor
 
 logger = logging.getLogger(__name__)
 
 END_NODE_ID = "END"
-DEFAULT_SIGNAL = "default"
 
 _ROLE_LABELS = {"interviewer": "Interviewer", "candidate": "Candidate"}
 # How many trailing entries of state.turns are replayed to Gemini as context.
@@ -52,22 +60,39 @@ _MAX_TOKENS = 800
 # Strict structured output: the compat endpoint constrains decoding to this
 # schema, which (with parse_llm_json as the belt) prevents the malformed-JSON
 # turns observed in the 2026-07-18 live test.
+# `reply` must stay the FIRST property - the streaming extractor
+# (reply_stream.ReplyStreamExtractor) depends on it being emitted first.
+# `profile_updates` is required (with all four of ITS properties required
+# too) because the Gemini compat endpoint's strict mode rejects a schema that
+# omits a property from `required`; null is how the LLM says "nothing new".
 _TURN_SCHEMA = {
     "type": "object",
     "properties": {
         "reply": {"type": "string"},
         "answer_complete": {"type": "boolean"},
-        "branch_signal": {"type": "string"},
+        "profile_updates": {
+            "type": "object",
+            "properties": {
+                "company_name": {"type": ["string", "null"]},
+                "website": {"type": ["string", "null"]},
+                "contact_name": {"type": ["string", "null"]},
+                "contact_role": {"type": ["string", "null"]},
+            },
+            "required": ["company_name", "website", "contact_name", "contact_role"],
+        },
     },
-    "required": ["reply", "answer_complete", "branch_signal"],
+    "required": ["reply", "answer_complete", "profile_updates"],
 }
+
+# Keys of profile_updates / VendorProfile fields it may overwrite.
+_PROFILE_FIELDS = ("company_name", "website", "contact_name", "contact_role")
 
 
 @dataclass
 class TurnResult:
     reply: str  # what the avatar says next
     answer_complete: bool  # True -> current question answered; state advanced
-    completed_question: QuestionNode | None  # set when answer_complete (Appraiser hook)
+    completed_question: QuestionNode | None  # set when answer_complete (Evaluator hook)
     answer_text: str  # user's full answer for the completed question ("" if not complete)
 
 
@@ -81,52 +106,56 @@ def _render_transcript(turns: list[TranscriptTurn]) -> str:
     return "\n".join(lines)
 
 
+_NOT_CAPTURED = "(not captured yet)"
+
+
+def _display(value: str | None) -> str:
+    return value.strip() if value and value.strip() else _NOT_CAPTURED
+
+
 def _render_system_content(
-    state: InterviewState, node: QuestionNode, questionnaire: dict[str, QuestionNode]
+    state: InterviewState,
+    node: QuestionNode,
+    questionnaire: dict[str, QuestionNode],
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> str:
     profile = state.vendor_profile
-    contact = profile.contact_name
-    if profile.contact_role:
-        contact += f" ({profile.contact_role})"
 
     lines = [
         settings.host_system_prompt,
         "",
         "Vendor profile:",
-        f"- Company: {profile.company_name}",
-        f"- Contact: {contact}",
+        f"- Company: {_display(profile.company_name)}",
+        f"- Website: {_display(profile.website)}",
+        f"- Contact name: {_display(profile.contact_name)}",
+        f"- Contact role: {_display(profile.contact_role)}",
+        "- Whenever the vendor states or corrects any of these details, "
+        "report them in profile_updates; otherwise return null for all four fields.",
     ]
-    if profile.website:
-        lines.append(f"- Website: {profile.website}")
 
-    signals = ", ".join(branch.signal for branch in node.branches)
+    next_node = questionnaire.get(node.next)  # None only for the literal END
+    if next_node is None:
+        next_line = "- no further questions - thank them and close the interview."
+    else:
+        next_line = f"- {next_node.ask}"
+
     lines += [
         "",
         "Current question:",
         f"- Topic: {node.topic}",
         f"- Ask: {node.ask}",
-        f"- Allowed branch signals: {signals}",
         "",
-        # The LLM never mutates the tree, but it must SPEAK the next question
-        # in the same reply that closes the current one - HeyGen only calls us
-        # when the vendor talks, so a reply that ends on a bare acknowledgment
-        # leaves the avatar waiting in silence (observed live 2026-07-20).
-        "If the answer is complete, the next question by branch signal:",
+        # The LLM never advances the script itself, but it must SPEAK the next
+        # question in the same reply that closes the current one - HeyGen only
+        # calls us when the vendor talks, so a reply that ends on a bare
+        # acknowledgment leaves the avatar waiting in silence (observed live
+        # 2026-07-20).
+        "If the answer is complete, the next question to ask in the same reply:",
+        next_line,
     ]
-    for branch in node.branches:
-        next_node = questionnaire.get(branch.next)
-        if next_node is None:  # END: questionnaire validation guarantees only END is absent
-            lines.append(f"- {branch.signal}: no further questions - thank them and close the interview.")
-        else:
-            lines.append(f"- {branch.signal}: {next_node.ask}")
 
-    if state.scout_findings:
-        lines += ["", "Known vendor intel:"]
-        for finding in state.scout_findings:
-            bullet = f"- {finding.topic}: {finding.summary}"
-            if finding.source_url:
-                bullet += f" (source: {finding.source_url})"
-            lines.append(bullet)
+    if mode == "chat":
+        lines += ["", settings.host_chat_mode_prompt]
 
     return "\n".join(lines)
 
@@ -137,28 +166,20 @@ def _render_user_content(state: InterviewState, user_text: str) -> str:
     return f"{transcript}\n{latest}" if transcript else latest
 
 
-def _resolve_branch(node: QuestionNode, signal: str | None) -> str:
-    for branch in node.branches:
-        if branch.signal == signal:
-            return branch.next
-    for branch in node.branches:
-        if branch.signal == DEFAULT_SIGNAL:
-            return branch.next
-    # Questionnaire validation guarantees a node without a default branch has
-    # every branch pointing at END.
-    return node.branches[0].next
-
-
-async def _call_gemini(
+def _build_payload(
     state: InterviewState,
     node: QuestionNode,
     user_text: str,
     questionnaire: dict[str, QuestionNode],
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> dict:
-    payload = {
+    """The per-turn Gemini request, shared by the buffered and streaming paths.
+    `reply` is first in `_TURN_SCHEMA` so the streaming path can speak it before
+    the trailing routing fields arrive."""
+    return {
         "model": settings.gemini_model,
         "messages": [
-            {"role": "system", "content": _render_system_content(state, node, questionnaire)},
+            {"role": "system", "content": _render_system_content(state, node, questionnaire, mode)},
             {"role": "user", "content": _render_user_content(state, user_text)},
         ],
         "response_format": {
@@ -168,6 +189,16 @@ async def _call_gemini(
         "reasoning_effort": "low",
         "max_tokens": _MAX_TOKENS,
     }
+
+
+async def _call_gemini(
+    state: InterviewState,
+    node: QuestionNode,
+    user_text: str,
+    questionnaire: dict[str, QuestionNode],
+    mode: Literal["avatar", "chat"] = "avatar",
+) -> dict:
+    payload = _build_payload(state, node, user_text, questionnaire, mode)
 
     # Parse failures get one retry (fresh sample, fast); HTTP failures don't -
     # a Gemini outage should fall back immediately, not double the wait inside
@@ -197,10 +228,15 @@ async def handle_turn(
     user_text: str,
     questionnaire: dict[str, QuestionNode],
     rubric: dict[str, RubricCategory] | None,
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> TurnResult:
     """Process one user utterance: one Gemini call, then code-driven state
-    mutation. `rubric` is accepted for interface parity with the Appraiser
-    flow; the Host itself does not score answers."""
+    mutation. `rubric` is accepted for interface parity with the Evaluator
+    flow; the Host itself does not score answers. `mode` selects which
+    frontend is driving the turn: "avatar" (HeyGen, spoken) is the default and
+    renders byte-identical to before this parameter existed; "chat" appends
+    settings.host_chat_mode_prompt so terse typed answers aren't treated as
+    incomplete."""
     if state.current_node_id == END_NODE_ID:
         return TurnResult(
             reply=settings.host_closing_reply,
@@ -215,10 +251,10 @@ async def handle_turn(
     node = questionnaire[state.current_node_id]
 
     try:
-        parsed = await _call_gemini(state, node, user_text, questionnaire)
+        parsed = await _call_gemini(state, node, user_text, questionnaire, mode)
         reply = str(parsed["reply"])
         answer_complete = bool(parsed.get("answer_complete"))
-        branch_signal = parsed.get("branch_signal")
+        profile_updates = parsed.get("profile_updates")
     except Exception:
         logger.warning(
             "Host turn failed for interview %s at node %s; returning fallback reply.",
@@ -232,6 +268,41 @@ async def handle_turn(
             completed_question=None,
             answer_text="",
         )
+
+    return _apply_outcome(state, node, user_text, reply, answer_complete, profile_updates)
+
+
+def _merge_profile_updates(profile: VendorProfile, updates: dict | None, locked: set[str]) -> None:
+    """Overwrite only the fields the vendor actually gave a new value for -
+    null, missing, or whitespace-only entries leave the existing value alone.
+    Runs on EVERY turn (not just the onboarding nodes) so a late mention or
+    correction anywhere in the interview still sticks. Fields in `locked`
+    (manually corrected via PATCH /api/interview/{id}/profile) are skipped
+    entirely - a manual edit always wins over the LLM's profile_updates,
+    though the vendor can still re-edit that field manually at any time."""
+    if not updates:
+        return
+    for field_name in _PROFILE_FIELDS:
+        if field_name in locked:
+            continue
+        value = updates.get(field_name)
+        if isinstance(value, str) and value.strip():
+            setattr(profile, field_name, value.strip())
+
+
+def _apply_outcome(
+    state: InterviewState,
+    node: QuestionNode,
+    user_text: str,
+    reply: str,
+    answer_complete: bool,
+    profile_updates: dict | None,
+) -> TurnResult:
+    """Deterministic state mutation once the reply and judgement are in hand.
+    Shared by `handle_turn` and `stream_turn` so both drive the state machine
+    identically. Only reached on the success path - soft-fail returns before
+    ever calling this, so a failed turn never merges a profile update."""
+    _merge_profile_updates(state.vendor_profile, profile_updates, state.manually_edited_fields)
 
     # Candidate texts already given for this node (see module docstring),
     # captured before the new turns are appended.
@@ -253,15 +324,102 @@ async def handle_turn(
                 completed_question=None,
                 answer_text="",
             )
-        # Follow-up budget exhausted: force-advance as if complete, via the
-        # default branch, still speaking the LLM's reply.
-        branch_signal = DEFAULT_SIGNAL
+        # Follow-up budget exhausted: force-advance as if complete, still
+        # speaking the LLM's reply.
 
-    state.current_node_id = _resolve_branch(node, branch_signal)
+    state.current_node_id = node.next
     state.followup_count = 0
     return TurnResult(
         reply=reply,
         answer_complete=True,
         completed_question=node,
         answer_text="\n".join([*prior_answer_texts, user_text]),
+    )
+
+
+@dataclass
+class StreamedTurn:
+    """Holder for the final outcome of a streaming turn. `stream_turn` yields
+    reply text and, once the object is complete, sets `result` (a `TurnResult`)
+    so the caller can log the same fields the buffered path reports."""
+
+    result: TurnResult | None = None
+
+
+async def stream_turn(
+    state: InterviewState,
+    user_text: str,
+    questionnaire: dict[str, QuestionNode],
+    rubric: dict[str, RubricCategory] | None,
+    outcome: StreamedTurn,
+    mode: Literal["avatar", "chat"] = "avatar",
+) -> AsyncIterator[str]:
+    """Streaming counterpart to `handle_turn`: yields the spoken reply in
+    fragments as Gemini emits them, then applies the same code-driven state
+    mutation from the trailing routing fields. `mode` behaves identically to
+    `handle_turn`'s.
+
+    Soft-fail contract mirrors `handle_turn`: if the call fails before any
+    reply character is spoken, the canned fallback reply is yielded and state
+    is left unchanged. If it fails after the reply is (partly) spoken - e.g.
+    the trailing JSON is malformed - the spoken text stands and state is left
+    unchanged rather than half-advanced."""
+    if state.current_node_id == END_NODE_ID:
+        outcome.result = TurnResult(
+            reply=settings.host_closing_reply,
+            answer_complete=False,
+            completed_question=None,
+            answer_text="",
+        )
+        yield settings.host_closing_reply
+        return
+
+    if not settings.gemini_api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured; cannot run the host agent.")
+
+    node = questionnaire[state.current_node_id]
+    payload = _build_payload(state, node, user_text, questionnaire, mode)
+    extractor = ReplyStreamExtractor()
+
+    try:
+        async for delta in gemini_client.stream_chat_completion(
+            payload, timeout=_GEMINI_TIMEOUT_SECONDS, fallback_model=settings.gemini_model_fallback
+        ):
+            chunk = extractor.feed(delta)
+            if chunk:
+                yield chunk
+        parsed, remaining = extractor.finalize()
+    except Exception:
+        logger.warning(
+            "Streaming host turn failed for interview %s at node %s.",
+            state.interview_id,
+            state.current_node_id,
+            exc_info=True,
+        )
+        if not extractor.emitted:
+            outcome.result = TurnResult(
+                reply=settings.host_fallback_reply,
+                answer_complete=False,
+                completed_question=None,
+                answer_text="",
+            )
+            yield settings.host_fallback_reply
+        else:
+            outcome.result = TurnResult(
+                reply=extractor.emitted,
+                answer_complete=False,
+                completed_question=None,
+                answer_text="",
+            )
+        return
+
+    if remaining:
+        yield remaining
+    outcome.result = _apply_outcome(
+        state,
+        node,
+        user_text,
+        extractor.emitted + remaining,
+        bool(parsed.get("answer_complete")),
+        parsed.get("profile_updates"),
     )

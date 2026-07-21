@@ -1,4 +1,4 @@
-import type { FollowupProposal, ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
+import type { FollowupRecommendation, ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
 
 const ROLE_LABELS: Record<TranscriptTurn['role'], string> = {
   interviewer: 'Interviewer',
@@ -8,7 +8,7 @@ const ROLE_LABELS: Record<TranscriptTurn['role'], string> = {
 export interface TranscriptExtras {
   scorecard?: ScorecardData | null;
   insights?: ScoutFinding[] | null;
-  followup?: FollowupProposal | null;
+  recommendation?: FollowupRecommendation | null;
 }
 
 export function buildTranscriptMarkdown(
@@ -23,7 +23,7 @@ export function buildTranscriptMarkdown(
   parts.push('\n## Summary\n');
   parts.push(summary?.trim() ? summary.trim() : '_Summary unavailable._');
 
-  const { scorecard, insights, followup } = extras;
+  const { scorecard, insights, recommendation } = extras;
 
   if (scorecard) {
     parts.push('\n## Scorecard\n');
@@ -46,19 +46,19 @@ export function buildTranscriptMarkdown(
     }
   }
 
-  if (followup) {
-    parts.push('\n## Recommended follow-up\n');
-    parts.push(`- **Kind:** ${followup.recommendation.kind === 'advance' ? 'Deep dive' : 'Clarification'}`);
-    parts.push(`- **Reason:** ${followup.recommendation.reason}`);
-    parts.push(`- **Suggested duration:** ${followup.duration_minutes} minutes`);
-    if (followup.agenda.length > 0) {
-      parts.push('\n**Agenda:**\n');
-      for (const item of followup.agenda) {
-        parts.push(`- ${item}`);
-      }
+  if (recommendation) {
+    parts.push('\n## Recommendation\n');
+    parts.push(
+      `- **Recommendation:** ${
+        recommendation.kind === 'advance'
+          ? 'Advance to a follow-up conversation'
+          : 'Clarification needed'
+      }`,
+    );
+    parts.push(`- **Reason:** ${recommendation.reason}`);
+    if (recommendation.focus_categories.length > 0) {
+      parts.push(`- **Focus areas:** ${recommendation.focus_categories.join(', ')}`);
     }
-    parts.push('\n**Email draft:**\n');
-    parts.push(followup.email_draft);
   }
 
   parts.push('\n## Full Transcript\n');

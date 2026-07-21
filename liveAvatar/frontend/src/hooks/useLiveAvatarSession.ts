@@ -1,42 +1,45 @@
 import { useEffect, useRef, useState } from 'react';
 import { LiveAvatarSession, SessionEvent, AgentEventsEnum } from '@heygen/liveavatar-web-sdk';
-import { API_URL, DEFAULT_CONTEXT_ID, DEFAULT_LLM_CONFIG_ID } from '../config';
+import { API_URL, SHOW_SELF_VIEW } from '../config';
 import type { SessionStatus, SpeakingState, TranscriptTurn } from '../types';
 
 interface UseLiveAvatarSessionOptions {
-  apiKey: string;
-  files: File[];
-  // Gateway mode: id returned by /api/vendor-profile. Sent on /api/session so the
+  // Gateway mode: id returned by /api/interview. Sent on /api/session so the
   // backend provisions the per-interview Custom LLM, and on every
   // /api/session/stop so those resources get torn down.
   interviewId?: string | null;
   onError: (message: string | null) => void;
   // Called once when a session ends (stop button or server disconnect), before
   // local state is reset — receives the full transcript and the session id.
+  // Skipped when stopSession is called with { suppressSessionEnd: true } (the
+  // switch-to-chat path, where the chat hook continues the same interview).
   onSessionEnd?: (turns: TranscriptTurn[], sessionId: string | null) => void;
 }
 
-export function useLiveAvatarSession({ apiKey, files, interviewId, onError, onSessionEnd }: UseLiveAvatarSessionOptions) {
+interface StopOptions {
+  suppressSessionEnd?: boolean;
+}
+
+export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: UseLiveAvatarSessionOptions) {
   const [session, setSession] = useState<LiveAvatarSession | null>(null);
   const [status, setStatus] = useState<SessionStatus>('disconnected');
   const [speakingState, setSpeakingState] = useState<SpeakingState>('idle');
   const [micEnabled, setMicEnabled] = useState(false);
-  const [cameraEnabled, setCameraEnabled] = useState(true);
-  const [isUploading, setIsUploading] = useState(false);
+  const [cameraEnabled, setCameraEnabled] = useState(SHOW_SELF_VIEW);
   const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
-
-  const apiKeyRef = useRef(apiKey);
-  useEffect(() => { apiKeyRef.current = apiKey; }, [apiKey]);
 
   const interviewIdRef = useRef(interviewId);
   useEffect(() => { interviewIdRef.current = interviewId; }, [interviewId]);
+
+  // When set, the next cleanupSession skips onSessionEnd (used for the one-way
+  // switch to text chat, where finalize must NOT run — the chat continues).
+  const suppressSessionEndRef = useRef(false);
 
   // Shared body for every /api/session/stop call site. The interview id is also
   // persisted to localStorage alongside the session token so orphaned-session
   // cleanup (after a crash/reload) can still tear down gateway resources.
   const buildStopBody = (sessionToken: string) => JSON.stringify({
     session_token: sessionToken,
-    api_key: apiKeyRef.current || undefined,
     interview_id: localStorage.getItem('liveavatar_interview_id') || interviewIdRef.current || undefined,
   });
 
@@ -61,10 +64,12 @@ export function useLiveAvatarSession({ apiKey, files, interviewId, onError, onSe
     s.removeAllListeners();
 
     // Hand off the captured transcript before we wipe local state. Fires on both
-    // the stop-button path and the server-side SESSION_DISCONNECTED path.
-    if (turnsRef.current.length > 0) {
+    // the stop-button path and the server-side SESSION_DISCONNECTED path — unless
+    // this stop was a switch to text chat, which owns the transcript instead.
+    if (!suppressSessionEndRef.current && turnsRef.current.length > 0) {
       onSessionEndRef.current?.(turnsRef.current, sessionIdRef.current);
     }
+    suppressSessionEndRef.current = false;
     turnsRef.current = [];
     sessionIdRef.current = null;
     setTranscript([]);
@@ -73,7 +78,7 @@ export function useLiveAvatarSession({ apiKey, files, interviewId, onError, onSe
     setStatus('disconnected');
     setSpeakingState('idle');
     setMicEnabled(false);
-    setCameraEnabled(true);
+    setCameraEnabled(SHOW_SELF_VIEW);
     localStorage.removeItem('liveavatar_session_token');
     localStorage.removeItem('liveavatar_interview_id');
 
@@ -87,40 +92,14 @@ export function useLiveAvatarSession({ apiKey, files, interviewId, onError, onSe
     try {
       setStatus('connecting');
       onError(null);
-      setIsUploading(true);
       turnsRef.current = [];
       sessionIdRef.current = null;
       setTranscript([]);
-
-      let currentContextId = DEFAULT_CONTEXT_ID;
-
-      if (files.length > 0) {
-        const formData = new FormData();
-        files.forEach(file => formData.append('files', file));
-        if (apiKey) formData.append('api_key', apiKey);
-
-        const uploadRes = await fetch(`${API_URL}/api/upload-resume`, {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (!uploadRes.ok) {
-          const errData = await uploadRes.json();
-          throw new Error(errData.detail || 'Failed to upload documents');
-        }
-
-        const uploadData = await uploadRes.json();
-        currentContextId = uploadData.context_id;
-      }
-      setIsUploading(false);
 
       const response = await fetch(`${API_URL}/api/session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          context_id: currentContextId,
-          llm_configuration_id: DEFAULT_LLM_CONFIG_ID,
-          api_key: apiKey || undefined,
           interview_id: interviewId || undefined,
         }),
       });
@@ -144,6 +123,13 @@ export function useLiveAvatarSession({ apiKey, files, interviewId, onError, onSe
       newSession.on(SessionEvent.SESSION_STREAM_READY, async () => {
         setStatus('connected');
         if (videoRef.current) newSession.attach(videoRef.current);
+
+        // Self-view disabled: skip camera acquisition entirely so no camera
+        // permission prompt fires (mic is still needed for voice chat).
+        if (!SHOW_SELF_VIEW) {
+          setCameraEnabled(false);
+          return;
+        }
 
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -193,8 +179,9 @@ export function useLiveAvatarSession({ apiKey, files, interviewId, onError, onSe
     }
   };
 
-  const stopSession = async () => {
+  const stopSession = async (options: StopOptions = {}) => {
     if (session) {
+      suppressSessionEndRef.current = options.suppressSessionEnd === true;
       try { await session.stop(); } catch (e) { console.error("Error stopping session:", e); }
       cleanupSession(session);
     }
@@ -231,8 +218,14 @@ export function useLiveAvatarSession({ apiKey, files, interviewId, onError, onSe
       fetch(`${API_URL}/api/session/stop`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_token: orphanedToken, api_key: apiKeyRef.current || undefined }),
-      }).catch(console.error).finally(() => localStorage.removeItem('liveavatar_session_token'));
+        body: JSON.stringify({
+          session_token: orphanedToken,
+          interview_id: localStorage.getItem('liveavatar_interview_id') || undefined,
+        }),
+      }).catch(console.error).finally(() => {
+        localStorage.removeItem('liveavatar_session_token');
+        localStorage.removeItem('liveavatar_interview_id');
+      });
     }
   }, []);
 
@@ -271,7 +264,6 @@ export function useLiveAvatarSession({ apiKey, files, interviewId, onError, onSe
     speakingState,
     micEnabled,
     cameraEnabled,
-    isUploading,
     transcript,
     videoRef,
     localVideoRef,

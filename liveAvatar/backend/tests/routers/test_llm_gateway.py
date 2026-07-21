@@ -6,9 +6,9 @@ import respx
 
 from app.config import settings
 from app.routers import llm_gateway
-from app.services import appraiser_agent, host_agent, interview_state
+from app.services import evaluator_agent, gemini_client, host_agent, interview_state
 from app.services.host_agent import TurnResult
-from app.services.interview_config import Branch, QuestionNode
+from app.services.interview_config import QuestionNode
 from app.services.interview_state import VendorProfile
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -22,7 +22,8 @@ def _seed_interview():
             website="https://acme.example",
             contact_name="Jane Doe",
             contact_role="CTO",
-        )
+        ),
+        "ai_ml",
     )
 
 
@@ -69,6 +70,19 @@ def _turn_result(reply="Great, tell me more.", answer_complete=False, completed_
         completed_question=completed_question,
         answer_text=answer_text,
     )
+
+
+def _fake_stream_turn(monkeypatch, deltas, result=None):
+    calls = []
+
+    async def fake(state, user_text, questionnaire, rubric, outcome):
+        calls.append({"state": state, "user_text": user_text})
+        for delta in deltas:
+            yield delta
+        outcome.result = result if result is not None else _turn_result()
+
+    monkeypatch.setattr(host_agent, "stream_turn", fake)
+    return calls
 
 
 def _parse_sse(text: str) -> list[str]:
@@ -208,7 +222,7 @@ def test_handle_turn_exception_returns_canned_reply_stream(client, monkeypatch):
 def test_config_load_failure_returns_canned_reply(client, monkeypatch):
     state = _seed_interview()
 
-    def boom():
+    def boom(domain):
         raise RuntimeError("bad questionnaire")
 
     monkeypatch.setattr(llm_gateway, "get_questionnaire", boom)
@@ -234,6 +248,138 @@ def test_malformed_body_returns_canned_reply_as_stream(client):
     assert content == settings.host_fallback_reply
 
 
+# --- token-by-token streaming (opt-in) ---------------------------------------
+
+
+def test_streaming_flag_emits_reply_in_multiple_chunks(client, monkeypatch, patch_settings):
+    patch_settings(host_streaming_enabled=True)
+    state = _seed_interview()
+    calls = _fake_stream_turn(
+        monkeypatch, ["Hel", "lo ", "there"], _turn_result(reply="Hello there", answer_complete=True)
+    )
+
+    response = client.post(_url(state.interview_id), json=_openai_body(stream=True), headers=_auth(state))
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    frames = _parse_sse(response.text)
+    assert frames[-1] == "[DONE]"
+    chunks = [json.loads(f) for f in frames[:-1]]
+    content_chunks = [c for c in chunks if c["choices"][0]["delta"].get("content")]
+    # True streaming: the three deltas arrive as three separate content chunks.
+    assert len(content_chunks) == 3
+    content = "".join(c["choices"][0]["delta"].get("content", "") for c in chunks)
+    assert content == "Hello there"
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+    assert calls[0]["user_text"] == "We build ML pipelines."
+
+
+def test_streaming_flag_off_uses_buffered_single_chunk(client, monkeypatch):
+    # Default (flag off): the existing buffered path runs handle_turn and emits
+    # the whole reply in one chunk; stream_turn must not be touched.
+    state = _seed_interview()
+    _fake_handle_turn(monkeypatch, _turn_result(reply="One shot."))
+
+    def _must_not_run(*args, **kwargs):
+        raise AssertionError("stream_turn must not be called when the flag is off")
+
+    monkeypatch.setattr(host_agent, "stream_turn", _must_not_run)
+
+    response = client.post(_url(state.interview_id), json=_openai_body(stream=True), headers=_auth(state))
+
+    frames = _parse_sse(response.text)
+    content_chunks = [
+        json.loads(f) for f in frames[:-1] if json.loads(f)["choices"][0]["delta"].get("content")
+    ]
+    assert len(content_chunks) == 1
+    assert content_chunks[0]["choices"][0]["delta"]["content"] == "One shot."
+
+
+def test_streaming_flag_with_non_stream_request_uses_buffered_path(client, monkeypatch, patch_settings):
+    # HeyGen asked for a non-streaming completion: honor it via the buffered
+    # path even with the flag on.
+    patch_settings(host_streaming_enabled=True)
+    state = _seed_interview()
+    _fake_handle_turn(monkeypatch, _turn_result(reply="Buffered."))
+
+    def _must_not_run(*args, **kwargs):
+        raise AssertionError("stream_turn must not be called for a non-stream request")
+
+    monkeypatch.setattr(host_agent, "stream_turn", _must_not_run)
+
+    response = client.post(_url(state.interview_id), json=_openai_body(stream=False), headers=_auth(state))
+
+    assert response.json()["choices"][0]["message"]["content"] == "Buffered."
+
+
+def test_streaming_flag_greeting_skips_stream_turn(client, monkeypatch, patch_settings):
+    # No user utterance yet: greeting comes from the buffered path, not the
+    # streaming turn (there is nothing to judge).
+    patch_settings(host_streaming_enabled=True)
+    state = _seed_interview()
+
+    def _must_not_run(*args, **kwargs):
+        raise AssertionError("stream_turn must not be called before any user utterance")
+
+    monkeypatch.setattr(host_agent, "stream_turn", _must_not_run)
+
+    response = client.post(_url(state.interview_id), json=_openai_body(user_text=None, stream=True), headers=_auth(state))
+
+    content = "".join(
+        json.loads(f)["choices"][0]["delta"].get("content", "") for f in _parse_sse(response.text)[:-1]
+    )
+    assert content == llm_gateway._GREETING_REPLY
+
+
+async def test_streaming_end_to_end_through_host_and_extractor(async_client, monkeypatch, patch_settings):
+    # Integration: real gateway -> real host_agent.stream_turn -> real
+    # extractor, faking only the Gemini network boundary. A reply-first JSON
+    # object streamed in fragments must reassemble to the spoken reply, arrive
+    # in multiple chunks, and drive the real state mutation.
+    patch_settings(host_streaming_enabled=True, gemini_api_key="k")
+    state = _seed_interview()
+    obj = '{"reply": "Thanks! Now, tell me about your AI work.", "answer_complete": true}'
+
+    async def fake_stream(payload, *, timeout, fallback_model=None):
+        for i in range(0, len(obj), 7):
+            yield obj[i : i + 7]
+
+    monkeypatch.setattr(gemini_client, "stream_chat_completion", fake_stream)
+
+    response = await async_client.post(_url(state.interview_id), json=_openai_body(stream=True), headers=_auth(state))
+
+    assert response.status_code == 200
+    frames = _parse_sse(response.text)
+    assert frames[-1] == "[DONE]"
+    chunks = [json.loads(f) for f in frames[:-1]]
+    content_chunks = [c for c in chunks if c["choices"][0]["delta"].get("content")]
+    content = "".join(c["choices"][0]["delta"].get("content", "") for c in chunks)
+    assert content == "Thanks! Now, tell me about your AI work."
+    assert len(content_chunks) > 1  # genuinely fragmented, not one blob
+    # Real state mutation ran: both turns appended, interviewer text is the reply.
+    assert len(state.turns) == 2
+    assert state.turns[1].text == "Thanks! Now, tell me about your AI work."
+
+
+def test_streaming_pre_emit_error_yields_fallback(client, monkeypatch, patch_settings):
+    patch_settings(host_streaming_enabled=True)
+    state = _seed_interview()
+
+    async def boom(state, user_text, questionnaire, rubric, outcome):
+        raise RuntimeError("host exploded before speaking")
+        yield  # pragma: no cover - makes boom an async generator
+
+    monkeypatch.setattr(host_agent, "stream_turn", boom)
+
+    response = client.post(_url(state.interview_id), json=_openai_body(stream=True), headers=_auth(state))
+
+    assert response.status_code == 200
+    frames = _parse_sse(response.text)
+    assert frames[-1] == "[DONE]"
+    content = "".join(json.loads(f)["choices"][0]["delta"].get("content", "") for f in frames[:-1])
+    assert content == settings.host_fallback_reply
+
+
 # --- no mid-interview scoring ------------------------------------------------
 
 
@@ -243,13 +389,13 @@ def _completed_node() -> QuestionNode:
         topic="company_overview",
         ask="Ask for an overview.",
         rubric_categories=["experience"],
-        branches=[Branch(signal="default", next="END")],
+        next="END",
     )
 
 
 async def test_completed_answer_does_not_trigger_scoring(async_client, monkeypatch):
     # Scoring is a single holistic pass at finalize; completing an answer
-    # mid-interview must NOT call the appraiser.
+    # mid-interview must NOT call the evaluator.
     state = _seed_interview()
     node = _completed_node()
     _fake_handle_turn(
@@ -258,9 +404,9 @@ async def test_completed_answer_does_not_trigger_scoring(async_client, monkeypat
     )
 
     def _must_not_run(*args, **kwargs):
-        raise AssertionError("appraiser must not be called from the gateway")
+        raise AssertionError("evaluator must not be called from the gateway")
 
-    monkeypatch.setattr(appraiser_agent, "score_interview", _must_not_run)
+    monkeypatch.setattr(evaluator_agent, "score_interview", _must_not_run)
 
     response = await async_client.post(_url(state.interview_id), json=_openai_body(), headers=_auth(state))
 
