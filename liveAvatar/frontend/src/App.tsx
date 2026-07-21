@@ -6,7 +6,7 @@ import { useConcurrencyPoll } from './hooks/useConcurrencyPoll';
 import { useSessionTimer } from './hooks/useSessionTimer';
 import { useInterviewSummary } from './hooks/useInterviewSummary';
 import { useChatInterview } from './hooks/useChatInterview';
-import { useOnboardingProfile } from './hooks/useOnboardingProfile';
+import { useVendorProfile } from './hooks/useVendorProfile';
 import { StartScreen } from './components/StartScreen';
 import { ChatPanel } from './components/ChatPanel';
 import { NetworkIndicator } from './components/NetworkIndicator';
@@ -36,7 +36,7 @@ function App() {
   const concurrencyCount = useConcurrencyPoll();
   const summary = useInterviewSummary(interviewId);
   const chat = useChatInterview({ interviewId, onError: setError });
-  const onboarding = useOnboardingProfile(interviewId, view === 'interview');
+  const vendorProfile = useVendorProfile(interviewId, view === 'interview');
 
   const {
     status,
@@ -73,16 +73,10 @@ function App() {
   const showNetworkBanner =
     mode === 'avatar' && status === 'connected' && networkQuality === 'poor' && !networkBannerDismissed;
 
-  // Onboarding-phase "here's what I captured" aid: only while the hook is
-  // still polling AND at least one field has actually been captured.
-  const showProfileCard = Boolean(
-    onboarding.isOnboarding &&
-      onboarding.profile &&
-      (onboarding.profile.company_name ||
-        onboarding.profile.website ||
-        onboarding.profile.contact_name ||
-        onboarding.profile.contact_role),
-  );
+  // Card is visible for the whole interview (session/chat active) once the
+  // first poll response has arrived - gated by view/mode via each render
+  // branch below (avatar: only once connected; chat: only in chat mode).
+  const showProfileCard = Boolean(vendorProfile.profile);
 
   if (view === 'start') {
     return (
@@ -145,7 +139,11 @@ function App() {
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden p-4 md:px-8 md:py-6 gap-3">
             {showProfileCard && (
               <div className="w-full max-w-2xl mx-auto shrink-0">
-                <ProfileCard profile={onboarding.profile!} />
+                <ProfileCard
+                  profile={vendorProfile.profile!}
+                  isOnboarding={vendorProfile.isOnboarding}
+                  onSave={vendorProfile.saveProfile}
+                />
               </div>
             )}
             <ChatPanel
@@ -177,7 +175,11 @@ function App() {
                   <div className="w-full md:w-80 lg:w-96 shrink-0 grid grid-rows-[auto_1fr] gap-3 min-h-0">
                     {showProfileCard && (
                       <div className="row-start-1">
-                        <ProfileCard profile={onboarding.profile!} />
+                        <ProfileCard
+                          profile={vendorProfile.profile!}
+                          isOnboarding={vendorProfile.isOnboarding}
+                          onSave={vendorProfile.saveProfile}
+                        />
                       </div>
                     )}
                     <div className="row-start-2 min-h-0 flex">
