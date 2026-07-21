@@ -143,7 +143,7 @@ async def update_profile(interview_id: str, body: UpdateProfileRequest):
     transcript, even though the field still locks."""
     state = interview_state.get(interview_id)
     if state is None:
-        raise HTTPException(status_code=404, detail="Interview not found")
+        raise HTTPException(status_code=404, detail="Unknown interview")
 
     provided_fields = [name for name in _PROFILE_FIELD_LABELS if getattr(body, name) is not None]
     if not provided_fields:

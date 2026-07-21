@@ -395,7 +395,7 @@ def test_patch_profile_unknown_interview_404(client):
     response = client.patch(_profile_url("nope"), json={"company_name": "New Co"})
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "Interview not found"
+    assert response.json()["detail"] == "Unknown interview"
 
 
 def test_patch_profile_empty_body_400(client):
