@@ -24,7 +24,7 @@ class ConcurrencyResponse(BaseModel):
 
 
 class TranscriptTurn(BaseModel):
-    role: Literal["interviewer", "candidate"]
+    role: Literal["interviewer", "candidate", "system"]
     text: str
     timestamp: float | None = None
 
@@ -129,3 +129,19 @@ class ChatResponse(BaseModel):
     reply: str
     # True once the questionnaire has reached host_agent.END_NODE_ID.
     done: bool
+
+
+class UpdateProfileRequest(BaseModel):
+    # None = "not provided" (leave alone); a provided string (even empty
+    # after strip) IS applied and locks the field against the LLM.
+    company_name: str | None = None
+    website: str | None = None
+    contact_name: str | None = None
+    contact_role: str | None = None
+
+
+class UpdateProfileResponse(BaseModel):
+    vendor_profile: VendorProfileModel
+    # Sorted for determinism - the full set of profile fields ever manually
+    # edited, which the Host's profile_updates merge will never overwrite.
+    manually_edited_fields: list[str]

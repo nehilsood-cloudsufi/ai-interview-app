@@ -351,3 +351,167 @@ def test_avatar_gateway_gemini_request_excludes_chat_mode_prompt(client, patch_s
     assert response.status_code == 200
     system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
     assert settings.host_chat_mode_prompt not in system_content
+
+
+def _profile_url(interview_id: str) -> str:
+    return f"/api/interview/{interview_id}/profile"
+
+
+def test_patch_profile_partial_update_only_touches_provided_fields(client):
+    state = _seed_interview()
+
+    response = client.patch(_profile_url(state.interview_id), json={"company_name": "New Co"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["vendor_profile"] == {
+        "company_name": "New Co",
+        "website": "https://acme.example",
+        "contact_name": "Jane Doe",
+        "contact_role": "CTO",
+    }
+    assert body["manually_edited_fields"] == ["company_name"]
+
+    assert state.vendor_profile.company_name == "New Co"
+    assert state.vendor_profile.website == "https://acme.example"
+    assert state.vendor_profile.contact_name == "Jane Doe"
+    assert state.vendor_profile.contact_role == "CTO"
+
+
+def test_patch_profile_sorts_manually_edited_fields(client):
+    state = _seed_interview()
+
+    response = client.patch(
+        _profile_url(state.interview_id),
+        json={"website": "https://acme.io", "company_name": "Acme Corp"},
+    )
+
+    assert response.status_code == 200
+    # Sorted alphabetically regardless of request key order.
+    assert response.json()["manually_edited_fields"] == ["company_name", "website"]
+
+
+def test_patch_profile_unknown_interview_404(client):
+    response = client.patch(_profile_url("nope"), json={"company_name": "New Co"})
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Unknown interview"
+
+
+def test_patch_profile_after_finalize_409(client):
+    state = _seed_interview()
+    state.pipeline_status = "interviewed"
+
+    response = client.patch(_profile_url(state.interview_id), json={"company_name": "New Co"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Interview already finalized"
+    # Rejected before any mutation - the profile is untouched.
+    assert state.vendor_profile.company_name == "Acme Corp"
+    assert state.manually_edited_fields == set()
+
+
+def test_patch_profile_empty_body_400(client):
+    state = _seed_interview()
+
+    response = client.patch(_profile_url(state.interview_id), json={})
+
+    assert response.status_code == 400
+
+
+def test_patch_profile_all_fields_none_400(client):
+    state = _seed_interview()
+
+    response = client.patch(
+        _profile_url(state.interview_id),
+        json={"company_name": None, "website": None, "contact_name": None, "contact_role": None},
+    )
+
+    assert response.status_code == 400
+
+
+def test_patch_profile_appends_system_note_turn_with_old_and_new_values(client):
+    state = _seed_interview()
+
+    response = client.patch(
+        _profile_url(state.interview_id),
+        json={"company_name": "Acme Corp International", "website": "https://acme.io"},
+    )
+
+    assert response.status_code == 200
+    assert len(state.turns) == 1
+    note_turn = state.turns[0]
+    assert note_turn.role == "system"
+    assert '"Acme Corp"' in note_turn.text
+    assert '"Acme Corp International"' in note_turn.text
+    assert '"https://acme.example"' in note_turn.text
+    assert '"https://acme.io"' in note_turn.text
+    assert note_turn.text.startswith("[Vendor manually corrected their profile:")
+
+
+def test_patch_profile_no_note_turn_when_value_unchanged(client):
+    state = _seed_interview()
+
+    response = client.patch(_profile_url(state.interview_id), json={"company_name": "Acme Corp"})
+
+    assert response.status_code == 200
+    # No-op PATCH (value equals current) must not append a note turn...
+    assert state.turns == []
+    # ...but the field still locks.
+    assert response.json()["manually_edited_fields"] == ["company_name"]
+
+
+def test_patch_profile_clearing_website_sets_none(client):
+    state = _seed_interview()
+
+    response = client.patch(_profile_url(state.interview_id), json={"website": ""})
+
+    assert response.status_code == 200
+    assert response.json()["vendor_profile"]["website"] is None
+    assert state.vendor_profile.website is None
+    assert len(state.turns) == 1
+    assert '"https://acme.example"' in state.turns[0].text
+    assert "(not set)" in state.turns[0].text
+
+
+def test_patch_profile_clearing_company_name_sets_empty_string(client):
+    state = _seed_interview()
+
+    response = client.patch(_profile_url(state.interview_id), json={"company_name": "   "})
+
+    assert response.status_code == 200
+    assert response.json()["vendor_profile"]["company_name"] == ""
+    assert state.vendor_profile.company_name == ""
+
+
+@respx.mock
+def test_patch_profile_locks_field_against_subsequent_llm_profile_updates(client, patch_settings):
+    # End-to-end-ish: after manually correcting company_name, a chat turn
+    # whose mocked Gemini response reports a conflicting profile_updates for
+    # that same field must NOT overwrite the manual value.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    state = _seed_interview()
+
+    patch_response = client.patch(_profile_url(state.interview_id), json={"company_name": "Manually Corrected Co"})
+    assert patch_response.status_code == 200
+
+    content = json.dumps(
+        {
+            "reply": "Got it, thanks.",
+            "answer_complete": True,
+            "profile_updates": {
+                "company_name": "LLM Reported Co",
+                "website": None,
+                "contact_name": None,
+                "contact_role": None,
+            },
+        }
+    )
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+    )
+
+    chat_response = client.post(_chat_url(state.interview_id), json={"text": "Actually we're LLM Reported Co now."})
+
+    assert chat_response.status_code == 200
+    assert state.vendor_profile.company_name == "Manually Corrected Co"

@@ -475,6 +475,44 @@ async def test_soft_fail_leaves_profile_untouched(patch_settings):
     assert state.vendor_profile == original
 
 
+def test_merge_profile_updates_skips_locked_fields():
+    # Direct unit test of the merge helper: a manually-locked field (e.g. via
+    # PATCH /api/interview/{id}/profile) must never be overwritten by the
+    # LLM's profile_updates, while unlocked fields still merge normally.
+    profile = VendorProfile(
+        company_name="Acme Corp", website="https://acme.example", contact_name="Jane Doe", contact_role="CTO"
+    )
+    updates = {
+        "company_name": "New Co",
+        "website": "https://newco.example",
+        "contact_name": None,
+        "contact_role": None,
+    }
+
+    host_agent._merge_profile_updates(profile, updates, locked={"company_name"})
+
+    # Locked field untouched.
+    assert profile.company_name == "Acme Corp"
+    # Unlocked field still merges.
+    assert profile.website == "https://newco.example"
+
+
+def test_merge_profile_updates_no_locked_fields_behaves_as_before():
+    profile = VendorProfile(
+        company_name="Acme Corp", website="https://acme.example", contact_name="Jane Doe", contact_role="CTO"
+    )
+    updates = {
+        "company_name": "New Co",
+        "website": None,
+        "contact_name": None,
+        "contact_role": None,
+    }
+
+    host_agent._merge_profile_updates(profile, updates, locked=set())
+
+    assert profile.company_name == "New Co"
+
+
 # --- streaming turn ----------------------------------------------------------
 
 

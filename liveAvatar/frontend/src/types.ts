@@ -104,3 +104,11 @@ export interface ChatResponse {
   reply: string;
   done: boolean;
 }
+
+// PATCH /api/interview/{id}/profile response (backend UpdateProfileResponse).
+// manually_edited_fields is the full set of fields ever manually corrected -
+// unused by the frontend today, but kept for shape fidelity with the backend.
+export interface UpdateProfileResponse {
+  vendor_profile: VendorProfile;
+  manually_edited_fields: string[];
+}

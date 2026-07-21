@@ -9,6 +9,10 @@ current question is fully answered, and reports any vendor profile details
 just stated/corrected - all state mutation (appending turns, advancing
 `current_node_id` along the fixed linear script, follow-up accounting,
 merging profile_updates into `state.vendor_profile`) is done here in code.
+Fields the vendor has manually corrected via `PATCH
+/api/interview/{id}/profile` (tracked in `state.manually_edited_fields`) are
+permanently locked against this merge - manual edits always win, though the
+vendor can always re-edit that field manually again.
 
 Answer-text collection: `state.followup_count` counts the follow-up rounds
 already exchanged for the current question, and each round appended exactly
@@ -268,14 +272,19 @@ async def handle_turn(
     return _apply_outcome(state, node, user_text, reply, answer_complete, profile_updates)
 
 
-def _merge_profile_updates(profile: VendorProfile, updates: dict | None) -> None:
+def _merge_profile_updates(profile: VendorProfile, updates: dict | None, locked: set[str]) -> None:
     """Overwrite only the fields the vendor actually gave a new value for -
     null, missing, or whitespace-only entries leave the existing value alone.
     Runs on EVERY turn (not just the onboarding nodes) so a late mention or
-    correction anywhere in the interview still sticks."""
+    correction anywhere in the interview still sticks. Fields in `locked`
+    (manually corrected via PATCH /api/interview/{id}/profile) are skipped
+    entirely - a manual edit always wins over the LLM's profile_updates,
+    though the vendor can still re-edit that field manually at any time."""
     if not updates:
         return
     for field_name in _PROFILE_FIELDS:
+        if field_name in locked:
+            continue
         value = updates.get(field_name)
         if isinstance(value, str) and value.strip():
             setattr(profile, field_name, value.strip())
@@ -293,7 +302,7 @@ def _apply_outcome(
     Shared by `handle_turn` and `stream_turn` so both drive the state machine
     identically. Only reached on the success path - soft-fail returns before
     ever calling this, so a failed turn never merges a profile update."""
-    _merge_profile_updates(state.vendor_profile, profile_updates)
+    _merge_profile_updates(state.vendor_profile, profile_updates, state.manually_edited_fields)
 
     # Candidate texts already given for this node (see module docstring),
     # captured before the new turns are appended.
