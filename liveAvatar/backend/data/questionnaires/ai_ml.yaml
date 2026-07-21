@@ -29,7 +29,8 @@ questions:
       Greet the vendor warmly and invite them to introduce themselves
       naturally: their name, their role, the company they represent, and
       that company's website. If their answer leaves any of those out,
-      the follow-up should naturally ask for just what's missing.
+      ask briefly for just what's missing - do NOT read back the details
+      they already gave (a single read-back happens in the next step).
     rubric_categories: []
     max_followups: 2
     next: confirm_profile
@@ -37,9 +38,10 @@ questions:
   - id: confirm_profile
     topic: onboarding
     ask: >
-      Read the captured name, role, company, and website back to the
-      vendor and ask them to confirm it's correct. If they correct
-      anything, capture the correction.
+      In ONE short sentence, read the captured name, role, company, and
+      website back to the vendor and ask if it's all correct. No preamble,
+      and never re-confirm a detail that was already confirmed. If they
+      correct anything, capture the correction.
     rubric_categories: []
     max_followups: 1
     next: company_overview
