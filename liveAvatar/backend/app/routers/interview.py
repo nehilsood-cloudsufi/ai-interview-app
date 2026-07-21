@@ -15,12 +15,14 @@ this endpoint (rather than the finalize response) to learn when it's ready.
 POST .../chat is the low-bandwidth text fallback: it drives the same Host
 agent turn as the avatar's /llm/{id}/v1/chat/completions gateway, but
 same-origin and unauthenticated (no gateway_token in the browser) since it
-never leaves our own backend. PATCH .../profile lets the vendor manually
-correct the Host-captured profile at any point in the interview; corrected
-fields are permanently locked against the Host's LLM-reported
-profile_updates and a role="system" note turn is appended so the transcript
-(and the Evaluator) sees that a correction happened. Same-origin UI
-endpoints like the rest of /api - no auth.
+never leaves our own backend. PATCH .../profile lets the vendor manually correct the Host-captured
+profile at any point before the interview is finalized (409s once
+`state.pipeline_status` is set, i.e. after /api/transcript/finalize has
+handed the interview to the post-interview pipeline); corrected fields are
+permanently locked against the Host's LLM-reported profile_updates and a
+role="system" note turn is appended so the transcript (and the Evaluator)
+sees that a correction happened. Same-origin UI endpoints like the rest of
+/api - no auth.
 """
 
 import dataclasses
@@ -133,7 +135,8 @@ def _fmt_profile_value(value: str | None) -> str:
 @router.patch("/api/interview/{interview_id}/profile", response_model=UpdateProfileResponse)
 async def update_profile(interview_id: str, body: UpdateProfileRequest):
     """Vendor-initiated manual correction of the Host-captured profile,
-    available at any point in the interview. Every provided field overwrites
+    available at any point before the interview is finalized (409s once
+    `state.pipeline_status` is set). Every provided field overwrites
     `state.vendor_profile` and is permanently added to
     `state.manually_edited_fields`, locking it against the Host's
     LLM-reported profile_updates on future turns (re-editing manually is
@@ -144,6 +147,8 @@ async def update_profile(interview_id: str, body: UpdateProfileRequest):
     state = interview_state.get(interview_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Unknown interview")
+    if state.pipeline_status is not None:
+        raise HTTPException(status_code=409, detail="Interview already finalized")
 
     provided_fields = [name for name in _PROFILE_FIELD_LABELS if getattr(body, name) is not None]
     if not provided_fields:

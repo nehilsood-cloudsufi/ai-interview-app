@@ -76,7 +76,12 @@ function App() {
   // Card is visible for the whole interview (session/chat active) once the
   // first poll response has arrived - gated by view/mode via each render
   // branch below (avatar: only once connected; chat: only in chat mode).
-  const showProfileCard = Boolean(vendorProfile.profile);
+  // In chat mode it also hides once finalize has begun (summary.visible) -
+  // by then state.pipeline_status is set and a PATCH would just 409, so the
+  // card should disappear rather than invite an edit that can't land. Avatar
+  // mode is already safely gated on the connected session (the session ends
+  // before finalize starts), so it doesn't need this extra check.
+  const showProfileCard = Boolean(vendorProfile.profile) && !(mode === 'chat' && summary.visible);
 
   if (view === 'start') {
     return (

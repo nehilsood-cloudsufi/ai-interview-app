@@ -398,6 +398,19 @@ def test_patch_profile_unknown_interview_404(client):
     assert response.json()["detail"] == "Unknown interview"
 
 
+def test_patch_profile_after_finalize_409(client):
+    state = _seed_interview()
+    state.pipeline_status = "interviewed"
+
+    response = client.patch(_profile_url(state.interview_id), json={"company_name": "New Co"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Interview already finalized"
+    # Rejected before any mutation - the profile is untouched.
+    assert state.vendor_profile.company_name == "Acme Corp"
+    assert state.manually_edited_fields == set()
+
+
 def test_patch_profile_empty_body_400(client):
     state = _seed_interview()
 

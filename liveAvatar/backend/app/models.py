@@ -141,7 +141,7 @@ class UpdateProfileRequest(BaseModel):
 
 
 class UpdateProfileResponse(BaseModel):
-    vendor_profile: dict
+    vendor_profile: VendorProfileModel
     # Sorted for determinism - the full set of profile fields ever manually
     # edited, which the Host's profile_updates merge will never overwrite.
     manually_edited_fields: list[str]
