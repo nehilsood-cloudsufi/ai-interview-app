@@ -9,6 +9,10 @@ current question is fully answered, and reports any vendor profile details
 just stated/corrected - all state mutation (appending turns, advancing
 `current_node_id` along the fixed linear script, follow-up accounting,
 merging profile_updates into `state.vendor_profile`) is done here in code.
+Fields the vendor has manually corrected via `PATCH
+/api/interview/{id}/profile` (tracked in `state.manually_edited_fields`) are
+permanently locked against this merge - manual edits always win, though the
+vendor can always re-edit that field manually again.
 
 Answer-text collection: `state.followup_count` counts the follow-up rounds
 already exchanged for the current question, and each round appended exactly
@@ -24,6 +28,7 @@ again" reply is returned and the state is left completely unchanged.
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Literal
 
 from app.config import settings
 from app.models import TranscriptTurn
@@ -109,7 +114,10 @@ def _display(value: str | None) -> str:
 
 
 def _render_system_content(
-    state: InterviewState, node: QuestionNode, questionnaire: dict[str, QuestionNode]
+    state: InterviewState,
+    node: QuestionNode,
+    questionnaire: dict[str, QuestionNode],
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> str:
     profile = state.vendor_profile
 
@@ -146,6 +154,9 @@ def _render_system_content(
         next_line,
     ]
 
+    if mode == "chat":
+        lines += ["", settings.host_chat_mode_prompt]
+
     return "\n".join(lines)
 
 
@@ -160,6 +171,7 @@ def _build_payload(
     node: QuestionNode,
     user_text: str,
     questionnaire: dict[str, QuestionNode],
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> dict:
     """The per-turn Gemini request, shared by the buffered and streaming paths.
     `reply` is first in `_TURN_SCHEMA` so the streaming path can speak it before
@@ -167,7 +179,7 @@ def _build_payload(
     return {
         "model": settings.gemini_model,
         "messages": [
-            {"role": "system", "content": _render_system_content(state, node, questionnaire)},
+            {"role": "system", "content": _render_system_content(state, node, questionnaire, mode)},
             {"role": "user", "content": _render_user_content(state, user_text)},
         ],
         "response_format": {
@@ -184,8 +196,9 @@ async def _call_gemini(
     node: QuestionNode,
     user_text: str,
     questionnaire: dict[str, QuestionNode],
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> dict:
-    payload = _build_payload(state, node, user_text, questionnaire)
+    payload = _build_payload(state, node, user_text, questionnaire, mode)
 
     # Parse failures get one retry (fresh sample, fast); HTTP failures don't -
     # a Gemini outage should fall back immediately, not double the wait inside
@@ -215,10 +228,15 @@ async def handle_turn(
     user_text: str,
     questionnaire: dict[str, QuestionNode],
     rubric: dict[str, RubricCategory] | None,
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> TurnResult:
     """Process one user utterance: one Gemini call, then code-driven state
     mutation. `rubric` is accepted for interface parity with the Evaluator
-    flow; the Host itself does not score answers."""
+    flow; the Host itself does not score answers. `mode` selects which
+    frontend is driving the turn: "avatar" (HeyGen, spoken) is the default and
+    renders byte-identical to before this parameter existed; "chat" appends
+    settings.host_chat_mode_prompt so terse typed answers aren't treated as
+    incomplete."""
     if state.current_node_id == END_NODE_ID:
         return TurnResult(
             reply=settings.host_closing_reply,
@@ -233,7 +251,7 @@ async def handle_turn(
     node = questionnaire[state.current_node_id]
 
     try:
-        parsed = await _call_gemini(state, node, user_text, questionnaire)
+        parsed = await _call_gemini(state, node, user_text, questionnaire, mode)
         reply = str(parsed["reply"])
         answer_complete = bool(parsed.get("answer_complete"))
         profile_updates = parsed.get("profile_updates")
@@ -254,14 +272,19 @@ async def handle_turn(
     return _apply_outcome(state, node, user_text, reply, answer_complete, profile_updates)
 
 
-def _merge_profile_updates(profile: VendorProfile, updates: dict | None) -> None:
+def _merge_profile_updates(profile: VendorProfile, updates: dict | None, locked: set[str]) -> None:
     """Overwrite only the fields the vendor actually gave a new value for -
     null, missing, or whitespace-only entries leave the existing value alone.
     Runs on EVERY turn (not just the onboarding nodes) so a late mention or
-    correction anywhere in the interview still sticks."""
+    correction anywhere in the interview still sticks. Fields in `locked`
+    (manually corrected via PATCH /api/interview/{id}/profile) are skipped
+    entirely - a manual edit always wins over the LLM's profile_updates,
+    though the vendor can still re-edit that field manually at any time."""
     if not updates:
         return
     for field_name in _PROFILE_FIELDS:
+        if field_name in locked:
+            continue
         value = updates.get(field_name)
         if isinstance(value, str) and value.strip():
             setattr(profile, field_name, value.strip())
@@ -279,7 +302,7 @@ def _apply_outcome(
     Shared by `handle_turn` and `stream_turn` so both drive the state machine
     identically. Only reached on the success path - soft-fail returns before
     ever calling this, so a failed turn never merges a profile update."""
-    _merge_profile_updates(state.vendor_profile, profile_updates)
+    _merge_profile_updates(state.vendor_profile, profile_updates, state.manually_edited_fields)
 
     # Candidate texts already given for this node (see module docstring),
     # captured before the new turns are appended.
@@ -329,10 +352,12 @@ async def stream_turn(
     questionnaire: dict[str, QuestionNode],
     rubric: dict[str, RubricCategory] | None,
     outcome: StreamedTurn,
+    mode: Literal["avatar", "chat"] = "avatar",
 ) -> AsyncIterator[str]:
     """Streaming counterpart to `handle_turn`: yields the spoken reply in
     fragments as Gemini emits them, then applies the same code-driven state
-    mutation from the trailing routing fields.
+    mutation from the trailing routing fields. `mode` behaves identically to
+    `handle_turn`'s.
 
     Soft-fail contract mirrors `handle_turn`: if the call fails before any
     reply character is spoken, the canned fallback reply is yielded and state
@@ -353,7 +378,7 @@ async def stream_turn(
         raise RuntimeError("GEMINI_API_KEY is not configured; cannot run the host agent.")
 
     node = questionnaire[state.current_node_id]
-    payload = _build_payload(state, node, user_text, questionnaire)
+    payload = _build_payload(state, node, user_text, questionnaire, mode)
     extractor = ReplyStreamExtractor()
 
     try:

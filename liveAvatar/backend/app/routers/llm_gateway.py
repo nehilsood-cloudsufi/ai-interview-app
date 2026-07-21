@@ -87,7 +87,7 @@ def _streaming_host_response(
         ttft_ms: int | None = None
         try:
             async for text in host_agent.stream_turn(
-                state, user_text, get_questionnaire(), get_rubric(), outcome
+                state, user_text, get_questionnaire(state.domain), get_rubric(), outcome
             ):
                 if not text:
                     continue
@@ -158,7 +158,7 @@ async def chat_completions(interview_id: str, request: Request):
         if user_text is None:
             reply = _GREETING_REPLY
         else:
-            result = await host_agent.handle_turn(state, user_text, get_questionnaire(), get_rubric())
+            result = await host_agent.handle_turn(state, user_text, get_questionnaire(state.domain), get_rubric())
             reply = result.reply
             # answer_complete only feeds the timing log now - scoring happens
             # once, holistically, at finalize (never mid-interview).

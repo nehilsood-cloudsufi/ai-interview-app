@@ -48,3 +48,15 @@ def test_host_streaming_env_override(monkeypatch, value, expected):
 
 def test_settings_prompt_content():
     assert "Topics Covered" in settings.interview_summary_prompt
+
+
+def test_host_chat_mode_prompt_default():
+    fresh = Settings(liveavatar_api_key=None, gemini_api_key=None, gcs_bucket=None)
+    assert "typing in a text chat" in fresh.host_chat_mode_prompt
+    assert "concise" in fresh.host_chat_mode_prompt.lower()
+
+
+def test_host_chat_mode_prompt_env_override(monkeypatch):
+    monkeypatch.setenv("HOST_CHAT_MODE_PROMPT", "Custom chat-mode instructions.")
+    fresh = Settings()
+    assert fresh.host_chat_mode_prompt == "Custom chat-mode instructions."

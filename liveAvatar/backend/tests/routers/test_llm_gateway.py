@@ -22,7 +22,8 @@ def _seed_interview():
             website="https://acme.example",
             contact_name="Jane Doe",
             contact_role="CTO",
-        )
+        ),
+        "ai_ml",
     )
 
 
@@ -221,7 +222,7 @@ def test_handle_turn_exception_returns_canned_reply_stream(client, monkeypatch):
 def test_config_load_failure_returns_canned_reply(client, monkeypatch):
     state = _seed_interview()
 
-    def boom():
+    def boom(domain):
         raise RuntimeError("bad questionnaire")
 
     monkeypatch.setattr(llm_gateway, "get_questionnaire", boom)

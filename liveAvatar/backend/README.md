@@ -23,9 +23,13 @@ cp .env.example .env   # then fill in your keys
 | `GCS_BUCKET`           | no       | If set, transcripts are stored in this GCS bucket (ADC). If unset, local JSON under `./transcripts/`. |
 | `SCOUT_ENABLED`        | no       | Default `true`. Set `false` to skip the Data Scout's web research.       |
 | `HOST_STREAMING_ENABLED` | no     | Default `false`. Stream the Host's reply to HeyGen token-by-token.       |
+| `QUESTIONNAIRES_DIR`   | no       | Default `data/questionnaires`. Directory of per-domain `{domain}.yaml` question scripts. |
+| `DEFAULT_DOMAIN`       | no       | Default `ai_ml`. Domain `POST /api/interview` uses when no `{domain}` is given. |
 
-Gemini model names (`GEMINI_MODEL`, `GEMINI_PRO_MODEL`, their `*_FALLBACK` pins) and
-the questionnaire/rubric paths are also env-overridable — see `app/config.py`.
+Gemini model names (`GEMINI_MODEL`, `GEMINI_PRO_MODEL`, their `*_FALLBACK` pins), the
+rubric path, and the Host's chat-mode prompt addendum (`HOST_CHAT_MODE_PROMPT`,
+appended when the text-chat fallback drives a turn) are also env-overridable — see
+`app/config.py`.
 
 ## Running
 
@@ -61,7 +65,7 @@ same suite on every push/PR (`.github/workflows/ci.yml`).
   `pipeline_status` tracking), interview state/config, LiveAvatar client, Gemini
   client, transcript store (GCS/local), summary generation.
 - `app/config.py`, `app/models.py` — settings (incl. every agent prompt) and Pydantic models.
-- `data/` — `questionnaire.yaml` (linear question script) and `rubric.yaml` (scoring weights).
+- `data/` — `questionnaires/{domain}.yaml` (one linear question script per domain) and `rubric.yaml` (scoring weights).
 - `scripts/` — one-off ops scripts (not part of the served app).
 - `tests/` — pytest suite (1:1 with `app/`).
 

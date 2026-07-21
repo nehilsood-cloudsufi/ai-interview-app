@@ -475,6 +475,44 @@ async def test_soft_fail_leaves_profile_untouched(patch_settings):
     assert state.vendor_profile == original
 
 
+def test_merge_profile_updates_skips_locked_fields():
+    # Direct unit test of the merge helper: a manually-locked field (e.g. via
+    # PATCH /api/interview/{id}/profile) must never be overwritten by the
+    # LLM's profile_updates, while unlocked fields still merge normally.
+    profile = VendorProfile(
+        company_name="Acme Corp", website="https://acme.example", contact_name="Jane Doe", contact_role="CTO"
+    )
+    updates = {
+        "company_name": "New Co",
+        "website": "https://newco.example",
+        "contact_name": None,
+        "contact_role": None,
+    }
+
+    host_agent._merge_profile_updates(profile, updates, locked={"company_name"})
+
+    # Locked field untouched.
+    assert profile.company_name == "Acme Corp"
+    # Unlocked field still merges.
+    assert profile.website == "https://newco.example"
+
+
+def test_merge_profile_updates_no_locked_fields_behaves_as_before():
+    profile = VendorProfile(
+        company_name="Acme Corp", website="https://acme.example", contact_name="Jane Doe", contact_role="CTO"
+    )
+    updates = {
+        "company_name": "New Co",
+        "website": None,
+        "contact_name": None,
+        "contact_role": None,
+    }
+
+    host_agent._merge_profile_updates(profile, updates, locked=set())
+
+    assert profile.company_name == "New Co"
+
+
 # --- streaming turn ----------------------------------------------------------
 
 
@@ -641,3 +679,63 @@ async def test_stream_turn_truncated_trailing_json_keeps_spoken_reply(patch_sett
 def test_host_agent_settings_are_patchable(patch_settings):
     patched = patch_settings(gemini_api_key="sentinel-key")
     assert host_agent.settings is patched
+
+
+# --- mode-aware system prompt (H3: terse typed answers in chat mode) --------
+
+
+@respx.mock
+async def test_handle_turn_avatar_mode_omits_chat_prompt(patch_settings):
+    # Default mode ("avatar") must render byte-identical to before mode
+    # existed - no chat-mode text anywhere in the system content.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_chat_mode_prompt not in system_content
+
+
+@respx.mock
+async def test_handle_turn_chat_mode_appends_chat_prompt(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric(), mode="chat")
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_chat_mode_prompt in system_content
+
+
+@respx.mock
+async def test_stream_turn_avatar_mode_omits_chat_prompt(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=stream_response())
+    state = make_state()
+
+    await _collect_stream(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_chat_mode_prompt not in system_content
+
+
+@respx.mock
+async def test_stream_turn_chat_mode_appends_chat_prompt(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=stream_response())
+    state = make_state()
+
+    outcome = host_agent.StreamedTurn()
+    deltas = [
+        d
+        async for d in host_agent.stream_turn(
+            state, "We build ML pipelines.", make_questionnaire(), make_rubric(), outcome, mode="chat"
+        )
+    ]
+    assert deltas  # sanity: the turn still streamed a reply
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_chat_mode_prompt in system_content

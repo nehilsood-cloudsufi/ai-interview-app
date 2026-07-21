@@ -18,7 +18,14 @@ class Settings:
     # tunnel), so HeyGen can call back into /llm/{interview_id}/v1. Required
     # for session creation - gateway mode is the only mode.
     public_base_url: str | None = field(default_factory=lambda: os.getenv("PUBLIC_BASE_URL"))
-    questionnaire_path: str = field(default_factory=lambda: os.getenv("QUESTIONNAIRE_PATH", "data/questionnaire.yaml"))
+    # Per-domain questionnaires: production assigns each vendor's interview a
+    # domain (e.g. "ai_ml"), and `{questionnaires_dir}/{domain}.yaml` is the
+    # complete, standalone linear script for that domain. See
+    # app.services.interview_config.get_questionnaire/list_domains.
+    questionnaires_dir: str = field(
+        default_factory=lambda: os.getenv("QUESTIONNAIRES_DIR", "data/questionnaires")
+    )
+    default_domain: str = field(default_factory=lambda: os.getenv("DEFAULT_DOMAIN", "ai_ml"))
     rubric_path: str = field(default_factory=lambda: os.getenv("RUBRIC_PATH", "data/rubric.yaml"))
     scout_enabled: bool = field(default_factory=lambda: os.getenv("SCOUT_ENABLED", "true").lower() != "false")
     # Optional latency polish: when enabled, the gateway streams the Host's
@@ -44,7 +51,10 @@ class Settings:
         "reply, naturally ask the next question given to you (or deliver a "
         "warm closing if there is no next question). Never end a reply with "
         "a bare acknowledgment - the vendor must always hear a question or a "
-        "closing, or the conversation stalls. If the answer is not complete, "
+        "closing, or the conversation stalls. Keep acknowledgments to a few "
+        "words and never repeat or re-confirm information that was already "
+        "confirmed earlier in the conversation - a human interviewer says "
+        "things once. If the answer is not complete, "
         "ask one focused follow-up. The interview flow itself is a fixed "
         "script controlled by the system, not by you - report your judgement "
         "only through the JSON fields described below.\n\n"
@@ -66,6 +76,22 @@ class Settings:
     # Safe reply when the Gemini turn fails (HTTP error or unparsable JSON);
     # state is left untouched so the vendor can simply repeat themselves.
     host_fallback_reply: str = "I'm sorry, could you say that again?"
+    # Appended to host_system_prompt only when the Host is driving the
+    # text-chat fallback (mode="chat" in host_agent.handle_turn/stream_turn).
+    # Per the 2026-07-20 meeting: typed answers are terse, so the avatar-mode
+    # prompt's "ask one focused follow-up" instinct must not fire on short but
+    # complete typed answers.
+    host_chat_mode_prompt: str = field(
+        default_factory=lambda: os.getenv(
+            "HOST_CHAT_MODE_PROMPT",
+            "The vendor is typing in a text chat, not speaking. Treat concise "
+            "answers as complete rather than pressing for elaboration, and "
+            "keep your own replies brief. If a detail was already stated "
+            "earlier, infer it and confirm it instead of re-asking (for "
+            "example: 'You mentioned GCP earlier - do you support other "
+            "clouds too?').",
+        )
+    )
 
     # System prompt for the Evaluator agent's single holistic scoring call,
     # made once at finalize over the WHOLE transcript (not per answer - a

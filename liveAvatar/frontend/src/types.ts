@@ -18,6 +18,17 @@ export interface CreateInterviewResponse {
   interview_id: string;
 }
 
+// GET /api/domains -> DomainsResponse. Dev stand-in for the admin-assigned
+// domain: the vendor picks one on the start screen.
+export interface DomainInfo {
+  id: string;
+  title: string;
+}
+
+export interface DomainsResponse {
+  domains: DomainInfo[];
+}
+
 // Vendor profile as returned inside GET /api/interview/{id}/state
 // (backend VendorProfileModel — snake_case, doc_text excluded).
 export interface VendorProfile {
@@ -92,4 +103,12 @@ export interface InterviewStateResponse {
 export interface ChatResponse {
   reply: string;
   done: boolean;
+}
+
+// PATCH /api/interview/{id}/profile response (backend UpdateProfileResponse).
+// manually_edited_fields is the full set of fields ever manually corrected -
+// unused by the frontend today, but kept for shape fidelity with the backend.
+export interface UpdateProfileResponse {
+  vendor_profile: VendorProfile;
+  manually_edited_fields: string[];
 }

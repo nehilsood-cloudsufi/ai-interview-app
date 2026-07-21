@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AlertTriangle, ExternalLink, Loader2, MessageSquareText, Sparkles, Video } from 'lucide-react';
 import { API_URL, SESSIONS_SHEET_URL } from '../config';
-import type { CreateInterviewResponse, InterviewMode } from '../types';
+import type { CreateInterviewResponse, DomainInfo, DomainsResponse, InterviewMode } from '../types';
 
 interface StartScreenProps {
   // Creates the interview and hands control to the interview view in the
@@ -12,13 +12,44 @@ interface StartScreenProps {
 export function StartScreen({ onStart }: StartScreenProps) {
   const [pending, setPending] = useState<InterviewMode | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [domains, setDomains] = useState<DomainInfo[]>([]);
+  const [selectedDomain, setSelectedDomain] = useState<string>('');
+
+  // In production an admin assigns the vendor's interview domain; here the
+  // vendor picks one. If the fetch fails or returns nothing, hide the select
+  // entirely and fall back to the server's default domain (no body on POST).
+  useEffect(() => {
+    let cancelled = false;
+    const loadDomains = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/domains`);
+        if (!res.ok) return;
+        const data: DomainsResponse = await res.json();
+        if (cancelled || data.domains.length === 0) return;
+        setDomains(data.domains);
+        setSelectedDomain(data.domains[0].id);
+      } catch (err) {
+        console.error('Failed to fetch domains:', err);
+      }
+    };
+    loadDomains();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const begin = async (mode: InterviewMode) => {
     try {
       setPending(mode);
       setError(null);
 
-      const res = await fetch(`${API_URL}/api/interview`, { method: 'POST' });
+      const res = await fetch(`${API_URL}/api/interview`, {
+        method: 'POST',
+        ...(selectedDomain && {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ domain: selectedDomain }),
+        }),
+      });
       if (!res.ok) throw new Error('Failed to start the interview');
 
       const data: CreateInterviewResponse = await res.json();
@@ -52,6 +83,30 @@ export function StartScreen({ onStart }: StartScreenProps) {
 
       {/* Actions */}
       <div className="w-full max-w-md flex flex-col gap-3">
+        {domains.length > 0 && (
+          <div className="flex flex-col gap-1.5 mb-1">
+            <label htmlFor="domain-select" className="text-sm font-semibold text-slate-300">
+              Interview domain
+            </label>
+            <select
+              id="domain-select"
+              value={selectedDomain}
+              onChange={(e) => setSelectedDomain(e.target.value)}
+              disabled={busy}
+              className="w-full bg-slate-800/60 border border-slate-700/60 rounded-xl px-4 py-3 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/70 focus:border-transparent transition-all disabled:opacity-50"
+            >
+              {domains.map((domain) => (
+                <option key={domain.id} value={domain.id}>
+                  {domain.title}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Assigned by an admin in production — selectable here for development.
+            </p>
+          </div>
+        )}
+
         <button
           onClick={() => begin('avatar')}
           disabled={busy}

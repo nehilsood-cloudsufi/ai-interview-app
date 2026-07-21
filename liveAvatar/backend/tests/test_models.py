@@ -36,6 +36,13 @@ def test_transcript_turn_valid_roles():
     assert turn2.timestamp == 1.5
 
 
+def test_transcript_turn_accepts_system_role():
+    # Manual profile-edit note turns (app.routers.interview.update_profile)
+    # use role="system", so finalize requests carrying one must validate too.
+    turn = TranscriptTurn(role="system", text="[Vendor manually corrected their profile: ...]")
+    assert turn.role == "system"
+
+
 def test_transcript_turn_rejects_invalid_role():
     with pytest.raises(ValidationError):
         TranscriptTurn(role="moderator", text="hi")

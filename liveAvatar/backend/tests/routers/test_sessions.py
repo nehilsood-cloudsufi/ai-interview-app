@@ -15,7 +15,8 @@ def _seed_interview() -> interview_state.InterviewState:
             website=None,
             contact_name="Jo",
             contact_role=None,
-        )
+        ),
+        "ai_ml",
     )
 
 

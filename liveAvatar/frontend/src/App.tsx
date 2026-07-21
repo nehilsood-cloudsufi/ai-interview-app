@@ -6,6 +6,7 @@ import { useConcurrencyPoll } from './hooks/useConcurrencyPoll';
 import { useSessionTimer } from './hooks/useSessionTimer';
 import { useInterviewSummary } from './hooks/useInterviewSummary';
 import { useChatInterview } from './hooks/useChatInterview';
+import { useVendorProfile } from './hooks/useVendorProfile';
 import { StartScreen } from './components/StartScreen';
 import { ChatPanel } from './components/ChatPanel';
 import { NetworkIndicator } from './components/NetworkIndicator';
@@ -14,6 +15,7 @@ import { SpeakingIndicator } from './components/SpeakingIndicator';
 import { AvatarVideoPanel } from './components/AvatarVideoPanel';
 import { LocalVideoPanel } from './components/LocalVideoPanel';
 import { TranscriptPanel } from './components/TranscriptPanel';
+import { ProfileCard } from './components/ProfileCard';
 import { SummaryPanel } from './components/SummaryPanel';
 import { SessionControls } from './components/SessionControls';
 import { ErrorToast } from './components/ErrorToast';
@@ -34,6 +36,7 @@ function App() {
   const concurrencyCount = useConcurrencyPoll();
   const summary = useInterviewSummary(interviewId);
   const chat = useChatInterview({ interviewId, onError: setError });
+  const vendorProfile = useVendorProfile(interviewId, view === 'interview');
 
   const {
     status,
@@ -69,6 +72,16 @@ function App() {
 
   const showNetworkBanner =
     mode === 'avatar' && status === 'connected' && networkQuality === 'poor' && !networkBannerDismissed;
+
+  // Card is visible for the whole interview (session/chat active) once the
+  // first poll response has arrived - gated by view/mode via each render
+  // branch below (avatar: only once connected; chat: only in chat mode).
+  // In chat mode it also hides once finalize has begun (summary.visible) -
+  // by then state.pipeline_status is set and a PATCH would just 409, so the
+  // card should disappear rather than invite an edit that can't land. Avatar
+  // mode is already safely gated on the connected session (the session ends
+  // before finalize starts), so it doesn't need this extra check.
+  const showProfileCard = Boolean(vendorProfile.profile) && !(mode === 'chat' && summary.visible);
 
   if (view === 'start') {
     return (
@@ -128,7 +141,16 @@ function App() {
 
         {mode === 'chat' ? (
           /* Text-chat column */
-          <div className="flex-1 min-h-0 flex flex-col overflow-hidden p-4 md:px-8 md:py-6">
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden p-4 md:px-8 md:py-6 gap-3">
+            {showProfileCard && (
+              <div className="w-full max-w-2xl mx-auto shrink-0">
+                <ProfileCard
+                  profile={vendorProfile.profile!}
+                  isOnboarding={vendorProfile.isOnboarding}
+                  onSave={vendorProfile.saveProfile}
+                />
+              </div>
+            )}
             <ChatPanel
               turns={chat.turns}
               isSending={chat.isSending}
@@ -149,7 +171,27 @@ function App() {
                   <LocalVideoPanel status={status} speakingState={speakingState} cameraEnabled={cameraEnabled} micEnabled={micEnabled} localVideoRef={localVideoRef} />
                 )}
 
-                {status === 'connected' && <TranscriptPanel turns={transcript} />}
+                {status === 'connected' && (
+                  // grid-rows-[auto_1fr]: the ProfileCard (row 1, natural
+                  // height) sits above the transcript (row 2, fills whatever
+                  // is left) without the transcript losing its own min-h-0
+                  // bound when the card isn't rendered - see comment above on
+                  // why nothing here may grow with content.
+                  <div className="w-full md:w-80 lg:w-96 shrink-0 grid grid-rows-[auto_1fr] gap-3 min-h-0">
+                    {showProfileCard && (
+                      <div className="row-start-1">
+                        <ProfileCard
+                          profile={vendorProfile.profile!}
+                          isOnboarding={vendorProfile.isOnboarding}
+                          onSave={vendorProfile.saveProfile}
+                        />
+                      </div>
+                    )}
+                    <div className="row-start-2 min-h-0 flex">
+                      <TranscriptPanel turns={transcript} />
+                    </div>
+                  </div>
+                )}
 
                 <SpeakingIndicator visible={status === 'connected'} speakingState={speakingState} />
               </div>

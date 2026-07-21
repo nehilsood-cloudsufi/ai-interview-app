@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -9,6 +10,11 @@ from app.config import settings
 # Backend package root (liveAvatar/backend/), so the relative default
 # questionnaire/rubric paths resolve regardless of the process CWD.
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+# Domain ids double as filenames ({domain}.yaml) and URL/query values, so they
+# are restricted to simple slugs - this is checked BEFORE any filesystem
+# access, closing off path-traversal tricks like "../secrets" or "a/b".
+_DOMAIN_SLUG_RE = re.compile(r"^[a-z0-9_]+$")
 
 
 @dataclass(frozen=True)
@@ -29,8 +35,21 @@ class RubricCategory:
     description: str
 
 
-def load_questionnaire(path: Path) -> dict[str, QuestionNode]:
-    raw = yaml.safe_load(Path(path).read_text())
+@dataclass(frozen=True)
+class Questionnaire:
+    domain: str
+    title: str
+    nodes: dict[str, QuestionNode]
+
+
+def load_questionnaire(path: Path) -> Questionnaire:
+    path = Path(path)
+    raw = yaml.safe_load(path.read_text())
+    domain = raw["domain"]
+    title = raw["title"]
+    if domain != path.stem:
+        raise ValueError(f"questionnaire domain '{domain}' does not match filename '{path.stem}.yaml'")
+
     nodes: dict[str, QuestionNode] = {}
     for entry in raw["questions"]:
         node = QuestionNode(
@@ -44,7 +63,7 @@ def load_questionnaire(path: Path) -> dict[str, QuestionNode]:
         nodes[node.id] = node
 
     _validate_questionnaire(nodes)
-    return nodes
+    return Questionnaire(domain=domain, title=title, nodes=nodes)
 
 
 def _validate_questionnaire(nodes: dict[str, QuestionNode]) -> None:
@@ -98,18 +117,44 @@ def _resolve_path(path_str: str) -> Path:
 
 
 # Lazy module-level singletons (no app.state: tests use TestClient without
-# lifespan). Loaded on first use, cached for the life of the process.
+# lifespan). Loaded on first use, cached for the life of the process - one
+# cache entry per domain.
+
+
+def _validate_domain_slug(domain: str) -> None:
+    if not _DOMAIN_SLUG_RE.fullmatch(domain):
+        raise KeyError(f"invalid domain: {domain!r}")
+
+
+def _questionnaire_path(domain: str) -> Path:
+    return _resolve_path(settings.questionnaires_dir) / f"{domain}.yaml"
+
+
+@lru_cache(maxsize=None)
+def get_questionnaire(domain: str) -> dict[str, QuestionNode]:
+    _validate_domain_slug(domain)
+    path = _questionnaire_path(domain)
+    if not path.is_file():
+        raise KeyError(f"unknown domain: {domain!r}")
+    return load_questionnaire(path).nodes
+
+
+def get_start_node_id(domain: str) -> str:
+    """The interview's first question for this domain: the first node in
+    the domain's questionnaire file (dicts preserve insertion order)."""
+    return next(iter(get_questionnaire(domain)))
 
 
 @lru_cache(maxsize=1)
-def get_questionnaire() -> dict[str, QuestionNode]:
-    return load_questionnaire(_resolve_path(settings.questionnaire_path))
-
-
-def get_start_node_id() -> str:
-    """The interview's first question: the first node in the questionnaire
-    file (dicts preserve insertion order)."""
-    return next(iter(get_questionnaire()))
+def list_domains() -> list[tuple[str, str]]:
+    """(domain_id, title) pairs for every questionnaire file, sorted by id
+    for a stable dropdown order."""
+    directory = _resolve_path(settings.questionnaires_dir)
+    domains = []
+    for path in directory.glob("*.yaml"):
+        raw = yaml.safe_load(path.read_text())
+        domains.append((raw["domain"], raw["title"]))
+    return sorted(domains, key=lambda pair: pair[0])
 
 
 @lru_cache(maxsize=1)

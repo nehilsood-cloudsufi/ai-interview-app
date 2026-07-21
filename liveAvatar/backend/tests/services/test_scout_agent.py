@@ -13,7 +13,7 @@ NATIVE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/"
 
 def make_state(company_name="Acme Corp", website="https://acme.example"):
     profile = VendorProfile(company_name=company_name, website=website)
-    return interview_state.create(profile)
+    return interview_state.create(profile, "ai_ml")
 
 
 def model_url(model: str) -> str:

@@ -42,6 +42,11 @@ class InterviewState:
     interview_id: str
     gateway_token: str
     vendor_profile: VendorProfile
+    # The domain-specific questionnaire this interview follows (e.g.
+    # "ai_ml"); resolves `get_questionnaire(domain)`/`get_start_node_id`.
+    # The empty default only exists so tests can construct states directly
+    # without going through create().
+    domain: str = ""
     heygen_session_id: str | None = None
     llm_config_id: str | None = None
     secret_id: str | None = None
@@ -52,6 +57,11 @@ class InterviewState:
     followup_count: int = 0
     turns: list[TranscriptTurn] = field(default_factory=list)
     scout_findings: list[ScoutFinding] = field(default_factory=list)
+    # Profile fields the vendor manually corrected via PATCH
+    # /api/interview/{id}/profile - permanently locked against the Host's
+    # LLM-reported profile_updates (manual wins; re-editing manually is
+    # always allowed).
+    manually_edited_fields: set[str] = field(default_factory=set)
     status: Literal["created", "active", "finished"] = "created"
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     # Set by app.services.pipeline once finalize hands the state off to it;
@@ -64,7 +74,7 @@ class InterviewState:
 _interviews: dict[str, InterviewState] = {}
 
 
-def create(profile: VendorProfile) -> InterviewState:
+def create(profile: VendorProfile, domain: str) -> InterviewState:
     from app.services.interview_config import get_start_node_id
 
     prune_older_than()
@@ -72,7 +82,8 @@ def create(profile: VendorProfile) -> InterviewState:
         interview_id=uuid.uuid4().hex,
         gateway_token=secrets.token_urlsafe(32),
         vendor_profile=profile,
-        current_node_id=get_start_node_id(),
+        domain=domain,
+        current_node_id=get_start_node_id(domain),
     )
     _interviews[state.interview_id] = state
     return state
