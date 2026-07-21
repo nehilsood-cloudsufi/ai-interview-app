@@ -57,6 +57,11 @@ class InterviewState:
     followup_count: int = 0
     turns: list[TranscriptTurn] = field(default_factory=list)
     scout_findings: list[ScoutFinding] = field(default_factory=list)
+    # Profile fields the vendor manually corrected via PATCH
+    # /api/interview/{id}/profile - permanently locked against the Host's
+    # LLM-reported profile_updates (manual wins; re-editing manually is
+    # always allowed).
+    manually_edited_fields: set[str] = field(default_factory=set)
     status: Literal["created", "active", "finished"] = "created"
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     # Set by app.services.pipeline once finalize hands the state off to it;

@@ -15,8 +15,12 @@ this endpoint (rather than the finalize response) to learn when it's ready.
 POST .../chat is the low-bandwidth text fallback: it drives the same Host
 agent turn as the avatar's /llm/{id}/v1/chat/completions gateway, but
 same-origin and unauthenticated (no gateway_token in the browser) since it
-never leaves our own backend. Same-origin UI endpoints like the rest of
-/api - no auth.
+never leaves our own backend. PATCH .../profile lets the vendor manually
+correct the Host-captured profile at any point in the interview; corrected
+fields are permanently locked against the Host's LLM-reported
+profile_updates and a role="system" note turn is appended so the transcript
+(and the Evaluator) sees that a correction happened. Same-origin UI
+endpoints like the rest of /api - no auth.
 """
 
 import dataclasses
@@ -32,12 +36,27 @@ from app.models import (
     CreateInterviewResponse,
     DomainsResponse,
     InterviewStateResponse,
+    TranscriptTurn,
+    UpdateProfileRequest,
+    UpdateProfileResponse,
 )
 from app.services import host_agent, interview_state
 from app.services.interview_config import get_questionnaire, get_rubric, list_domains
 from app.services.interview_state import VendorProfile
 
 router = APIRouter()
+
+# Maps UpdateProfileRequest/VendorProfile field names to their display label
+# in the system-note turn, in canonical (request-shape) order. Clearing a
+# required-str field (_REQUIRED_STR_FIELDS) sets "", clearing an optional
+# field sets None.
+_PROFILE_FIELD_LABELS = {
+    "company_name": "Company name",
+    "website": "Website",
+    "contact_name": "Contact name",
+    "contact_role": "Contact role",
+}
+_REQUIRED_STR_FIELDS = {"company_name", "contact_name"}
 
 
 @router.get("/api/domains", response_model=DomainsResponse)
@@ -105,3 +124,56 @@ async def chat(interview_id: str, body: ChatRequest):
     result = await host_agent.handle_turn(state, text, get_questionnaire(state.domain), get_rubric(), mode="chat")
 
     return {"reply": result.reply, "done": state.current_node_id == host_agent.END_NODE_ID}
+
+
+def _fmt_profile_value(value: str | None) -> str:
+    return f'"{value}"' if value else "(not set)"
+
+
+@router.patch("/api/interview/{interview_id}/profile", response_model=UpdateProfileResponse)
+async def update_profile(interview_id: str, body: UpdateProfileRequest):
+    """Vendor-initiated manual correction of the Host-captured profile,
+    available at any point in the interview. Every provided field overwrites
+    `state.vendor_profile` and is permanently added to
+    `state.manually_edited_fields`, locking it against the Host's
+    LLM-reported profile_updates on future turns (re-editing manually is
+    always allowed). A role="system" note turn documenting the actual value
+    changes is appended to `state.turns` - but only when something actually
+    changed, so a no-op PATCH (re-submitting the same value) doesn't spam the
+    transcript, even though the field still locks."""
+    state = interview_state.get(interview_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    provided_fields = [name for name in _PROFILE_FIELD_LABELS if getattr(body, name) is not None]
+    if not provided_fields:
+        raise HTTPException(status_code=400, detail="At least one profile field must be provided")
+
+    profile = state.vendor_profile
+    changes: list[tuple[str, str | None, str | None]] = []
+    for field_name in provided_fields:
+        stripped = getattr(body, field_name).strip()
+        new_value = stripped if stripped else ("" if field_name in _REQUIRED_STR_FIELDS else None)
+        old_value = getattr(profile, field_name)
+        if new_value != old_value:
+            changes.append((_PROFILE_FIELD_LABELS[field_name], old_value, new_value))
+        setattr(profile, field_name, new_value)
+        state.manually_edited_fields.add(field_name)
+
+    if changes:
+        note = "; ".join(
+            f"{label}: {_fmt_profile_value(old)} → {_fmt_profile_value(new)}" for label, old, new in changes
+        )
+        state.turns.append(
+            TranscriptTurn(role="system", text=f"[Vendor manually corrected their profile: {note}]")
+        )
+
+    return {
+        "vendor_profile": {
+            "company_name": profile.company_name,
+            "website": profile.website,
+            "contact_name": profile.contact_name,
+            "contact_role": profile.contact_role,
+        },
+        "manually_edited_fields": sorted(state.manually_edited_fields),
+    }
