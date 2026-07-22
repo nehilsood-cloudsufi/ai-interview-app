@@ -37,9 +37,13 @@ _SETTINGS_IMPORTERS = [
 def _zero_utterance_settle(monkeypatch):
     """Zero the gateway's utterance-settle sleep for the whole suite - the
     real default (~1.2s per processed turn) would slow every gateway test to
-    a crawl. Tests that verify the settle behavior itself opt back in via
-    patch_settings(host_utterance_settle_seconds=...)."""
-    fast = dataclasses.replace(_original_settings, host_utterance_settle_seconds=0.0)
+    a crawl. Also pin host_streaming_enabled to its documented default (off)
+    so a developer's local .env (loaded with override=True) can't flip the
+    suite onto the streaming path. Tests that verify either behavior opt back
+    in via patch_settings(...)."""
+    fast = dataclasses.replace(
+        _original_settings, host_utterance_settle_seconds=0.0, host_streaming_enabled=False
+    )
     for mod_name in _SETTINGS_IMPORTERS:
         mod = importlib.import_module(mod_name)
         monkeypatch.setattr(mod, "settings", fast, raising=True)
@@ -55,6 +59,7 @@ def patch_settings(monkeypatch):
 
     def _patch(**overrides) -> Settings:
         overrides.setdefault("host_utterance_settle_seconds", 0.0)
+        overrides.setdefault("host_streaming_enabled", False)
         new_settings = dataclasses.replace(_original_settings, **overrides)
         for mod_name in _SETTINGS_IMPORTERS:
             mod = importlib.import_module(mod_name)

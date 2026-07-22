@@ -58,7 +58,8 @@ def test_prod_tier_env_overrides(monkeypatch):
     assert fresh.prod_max_session_seconds == 900
 
 
-def test_host_streaming_disabled_by_default():
+def test_host_streaming_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("HOST_STREAMING_ENABLED", raising=False)
     fresh = Settings(liveavatar_api_key=None, gemini_api_key=None, gcs_bucket=None)
     assert fresh.host_streaming_enabled is False
 
