@@ -52,6 +52,10 @@ class InterviewState:
     # is_sandbox=false (passcode-gated, credit-burning). NOT the avatar/chat
     # "mode" concept used by host_agent.
     tier: Literal["dev", "prod"] = "dev"
+    # Prod tier only: HeyGen max_session_duration for this interview's
+    # sessions, derived from the start screen's duration pick at creation.
+    # None on the dev tier (the sandbox ~1-min cap applies regardless).
+    max_session_seconds: int | None = None
     heygen_session_id: str | None = None
     llm_config_id: str | None = None
     secret_id: str | None = None
@@ -79,7 +83,12 @@ class InterviewState:
 _interviews: dict[str, InterviewState] = {}
 
 
-def create(profile: VendorProfile, domain: str, tier: Literal["dev", "prod"] = "dev") -> InterviewState:
+def create(
+    profile: VendorProfile,
+    domain: str,
+    tier: Literal["dev", "prod"] = "dev",
+    max_session_seconds: int | None = None,
+) -> InterviewState:
     from app.services.interview_config import get_start_node_id
 
     prune_older_than()
@@ -89,6 +98,7 @@ def create(profile: VendorProfile, domain: str, tier: Literal["dev", "prod"] = "
         vendor_profile=profile,
         domain=domain,
         tier=tier,
+        max_session_seconds=max_session_seconds,
         current_node_id=get_start_node_id(domain),
     )
     _interviews[state.interview_id] = state

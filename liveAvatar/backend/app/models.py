@@ -89,6 +89,11 @@ class CreateInterviewRequest(BaseModel):
     tier: str | None = None
     # Shared demo passcode, only consulted for tier="prod" (DEMO_PASSCODE).
     passcode: str | None = None
+    # Prod tier only: how long the session may run, picked on the start
+    # screen. Missing/null defaults to 5 minutes; the router 400s outside
+    # 1..(PROD_MAX_SESSION_SECONDS/60). Ignored on the dev tier (HeyGen's
+    # ~1-min sandbox cap applies regardless).
+    duration_minutes: int | None = None
 
 
 class CreateInterviewResponse(BaseModel):

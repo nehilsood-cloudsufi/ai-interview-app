@@ -77,6 +77,7 @@ async def create_interview(body: CreateInterviewRequest | None = None):
     tier = (body.tier if body else None) or "dev"
     if tier not in ("dev", "prod"):
         raise HTTPException(status_code=400, detail=f"Unknown tier: {tier!r}")
+    max_session_seconds = None
     if tier == "prod":
         # Prod-tier sessions burn credits (2/min), so they are disabled
         # entirely until both knobs are configured, and gated behind the
@@ -89,7 +90,18 @@ async def create_interview(body: CreateInterviewRequest | None = None):
         if (body.passcode if body else None) != settings.demo_passcode:
             raise HTTPException(status_code=403, detail="Invalid passcode")
 
-    state = interview_state.create(VendorProfile(), domain, tier)
+        # Session length picked on the start screen; PROD_MAX_SESSION_SECONDS
+        # stays the hard ceiling and 5 minutes the default.
+        max_minutes = settings.prod_max_session_seconds // 60
+        minutes = body.duration_minutes if body and body.duration_minutes is not None else min(5, max_minutes)
+        if not 1 <= minutes <= max_minutes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"duration_minutes must be between 1 and {max_minutes}",
+            )
+        max_session_seconds = minutes * 60
+
+    state = interview_state.create(VendorProfile(), domain, tier, max_session_seconds)
     return {"interview_id": state.interview_id}
 
 

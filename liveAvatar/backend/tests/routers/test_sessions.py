@@ -79,6 +79,7 @@ def test_create_session_prod_tier_token_payload(client, patch_settings):
         prod_max_session_seconds=600,
     )
     state = _seed_interview(tier="prod")
+    state.max_session_seconds = 300  # the vendor picked 5 minutes on the start screen
     respx.post(f"{BASE_URL}/secrets").mock(
         return_value=httpx.Response(200, json={"data": {"id": "sec-1"}})
     )
@@ -100,7 +101,7 @@ def test_create_session_prod_tier_token_payload(client, patch_settings):
     body = json.loads(token_route.calls[0].request.content)
     assert body["avatar_id"] == "avatar-june"
     assert body["is_sandbox"] is False
-    assert body["max_session_duration"] == 600
+    assert body["max_session_duration"] == 300
     assert body["avatar_persona"]["voice_id"] == "voice-amy"
 
 

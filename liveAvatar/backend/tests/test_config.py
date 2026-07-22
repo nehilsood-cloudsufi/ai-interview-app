@@ -32,9 +32,12 @@ def test_settings_env_overrides(monkeypatch):
     assert fresh.gcs_bucket == "my-bucket"
 
 
-def test_prod_tier_defaults():
+def test_prod_tier_defaults(monkeypatch):
     # Prod tier is entirely opt-in: unset env means it's disabled and the
-    # dev-tier avatar is the sandbox one.
+    # dev-tier avatar is the sandbox one. The vars are explicitly cleared so
+    # a developer's local .env (loaded at import time) can't leak in.
+    for var in ("PROD_AVATAR_ID", "PROD_VOICE_ID", "DEMO_PASSCODE", "PROD_MAX_SESSION_SECONDS"):
+        monkeypatch.delenv(var, raising=False)
     fresh = Settings(liveavatar_api_key=None, gemini_api_key=None, gcs_bucket=None)
     assert fresh.avatar_id == SANDBOX_AVATAR_ID
     assert fresh.prod_avatar_id is None

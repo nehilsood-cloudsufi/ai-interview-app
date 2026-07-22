@@ -69,7 +69,9 @@ async def _create_gateway_session(body: CreateSessionRequest) -> dict:
             avatar_id = settings.prod_avatar_id
             is_sandbox = False
             voice_id = settings.prod_voice_id
-            max_session_duration = settings.prod_max_session_seconds
+            # Picked on the start screen at interview creation; the settings
+            # ceiling only backstops states created before that field existed.
+            max_session_duration = state.max_session_seconds or settings.prod_max_session_seconds
         else:
             avatar_id = settings.avatar_id
             is_sandbox = True
