@@ -169,7 +169,7 @@ class Settings:
     # human interviewer waits before answering. Trade-off: adds this much
     # latency to every genuine turn (HeyGen's own read timeout is 10s).
     host_utterance_settle_seconds: float = field(
-        default_factory=lambda: float(os.getenv("HOST_UTTERANCE_SETTLE_SECONDS", "0.8"))
+        default_factory=lambda: float(os.getenv("HOST_UTTERANCE_SETTLE_SECONDS", "0.5"))
     )
     # With more than this many seconds left on a clocked interview, the Host
     # is told to dig deeper instead of accepting brief answers - the inverse

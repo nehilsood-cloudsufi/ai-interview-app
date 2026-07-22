@@ -114,12 +114,21 @@ def _stream_response(completion_id: str, created: int, model: str, reply: str) -
 
 
 def _streaming_host_response(
-    state, interview_id: str, user_text: str, completion_id: str, created: int, model: str, started: float
+    state,
+    interview_id: str,
+    user_text: str,
+    completion_id: str,
+    created: int,
+    model: str,
+    started: float,
+    is_cancelled=None,
 ) -> StreamingResponse:
     """True token-by-token path: forward the Host's reply fragments to HeyGen as
     Gemini produces them. Never-fail: a failure before the first fragment is
     spoken falls back to the canned reply; a failure after leaves the partial
-    reply standing (the avatar is already talking)."""
+    reply standing (the avatar is already talking). `is_cancelled` is the
+    gateway's seq-based supersede signal - stream_turn skips or discards a
+    superseded turn without touching state."""
 
     async def sse():
         outcome = host_agent.StreamedTurn()
@@ -127,7 +136,7 @@ def _streaming_host_response(
         ttft_ms: int | None = None
         try:
             async for text in host_agent.stream_turn(
-                state, user_text, get_questionnaire(state.domain), get_rubric(), outcome
+                state, user_text, get_questionnaire(state.domain), get_rubric(), outcome, is_cancelled=is_cancelled
             ):
                 if not text:
                     continue
@@ -205,37 +214,41 @@ async def chat_completions(interview_id: str, request: Request):
         logger.warning("LLM gateway body unparsable for interview %s; returning canned reply.", interview_id, exc_info=True)
         return _stream_response(completion_id, created, "resonance-host", settings.host_fallback_reply)
 
+    if user_text is not None:
+        # Supersede detection is OUR bookkeeping, not the socket's: bump the
+        # interview's request counter and remember this request's seq. HeyGen
+        # cancels a request the moment a newer speech fragment arrives, but
+        # request.is_disconnected proved unreliable through the tunnel/uvicorn
+        # stack (verified live 2026-07-22 - zero cancellations detected while
+        # four questions were silently consumed). The seq comparison always
+        # works: a newer fragment bumps the counter, so this turn knows it's
+        # been superseded. is_disconnected stays as a free extra signal.
+        state.request_seq += 1
+        seq = state.request_seq
+
+        async def superseded() -> bool:
+            return state.request_seq != seq or await request.is_disconnected()
+
+        # The settle beat: a human interviewer waits a moment before
+        # answering. If the vendor was only pausing mid-thought, the next
+        # fragment lands during this sleep and this turn steps aside.
+        if settings.host_utterance_settle_seconds > 0:
+            await asyncio.sleep(settings.host_utterance_settle_seconds)
+    else:
+        superseded = None
+
     # Opt-in token-by-token path: only for a real user utterance HeyGen wants
     # streamed. Greeting/non-stream turns keep the buffered path below.
     if settings.host_streaming_enabled and stream and user_text is not None:
-        return _streaming_host_response(state, interview_id, user_text, completion_id, created, model, started)
+        return _streaming_host_response(
+            state, interview_id, user_text, completion_id, created, model, started, superseded
+        )
 
     answer_complete = False
     try:
         if user_text is None:
             reply = _GREETING_REPLY
         else:
-            # Supersede detection is OUR bookkeeping, not the socket's: bump
-            # the interview's request counter and remember this request's seq.
-            # HeyGen cancels a request the moment a newer speech fragment
-            # arrives, but request.is_disconnected proved unreliable through
-            # the tunnel/uvicorn stack (verified live 2026-07-22 - zero
-            # cancellations detected while four questions were silently
-            # consumed). The seq comparison always works: a newer fragment
-            # bumps the counter, so this turn knows it's been superseded.
-            # is_disconnected stays as a free extra signal where it does fire.
-            state.request_seq += 1
-            seq = state.request_seq
-
-            async def superseded() -> bool:
-                return state.request_seq != seq or await request.is_disconnected()
-
-            # The settle beat: a human interviewer waits a moment before
-            # answering. If the vendor was only pausing mid-thought, the next
-            # fragment lands during this sleep and this turn steps aside.
-            if settings.host_utterance_settle_seconds > 0:
-                await asyncio.sleep(settings.host_utterance_settle_seconds)
-
             # handle_turn re-checks under the turn lock and again after the
             # Gemini call; a None result means the turn was superseded and
             # state untouched - answer with a stub, nobody is reading it.

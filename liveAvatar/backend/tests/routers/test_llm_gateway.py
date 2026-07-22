@@ -79,8 +79,8 @@ def _turn_result(reply="Great, tell me more.", answer_complete=False, completed_
 def _fake_stream_turn(monkeypatch, deltas, result=None):
     calls = []
 
-    async def fake(state, user_text, questionnaire, rubric, outcome):
-        calls.append({"state": state, "user_text": user_text})
+    async def fake(state, user_text, questionnaire, rubric, outcome, is_cancelled=None):
+        calls.append({"state": state, "user_text": user_text, "is_cancelled": is_cancelled})
         for delta in deltas:
             yield delta
         outcome.result = result if result is not None else _turn_result()

@@ -192,6 +192,17 @@ def _render_system_content(
         "Current question:",
         f"- Topic: {node.topic}",
         f"- Ask: {node.ask}",
+        # Without this the judge has no idea a follow-up is outstanding and
+        # grades the vendor's message against the original ask instead.
+        *(
+            [
+                f"- You have already asked {state.followup_count} follow-up(s) on this "
+                "question; judge the vendor's latest message against your most recent "
+                "follow-up, and don't re-ask anything they have answered."
+            ]
+            if state.followup_count
+            else []
+        ),
         "",
         # The LLM never advances the script itself, but it must SPEAK the next
         # question in the same reply that closes the current one - HeyGen only
@@ -496,6 +507,7 @@ async def stream_turn(
     rubric: dict[str, RubricCategory] | None,
     outcome: StreamedTurn,
     mode: Literal["avatar", "chat"] = "avatar",
+    is_cancelled: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[str]:
     """Streaming counterpart to `handle_turn`: yields the spoken reply in
     fragments as Gemini emits them, then applies the same code-driven state
@@ -510,9 +522,21 @@ async def stream_turn(
 
     Like `handle_turn`, turns for the same interview serialize on
     `state.turn_lock` - held for the whole stream, so an overlapping gateway
-    call waits out the in-flight turn instead of racing its state mutation."""
+    call waits out the in-flight turn instead of racing its state mutation.
+    `is_cancelled` behaves as in `handle_turn`: a superseded turn is skipped
+    before the Gemini call (yielding nothing), and its outcome is discarded
+    before any state mutation if the cancellation lands mid-stream. (A client
+    disconnect that kills the SSE generator outright also never reaches the
+    mutation - it lives after the full parse at the stream's tail.)"""
     async with state.turn_lock:
-        async for text in _stream_turn(state, user_text, questionnaire, rubric, outcome, mode):
+        if is_cancelled is not None and await is_cancelled():
+            logger.info(
+                "Streaming turn superseded before processing for interview %s at node %s; skipping.",
+                state.interview_id,
+                state.current_node_id,
+            )
+            return
+        async for text in _stream_turn(state, user_text, questionnaire, rubric, outcome, mode, is_cancelled):
             yield text
 
 
@@ -523,6 +547,7 @@ async def _stream_turn(
     rubric: dict[str, RubricCategory] | None,
     outcome: StreamedTurn,
     mode: Literal["avatar", "chat"] = "avatar",
+    is_cancelled: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[str]:
     """`stream_turn`'s body, running with `state.turn_lock` already held."""
     if state.current_node_id == END_NODE_ID:
@@ -584,6 +609,18 @@ async def _stream_turn(
 
     if remainder:
         yield remainder
+
+    # Superseded while streaming: the spoken fragments are already out (that's
+    # fine - HeyGen dropped them), but state must stay untouched, same rule as
+    # the buffered path.
+    if is_cancelled is not None and await is_cancelled():
+        logger.info(
+            "Streaming turn superseded during Gemini call for interview %s at node %s; discarding outcome.",
+            state.interview_id,
+            state.current_node_id,
+        )
+        return
+
     outcome.result = _apply_outcome(
         state,
         node,

@@ -359,7 +359,7 @@ top level.
   `user` messages — `_last_user_text` joins that run back into the full
   utterance. Supersede detection is our own bookkeeping: each utterance
   request bumps `InterviewState.request_seq`, waits a settle beat
-  (`HOST_UTTERANCE_SETTLE_SECONDS`, default 1.2 s — "let them finish"), and
+  (`HOST_UTTERANCE_SETTLE_SECONDS`, default 0.5 s — "let them finish"), and
   a turn whose seq is no longer the head is skipped before the Gemini call
   or discarded before any state mutation (a reply the vendor never heard
   must not append turns, burn follow-up budget, or advance the script).

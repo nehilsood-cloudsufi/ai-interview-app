@@ -780,6 +780,32 @@ async def test_turn_cancelled_during_gemini_call_discards_outcome(patch_settings
 
 
 @respx.mock
+async def test_cancelled_stream_turn_is_skipped_before_the_gemini_call(patch_settings):
+    # Streaming counterpart of the buffered skip: a superseded streaming turn
+    # yields nothing, makes no Gemini call, and leaves state untouched.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+    outcome = host_agent.StreamedTurn()
+
+    async def already_cancelled():
+        return True
+
+    chunks = [
+        text
+        async for text in host_agent.stream_turn(
+            state, "I", make_questionnaire(), make_rubric(), outcome, is_cancelled=already_cancelled
+        )
+    ]
+
+    assert chunks == []
+    assert outcome.result is None
+    assert not route.called
+    assert state.current_node_id == "company_overview"
+    assert state.turns == []
+
+
+@respx.mock
 async def test_concurrent_turns_serialize_per_interview(patch_settings):
     # HeyGen's VAD can fire overlapping gateway calls when it splits one
     # flowing answer into fragments (seen live 2026-07-22: two turns processed
