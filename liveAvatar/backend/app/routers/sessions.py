@@ -3,7 +3,7 @@ import logging
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from app.config import settings
+from app.config import SANDBOX_AVATAR_ID, settings
 from app.dependencies import resolve_api_key
 from app.models import CreateSessionRequest, StopSessionRequest
 from app.services import interview_state
@@ -97,6 +97,14 @@ async def create_session(body: CreateSessionRequest):
         raise HTTPException(status_code=400, detail="interview_id is required")
     if not settings.public_base_url:
         raise HTTPException(status_code=503, detail="PUBLIC_BASE_URL is not configured")
+    if not settings.sandbox_mode and settings.avatar_id == SANDBOX_AVATAR_ID:
+        # The sandbox avatar with is_sandbox=false makes LiveKit time out
+        # silently - fail fast with an actionable error instead.
+        raise HTTPException(
+            status_code=503,
+            detail="SANDBOX_MODE=false requires a production AVATAR_ID; "
+            "the sandbox avatar only works in sandbox mode",
+        )
 
     return await _create_gateway_session(body)
 

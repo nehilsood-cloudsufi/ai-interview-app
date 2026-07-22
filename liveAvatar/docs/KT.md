@@ -151,6 +151,31 @@ We deploy both the frontend and backend together as a single container on Google
 - **The `.gcloudignore` File**: This is critical. It tells Google Cloud "Do NOT upload my local `node_modules` or `.venv` folders to the cloud builder." If you upload a Mac's `.venv` folder to a Linux cloud builder, the build will fail because the binaries are incompatible.
 - **Secret Manager**: The `deploy_setup.sh` script automates creating a secure vault (Google Cloud Secret Manager) for our `LIVEAVATAR_API_KEY` and giving Cloud Run permission to read it. When the container boots, Cloud Run injects the secret securely as an environment variable.
 
+### Production deploy recipe
+
+Branches: `main` = production (deployed to Cloud Run, `SANDBOX_MODE=false`), `dev` = development (sandbox mode, local + tunnel). Features merge into `dev`; `dev` merges into `main` to release.
+
+One-time setup: `./deploy_setup.sh` (creates the `LIVEAVATAR_API_KEY` secret in Secret Manager and binds IAM). Then, from the repo root on `main`:
+
+```bash
+gcloud run deploy resonance \
+  --source liveAvatar \
+  --region <region> \
+  --allow-unauthenticated \
+  --no-cpu-throttling \
+  --update-secrets LIVEAVATAR_API_KEY=LIVEAVATAR_API_KEY:latest \
+  --set-env-vars "SANDBOX_MODE=false,AVATAR_ID=<prod-avatar-id>,GEMINI_API_KEY=<key>,GCS_BUCKET=<bucket>"
+```
+
+`PUBLIC_BASE_URL` is a chicken-and-egg: HeyGen needs the service URL, which doesn't exist until the first deploy. So deploy once without it (session creation 503s until it's set), grab the URL from the deploy output, then:
+
+```bash
+gcloud run services update resonance --region <region> \
+  --set-env-vars PUBLIC_BASE_URL=<service-url>
+```
+
+Production prerequisites: LiveAvatar credits on the account (FULL mode is 2 credits/minute), a non-sandbox avatar ID, and — only if that avatar is an *image* avatar — a `voice_id` (video avatars have a built-in voice).
+
 ### CPU throttling and the post-interview pipeline
 
 The post-interview pipeline (`app/services/pipeline.py`, Scout → Evaluator → Coordinator) runs as an in-process `asyncio` background task that keeps executing *after* `POST /api/transcript/finalize` has already returned its HTTP response. Cloud Run's **default request-based CPU allocation** only guarantees CPU to a container while it's actively handling a request — once the response is sent, CPU can be throttled to near zero between requests, which can stall or badly slow down that background task.
@@ -173,8 +198,8 @@ Mitigations:
 **Q: Cloud Build is failing with an error about missing modules or incompatible binaries.**
 **A:** You likely accidentally uploaded your local environments. Ensure `.gcloudignore` is present in the root of the project and contains `node_modules`, `.venv`, and `.env`.
 
-**Q: Why is `is_sandbox: True` hardcoded?**
-**A:** We are currently using the default Sandbox Avatar ID. If you try to use a sandbox avatar with `is_sandbox: False`, LiveKit will inexplicably time out and the connection will fail. When we move to production with a custom avatar, this flag must be changed.
+**Q: How do I switch between sandbox and production avatar mode?**
+**A:** Two env vars in `app/config.py`: `SANDBOX_MODE` (default `true` — free, ~1-minute sessions, 2 credits/minute when off) and `AVATAR_ID` (default: the sandbox avatar). Production needs **both** `SANDBOX_MODE=false` and a real avatar ID from the HeyGen dashboard (or `GET /v1/avatars`) — pairing the sandbox avatar with `is_sandbox: false` makes LiveKit inexplicably time out, so `POST /api/session` rejects that combination with a 503 instead of letting it fail silently. Dev keeps the defaults (sandbox on).
 
 **Q: The interview ended but the summary says it couldn't be generated. Was the transcript lost?**
 **A:** No. Summary generation is best-effort — if Gemini is unavailable or `GEMINI_API_KEY` is missing, the backend sets `summary_ok=False` but still saves the full transcript, and the UI still lets you download it. Check the backend logs for the summary warning. If the transcript itself failed to save (a 500), that's a real error — check `GCS_BUCKET` / credentials, or the local `transcripts/` folder's write permissions.

@@ -46,6 +46,26 @@ def test_create_session_missing_public_base_url_returns_503(client, patch_settin
 
 
 @respx.mock
+def test_create_session_prod_mode_with_sandbox_avatar_returns_503(client, patch_settings):
+    # The sandbox avatar only works with is_sandbox=true - pairing it with
+    # SANDBOX_MODE=false would make LiveKit time out silently, so the router
+    # rejects the misconfiguration up front.
+    patch_settings(
+        liveavatar_api_key="live-key",
+        liveavatar_base_url=BASE_URL,
+        public_base_url=PUBLIC_URL,
+        sandbox_mode=False,
+    )
+    state = _seed_interview()
+
+    response = client.post("/api/session", json={"interview_id": state.interview_id})
+
+    assert response.status_code == 503
+    assert "production AVATAR_ID" in response.json()["detail"]
+    assert len(respx.calls) == 0
+
+
+@respx.mock
 def test_create_session_missing_api_key_returns_500(client, patch_settings):
     patch_settings(liveavatar_api_key=None, liveavatar_base_url=BASE_URL, public_base_url=PUBLIC_URL)
     state = _seed_interview()

@@ -91,8 +91,9 @@ async def test_create_session_token_with_llm_and_context(patch_settings):
 
 
 @respx.mock
-async def test_create_session_token_is_sandbox_always_true(patch_settings):
-    patch_settings(liveavatar_base_url=BASE_URL)
+@pytest.mark.parametrize("sandbox_mode", [True, False])
+async def test_create_session_token_is_sandbox_follows_settings(patch_settings, sandbox_mode):
+    patch_settings(liveavatar_base_url=BASE_URL, sandbox_mode=sandbox_mode)
     route = respx.post(f"{BASE_URL}/sessions/token").mock(
         return_value=httpx.Response(
             200, json={"data": {"session_token": "tok", "session_id": "sid"}}
@@ -102,7 +103,7 @@ async def test_create_session_token_is_sandbox_always_true(patch_settings):
     import json
 
     body = json.loads(route.calls[0].request.content)
-    assert body["is_sandbox"] is True
+    assert body["is_sandbox"] is sandbox_mode
 
 
 @respx.mock

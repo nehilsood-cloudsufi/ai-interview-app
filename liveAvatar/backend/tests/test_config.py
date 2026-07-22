@@ -2,7 +2,7 @@ import dataclasses
 
 import pytest
 
-from app.config import Settings, settings
+from app.config import SANDBOX_AVATAR_ID, Settings, settings
 
 
 def test_settings_is_frozen_dataclass():
@@ -30,6 +30,26 @@ def test_settings_env_overrides(monkeypatch):
     assert fresh.liveavatar_api_key == "test-key"
     assert fresh.gemini_api_key == "gemini-key"
     assert fresh.gcs_bucket == "my-bucket"
+
+
+def test_sandbox_mode_defaults():
+    fresh = Settings(liveavatar_api_key=None, gemini_api_key=None, gcs_bucket=None)
+    assert fresh.sandbox_mode is True
+    assert fresh.avatar_id == SANDBOX_AVATAR_ID
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("false", False), ("False", False), ("true", True), ("1", True), ("", True)],
+)
+def test_sandbox_mode_env_override(monkeypatch, value, expected):
+    monkeypatch.setenv("SANDBOX_MODE", value)
+    assert Settings().sandbox_mode is expected
+
+
+def test_avatar_id_env_override(monkeypatch):
+    monkeypatch.setenv("AVATAR_ID", "prod-avatar-42")
+    assert Settings().avatar_id == "prod-avatar-42"
 
 
 def test_host_streaming_disabled_by_default():
