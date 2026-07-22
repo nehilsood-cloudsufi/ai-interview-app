@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CreateSessionRequest(BaseModel):
@@ -145,3 +145,46 @@ class UpdateProfileResponse(BaseModel):
     # Sorted for determinism - the full set of profile fields ever manually
     # edited, which the Host's profile_updates merge will never overwrite.
     manually_edited_fields: list[str]
+
+
+class ScoutRequest(BaseModel):
+    """Request for the on-demand Data Scout Agent (POST /api/scout) - distinct
+    from the automatic post-interview scout wired into app.services.pipeline.
+    transcript is entered manually in the UI for now, until the interview
+    module pipes it in via pub/sub later."""
+
+    company_name: str = Field(description="The company or organization name to research.")
+    company_website: str | None = Field(
+        default=None, description="Optional company website URL; fetched (plus same-site subpages) during gathering."
+    )
+    representative_name: str | None = Field(
+        default=None,
+        description="Optional name of the interviewed company representative. Accepted for future use; not yet referenced in gathering or synthesis.",
+    )
+    representative_role: str | None = Field(
+        default=None,
+        description="Optional role/title of the interviewed company representative. Accepted for future use; not yet referenced in gathering or synthesis.",
+    )
+    transcript: str | None = Field(
+        default=None,
+        description="Optional interview transcript text. When provided, triggers Pass B: factual-claim extraction and targeted research on those claims.",
+    )
+
+
+class ScoutResponse(BaseModel):
+    """Response for the on-demand Data Scout Agent (POST /api/scout) - distinct
+    from ScoutFindingModel/insights above, which come from the automatic
+    post-interview scout.
+
+    internet_findings and interview_claims are deliberately separate, peer
+    fields - not one field with both blended together - so the frontend can
+    render them side by side without implying one verifies the other. Scout
+    only gathers and presents; the Evaluator does all comparison."""
+
+    scout_id: str = Field(description="Unique identifier for this scout report; usable with GET /api/scout/{scout_id} to retrieve it again.")
+    internet_findings: str = Field(description="The synthesized findings report in GitHub-flavored Markdown, or an empty string if synthesis failed (see findings_ok).")
+    interview_claims: list[str] = Field(default_factory=list, description="Factual claims extracted from the transcript, if one was provided; empty otherwise.")
+    sources: dict[str, Any] = Field(
+        default_factory=dict, description="Raw structured data gathered from public web sources, keyed by source type; only keys with actual data are present."
+    )
+    findings_ok: bool = Field(default=True, description="False when internet_findings synthesis failed but gathered sources were still saved.")

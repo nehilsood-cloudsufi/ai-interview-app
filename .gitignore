@@ -13,3 +13,6 @@ htmlcov/
 
 # Local transcript store (dev fallback when GCS_BUCKET is unset)
 transcripts/
+
+# Local scout report store (dev fallback when GCS_BUCKET is unset)
+scout_reports/

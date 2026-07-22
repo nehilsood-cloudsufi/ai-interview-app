@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, ExternalLink, Loader2, MessageSquareText, Sparkles, Video } from 'lucide-react';
+import { AlertTriangle, ExternalLink, Loader2, MessageSquareText, Search, Sparkles, Video } from 'lucide-react';
 import { API_URL, SESSIONS_SHEET_URL } from '../config';
 import type { CreateInterviewResponse, DomainInfo, DomainsResponse, InterviewMode } from '../types';
 
@@ -7,9 +7,12 @@ interface StartScreenProps {
   // Creates the interview and hands control to the interview view in the
   // chosen mode. The caller owns the interview_id from here on.
   onStart: (interviewId: string, mode: InterviewMode) => void;
+  // Opens the standalone Data Scout research tool - independent of the
+  // interview flow.
+  onOpenScout: () => void;
 }
 
-export function StartScreen({ onStart }: StartScreenProps) {
+export function StartScreen({ onStart, onOpenScout }: StartScreenProps) {
   const [pending, setPending] = useState<InterviewMode | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [domains, setDomains] = useState<DomainInfo[]>([]);
@@ -128,6 +131,14 @@ export function StartScreen({ onStart }: StartScreenProps) {
         <p className="text-xs text-slate-500 text-center px-4 leading-relaxed">
           Text chat is a low-bandwidth fallback — no camera or microphone needed.
         </p>
+
+        <button
+          onClick={onOpenScout}
+          className="w-full flex items-center justify-center gap-1.5 bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white text-sm font-medium px-3.5 py-2 rounded-xl border border-slate-700/60 transition-colors"
+        >
+          <Search className="w-4 h-4" />
+          Data Scout
+        </button>
 
         {error && (
           <div className="flex items-start gap-2 text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
