@@ -57,15 +57,28 @@ def main() -> None:
         req("DELETE", f"/secrets/{s['id']}")
     print(f"deleted {len(kill_secrets)} 'Resonance Gateway' secrets")
 
+    # Contexts are paged, so sweep until a page has no targets left. Because
+    # req() swallows errors, a context that persistently fails to delete would
+    # otherwise reappear every round and spin this loop forever - so we track
+    # failed ids and stop (with a message) once a round makes no progress, and
+    # cap the rounds outright as a belt-and-braces guard.
     deleted = 0
-    while True:
+    stuck: set[str] = set()
+    for _ in range(20):  # hard cap, far beyond any real backlog (50 contexts/round)
         page = req("GET", "/contexts?page_size=50").get("data", {}).get("results", [])
         targets = [c for c in page if c["name"].startswith("AI Interviewer w/ Context ")]
         if not targets:
             break
+        if {c["id"] for c in targets} <= stuck:
+            print(f"stopping: {len(targets)} contexts repeatedly failed to delete (permissions/rate limit?)")
+            break
         for c in targets:
-            req("DELETE", f"/contexts/{c['id']}")
-            deleted += 1
+            result = req("DELETE", f"/contexts/{c['id']}")
+            if "error" in result:
+                stuck.add(c["id"])
+                print(f"  failed to delete context {c['id']}: {result['error']}")
+            else:
+                deleted += 1
     print(f"deleted {deleted} auto-generated contexts")
 
     remaining = req("GET", "/contexts?page_size=50").get("data", {})

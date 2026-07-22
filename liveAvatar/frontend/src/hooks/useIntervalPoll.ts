@@ -22,6 +22,14 @@ export interface PollSignal {
  * a consumer stops itself declaratively by flipping its `active` expression
  * to false. The latest `callback` is kept in a ref, so passing a fresh
  * closure every render neither restarts the interval nor goes stale.
+ *
+ * Corollary: the interval only restarts when `active` or `intervalMs`
+ * changes - a change in what the callback closes over (e.g. a new
+ * interviewId while `active` stays true) does NOT re-fire the poll
+ * immediately; the next tick just sees the new closure. If a consumer ever
+ * needs an immediate re-poll on such a change, it must blip `active` false
+ * for a render (today every consumer's `active` already flips with its
+ * inputs, so this doesn't arise).
  */
 export function useIntervalPoll(
   callback: (signal: PollSignal) => void | Promise<void>,
