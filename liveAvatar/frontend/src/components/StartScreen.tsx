@@ -11,6 +11,15 @@ interface StartScreenProps {
   onStart: (interviewId: string, mode: InterviewMode, durationSeconds?: number) => void;
 }
 
+/**
+ * The app's entry view (App's 'start' view). Lets the vendor pick an interview
+ * domain (a dev stand-in for the admin-assigned domain; hidden when
+ * GET /api/domains returns nothing) and, on the prod tier, enter the demo
+ * passcode and choose a session length. "Start Interview" (avatar) or "Use
+ * text chat instead" POSTs /api/interview to mint an interview_id, then calls
+ * `onStart` with that id, the chosen mode, and - prod only - the picked
+ * duration in seconds so the room can show a countdown.
+ */
 export function StartScreen({ onStart }: StartScreenProps) {
   const [pending, setPending] = useState<InterviewMode | null>(null);
   const [error, setError] = useState<string | null>(null);

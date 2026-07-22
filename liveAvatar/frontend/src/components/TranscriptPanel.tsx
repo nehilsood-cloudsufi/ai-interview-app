@@ -7,6 +7,13 @@ interface TranscriptPanelProps {
   turns: TranscriptTurn[];
 }
 
+/**
+ * The live scrolling transcript rail shown beside the video in avatar mode,
+ * one TranscriptBubble per turn and auto-scrolling to the newest. App mounts it
+ * in the right-hand column once the session is connected, fed by the turns
+ * useLiveAvatarSession captures from the SDK. Shows a placeholder line until
+ * the first turn arrives.
+ */
 export function TranscriptPanel({ turns }: TranscriptPanelProps) {
   const listRef = useRef<HTMLDivElement>(null);
 

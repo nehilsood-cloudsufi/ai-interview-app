@@ -8,6 +8,14 @@ interface AvatarVideoPanelProps {
   videoRef: RefObject<HTMLVideoElement | null>;
 }
 
+/**
+ * The AI interviewer's video tile in avatar mode. Shows a "Ready to start"
+ * placeholder while disconnected, a spinner while connecting, and the live
+ * <video> (via `videoRef`, fed by the LiveAvatar SDK) once connected - with a
+ * glow ring keyed to `speakingState` (emerald when the avatar speaks, amber
+ * while it thinks). App mounts it in the avatar-mode video row; purely
+ * presentational, all state lives in useLiveAvatarSession.
+ */
 export function AvatarVideoPanel({ status, speakingState, videoRef }: AvatarVideoPanelProps) {
   return (
       <div className={`flex-1 relative flex items-center justify-center rounded-3xl overflow-hidden shadow-2xl transition-all duration-300 ${
