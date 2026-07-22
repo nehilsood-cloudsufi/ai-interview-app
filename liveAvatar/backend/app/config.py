@@ -5,13 +5,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# HeyGen's free sandbox avatar. Only valid with sandbox_mode=True - pairing it
+# with is_sandbox=False makes LiveKit time out silently (see docs/KT.md), so
+# sessions.py rejects that combination up front.
+SANDBOX_AVATAR_ID = "dd73ea75-1218-4ef3-92ce-606d5f7fbc0a"
+
 
 @dataclass(frozen=True)
 class Settings:
     liveavatar_api_key: str | None = field(default_factory=lambda: os.getenv("LIVEAVATAR_API_KEY"))
     gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     liveavatar_base_url: str = "https://api.liveavatar.com/v1"
-    avatar_id: str = "dd73ea75-1218-4ef3-92ce-606d5f7fbc0a"
+    avatar_id: str = field(default_factory=lambda: os.getenv("AVATAR_ID", SANDBOX_AVATAR_ID))
+    # Sandbox sessions are free but auto-terminate after ~1 minute; production
+    # (SANDBOX_MODE=false) needs a real AVATAR_ID and burns credits.
+    sandbox_mode: bool = field(default_factory=lambda: os.getenv("SANDBOX_MODE", "true").lower() != "false")
 
     # --- Resonance multi-agent interview ---
     # Externally reachable base URL of this backend (Cloud Run URL or a dev

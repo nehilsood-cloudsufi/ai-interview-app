@@ -101,7 +101,7 @@ async def create_session_token(
     token_payload = {
         "mode": "FULL",
         "avatar_id": settings.avatar_id,
-        "is_sandbox": True,
+        "is_sandbox": settings.sandbox_mode,
         "avatar_persona": {"language": "en"},
     }
 
