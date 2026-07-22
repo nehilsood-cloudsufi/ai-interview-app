@@ -144,7 +144,7 @@ def test_get_domains(client):
     body = response.json()
     ids = [d["id"] for d in body["domains"]]
     assert ids == sorted(ids)
-    assert set(ids) == {"ai_ml", "cloud_infrastructure", "data_engineering"}
+    assert set(ids) == {"ai_ml", "cloud_infrastructure", "data_engineering", "frontier_tech"}
     for entry in body["domains"]:
         assert entry["title"]
 
@@ -228,21 +228,43 @@ def test_seeded_interview_state(client):
 
 
 def test_state_reflects_pipeline_progress(client):
+    from app.services.evaluator_agent import STATUS_THRESHOLD
     from app.services.interview_config import get_rubric
 
     state = _seed_interview()
     state.status = "finished"
     state.pipeline_status = "ready"
-    scorecard = Scorecard(
-        categories=[
-            CategoryScore(id=c.id, name=c.name, weight=c.weight, score=4.0, evidence=["ev1"])
-            for c in get_rubric().values()
-        ],
-        overall=4.0,
-    )
+
+    rubric = get_rubric()
+    # Every real shipped category has a DIFFERENT label set, so a uniform
+    # literal score can't be used - derive a valid (value, points) pair per
+    # category from that category's own value_options (the best/first
+    # option), and hand-compute overall from the REAL shipped rubric.yaml
+    # weights/points rather than guessing.
+    categories = [
+        CategoryScore(
+            id=c.id,
+            name=c.name,
+            weight=c.weight,
+            value=c.value_options[0].label,
+            points=c.value_options[0].points,
+            evidence=["ev1"],
+        )
+        for c in rubric.values()
+    ]
+    # All 7 shipped categories' first (best) value_option is worth 100 points,
+    # and the shipped weights already sum to 1.0, so:
+    # overall = 100 * (0.20+0.20+0.15+0.15+0.10+0.10+0.10) = 100 * 1.0 = 100.0
+    total_weight = sum(c.weight for c in categories)
+    overall = round(sum(c.points * c.weight for c in categories) / total_weight, 1)
+    assert overall == 100.0
+    status = "APPROVED" if overall >= STATUS_THRESHOLD else "REJECTED"
+    scorecard = Scorecard(categories=categories, overall=overall, status=status)
     state.scorecard = scorecard
     state.recommendation = FollowupRecommendation(
-        kind="advance", reason="Overall score 4/5 meets the advance threshold.", focus_categories=["experience"]
+        kind="advance",
+        reason="Overall score 100/100 meets the advance threshold of 70; a next-round deep-dive is warranted.",
+        focus_categories=["interest"],
     )
 
     response = client.get(_url(state.interview_id))

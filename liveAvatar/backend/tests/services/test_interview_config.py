@@ -46,8 +46,26 @@ def _valid_questionnaire_data(domain: str = "company_overview", title: str = "Te
 def _valid_rubric_data() -> dict:
     return {
         "categories": [
-            {"id": "experience", "name": "Experience", "weight": 0.5, "description": "desc"},
-            {"id": "capability", "name": "Capability", "weight": 0.5, "description": "desc"},
+            {
+                "id": "experience",
+                "name": "Experience",
+                "weight": 0.5,
+                "description": "desc",
+                "value_options": [
+                    {"label": "Deep", "points": 100},
+                    {"label": "Shallow", "points": 40},
+                ],
+            },
+            {
+                "id": "capability",
+                "name": "Capability",
+                "weight": 0.5,
+                "description": "desc",
+                "value_options": [
+                    {"label": "Strong", "points": 100},
+                    {"label": "Weak", "points": 20},
+                ],
+            },
         ]
     }
 
@@ -127,6 +145,14 @@ def test_load_rubric_valid(tmp_path):
     assert set(categories) == {"experience", "capability"}
     assert categories["experience"].weight == 0.5
     assert categories["experience"].name == "Experience"
+    assert [(o.label, o.points) for o in categories["experience"].value_options] == [
+        ("Deep", 100),
+        ("Shallow", 40),
+    ]
+    assert [(o.label, o.points) for o in categories["capability"].value_options] == [
+        ("Strong", 100),
+        ("Weak", 20),
+    ]
 
 
 def test_load_rubric_weights_not_summing_to_one_raises(tmp_path):
@@ -147,6 +173,49 @@ def test_load_rubric_weights_within_tolerance_is_allowed(tmp_path):
     categories = load_rubric(path)
 
     assert len(categories) == 2
+
+
+def test_load_rubric_missing_value_options_key_raises(tmp_path):
+    # No `value_options` key at all is a malformed-YAML condition (distinct
+    # from an explicit empty list, which is the shape `_validate_rubric`
+    # checks) - it fails at parse time with a KeyError.
+    data = _valid_rubric_data()
+    del data["categories"][0]["value_options"]
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(KeyError, match="value_options"):
+        load_rubric(path)
+
+
+def test_load_rubric_empty_value_options_raises(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"] = []
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(ValueError, match="value_option"):
+        load_rubric(path)
+
+
+def test_load_rubric_duplicate_value_option_labels_raises(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"] = [
+        {"label": "Deep", "points": 100},
+        {"label": "Deep", "points": 40},
+    ]
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(ValueError, match="duplicate"):
+        load_rubric(path)
+
+
+@pytest.mark.parametrize("bad_points", [-1, 100.1, 200])
+def test_load_rubric_value_option_points_out_of_range_raises(tmp_path, bad_points):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"][0]["points"] = bad_points
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(ValueError, match=r"\[0, 100\]"):
+        load_rubric(path)
 
 
 def test_shipped_rubric_loads_and_weights_sum_to_one():
@@ -229,7 +298,7 @@ def test_all_shipped_questionnaires_load_and_validate():
     rubric = load_rubric(_BACKEND_ROOT / settings.rubric_path)
     yaml_files = sorted(directory.glob("*.yaml"))
 
-    assert len(yaml_files) == 3
+    assert len(yaml_files) == 4
 
     for path in yaml_files:
         questionnaire = load_questionnaire(path)

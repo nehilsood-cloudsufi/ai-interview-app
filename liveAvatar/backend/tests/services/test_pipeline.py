@@ -16,13 +16,24 @@ def make_state() -> interview_state.InterviewState:
     return state
 
 
-def make_scorecard(scores: dict[str, float | None], overall: float | None) -> Scorecard:
+def make_scorecard(points: dict[str, float | None], overall: float | None) -> Scorecard:
+    status = None
+    if overall is not None:
+        status = "APPROVED" if overall >= evaluator_agent.STATUS_THRESHOLD else "REJECTED"
     return Scorecard(
         categories=[
-            CategoryScore(id=c.id, name=c.name, weight=c.weight, score=scores.get(c.id), evidence=[])
+            CategoryScore(
+                id=c.id,
+                name=c.name,
+                weight=c.weight,
+                value="Fixture Value" if points.get(c.id) is not None else None,
+                points=points.get(c.id),
+                evidence=[],
+            )
             for c in get_rubric().values()
         ],
         overall=overall,
+        status=status,
     )
 
 
@@ -40,7 +51,7 @@ def make_payload(session_id: str = "sid") -> dict:
 async def test_run_happy_path_transitions_scouting_evaluating_ready(monkeypatch):
     transitions: list[tuple[str, str | None]] = []
     findings = [ScoutFinding(topic="news", summary="No recent press.", source_url=None)]
-    scorecard = make_scorecard({"experience": 4.0}, overall=4.0)
+    scorecard = make_scorecard({"interest": 80.0}, overall=80.0)
 
     async def fake_scout_run(state):
         transitions.append(("scout", state.pipeline_status))
@@ -67,7 +78,7 @@ async def test_run_happy_path_transitions_scouting_evaluating_ready(monkeypatch)
     assert transitions == [("scout", "scouting"), ("evaluator", "evaluating")]
     assert state.pipeline_status == "ready"
     assert state.scorecard == scorecard
-    # experience 4.0 -> overall 4.0 >= advance threshold (3.5) -> a real
+    # interest 80.0 -> overall 80.0 >= advance threshold (70) -> a real
     # (unmocked) coordinator recommendation.
     assert state.recommendation is not None
     assert state.recommendation.kind == "advance"
@@ -77,14 +88,14 @@ async def test_run_happy_path_transitions_scouting_evaluating_ready(monkeypatch)
     assert saved_session_id == "sid"
     assert saved_payload["pipeline_status"] == "ready"
     assert saved_payload["scout_findings"] == [{"topic": "news", "summary": "No recent press.", "source_url": None}]
-    assert saved_payload["scorecard"]["overall"] == 4.0
+    assert saved_payload["scorecard"]["overall"] == 80.0
     assert saved_payload["recommendation"]["kind"] == "advance"
     # Legacy fields untouched.
     assert saved_payload["summary"] == "a summary"
 
 
 async def test_scout_soft_fail_empty_findings_still_reaches_ready(monkeypatch):
-    scorecard = make_scorecard({"experience": 3.0}, overall=3.0)
+    scorecard = make_scorecard({"interest": 60.0}, overall=60.0)
 
     async def fake_scout_run(state):
         return []  # Scout's own soft-fail contract.
@@ -149,7 +160,7 @@ async def test_final_save_failure_marks_failed_and_attempts_resave(monkeypatch):
     async def fake_scout_run(state):
         return []
 
-    scorecard = make_scorecard({"experience": 2.0}, overall=2.0)
+    scorecard = make_scorecard({"interest": 40.0}, overall=40.0)
 
     async def fake_score_interview(turns, rubric, scout_findings):
         return scorecard
@@ -186,7 +197,7 @@ async def test_ready_status_only_set_after_successful_save(monkeypatch):
     async def fake_scout_run(state):
         return []
 
-    scorecard = make_scorecard({"experience": 4.0}, overall=4.0)
+    scorecard = make_scorecard({"interest": 80.0}, overall=80.0)
 
     async def fake_score_interview(turns, rubric, scout_findings):
         return scorecard
@@ -235,7 +246,7 @@ async def test_unexpected_exception_mid_run_marks_failed_and_attempts_resave(mon
     async def fake_scout_run(state):
         return []
 
-    scorecard = make_scorecard({"experience": 5.0}, overall=5.0)
+    scorecard = make_scorecard({"interest": 100.0}, overall=100.0)
 
     async def fake_score_interview(turns, rubric, scout_findings):
         return scorecard
