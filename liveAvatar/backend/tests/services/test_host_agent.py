@@ -203,28 +203,29 @@ async def test_followup_on_incomplete_answer(patch_settings):
 
 
 @respx.mock
-async def test_force_advance_when_followups_exceed_max(patch_settings):
+async def test_incomplete_answer_stays_on_node_even_past_max_followups(patch_settings):
+    # The follow-up-budget force-advance is GONE: repeated non-answers (asides,
+    # repairs, fragments) must never consume script questions the vendor
+    # hasn't heard answered (seen live 2026-07-22). Pacing is time's job -
+    # time pressure upgrades incomplete answers, the wrap-up ends the script.
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     respx.post(CHAT_URL).mock(
-        return_value=gemini_response(reply="Alright, let's move on.", answer_complete=False)
+        return_value=gemini_response(reply="No rush - what does the company focus on?", answer_complete=False)
     )
     prior_turns = [
         TranscriptTurn(role="candidate", text="We do stuff."),
         TranscriptTurn(role="interviewer", text="Could you expand on that?"),
     ]
-    state = make_state(followup_count=1, turns=list(prior_turns))
+    state = make_state(followup_count=1, turns=list(prior_turns))  # already at max_followups
     questionnaire = make_questionnaire()
 
     result = await handle_turn(state, "Just, you know, stuff.", questionnaire, make_rubric())
 
-    # Advanced exactly as if complete, via node.next.
-    assert result.reply == "Alright, let's move on."
-    assert result.answer_complete is True
-    assert result.completed_question is questionnaire["company_overview"]
-    assert "We do stuff." in result.answer_text
-    assert "Just, you know, stuff." in result.answer_text
-    assert state.current_node_id == "ai_ml_depth"
-    assert state.followup_count == 0
+    assert result.reply == "No rush - what does the company focus on?"
+    assert result.answer_complete is False
+    assert result.completed_question is None
+    assert state.current_node_id == "company_overview"  # did NOT advance
+    assert state.followup_count == 2  # counter still tracks the exchanges
     assert len(state.turns) == 4
 
 

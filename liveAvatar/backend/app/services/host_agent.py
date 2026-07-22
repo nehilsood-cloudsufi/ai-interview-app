@@ -455,16 +455,20 @@ def _apply_outcome(
     state.turns.append(TranscriptTurn(role="interviewer", text=reply))
 
     if not answer_complete:
+        # Stay on the current question, however many rounds it takes. The
+        # follow-up-budget force-advance that used to live here let repeated
+        # asides (name-spelling repairs, questions back at the Host, VAD
+        # fragments) consume script questions the vendor never heard (seen
+        # live 2026-07-22). Pacing is time's job now: time pressure upgrades
+        # incomplete answers to advances, and the wrap-up closes the script.
+        # The counter still feeds the answer-text window and prompt context.
         state.followup_count += 1
-        if state.followup_count <= node.max_followups:
-            return TurnResult(
-                reply=reply,
-                answer_complete=False,
-                completed_question=None,
-                answer_text="",
-            )
-        # Follow-up budget exhausted: force-advance as if complete, still
-        # speaking the LLM's reply.
+        return TurnResult(
+            reply=reply,
+            answer_complete=False,
+            completed_question=None,
+            answer_text="",
+        )
 
     state.current_node_id = node.next
     state.followup_count = 0

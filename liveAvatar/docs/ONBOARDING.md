@@ -372,7 +372,20 @@ top level.
   when time runs short (<120 s: no follow-ups; <60 s: canned wrap-up) and now
   also stretch when time is ample (`HOST_TIME_GENEROUS_SECONDS`, default
   180 s remaining: brief answers get one deeper follow-up) — so a 5-minute
-  booking is spent interviewing instead of ending at question seven.
+  booking is spent interviewing instead of ending at question seven. There is
+  deliberately NO follow-up-budget force-advance anymore: an incomplete or
+  non-answer turn (a correction, a question back at Noor, a fragment) stays
+  on the current question however many rounds it takes — time pressure and
+  the wrap-up are what move a slow interview along. The Host prompt also
+  teaches Noor to handle those non-answers like a human (accept corrections,
+  defer off-topic questions, never bolt the next scripted question onto such
+  a reply).
+- **Future turn-taking options** (if free-flow VAD ever proves insufficient):
+  FULL mode exposes no VAD/endpointing tuning, but supports
+  `interactivity_type: "PUSH_TO_TALK"` (explicit turn boundaries,
+  whole-utterance processing — docs.liveavatar.com/docs/full-mode/push-to-talk);
+  the deeper option is LITE mode with our own STT/TTS pipeline and semantic
+  end-of-turn detection. Both are documented escapes, not built.
 - **Concurrency counter drift.** The active-session counter only decrements on an
   explicit `/api/session/stop`. When HeyGen ends a session server-side (sandbox
   ~1-min cap, or a prod `max_session_duration`), the frontend resets its UI but
