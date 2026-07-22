@@ -38,12 +38,12 @@ from app.services.interview_config import QuestionNode, RubricCategory
 from app.services.interview_state import InterviewState, VendorProfile
 from app.services.llm_json import parse_llm_json
 from app.services.reply_stream import ReplyStreamExtractor
+from app.services.transcript_render import ROLE_LABELS, render_transcript
 
 logger = logging.getLogger(__name__)
 
 END_NODE_ID = "END"
 
-_ROLE_LABELS = {"interviewer": "Interviewer", "candidate": "Candidate"}
 # How many trailing entries of state.turns are replayed to Gemini as context.
 _TRANSCRIPT_WINDOW = 10
 
@@ -127,16 +127,6 @@ def _wrapup_turn(state: InterviewState, user_text: str) -> TurnResult:
     )
 
 
-def _render_transcript(turns: list[TranscriptTurn]) -> str:
-    lines = []
-    for turn in turns:
-        label = _ROLE_LABELS.get(turn.role, turn.role.title())
-        text = turn.text.strip()
-        if text:
-            lines.append(f"{label}: {text}")
-    return "\n".join(lines)
-
-
 _NOT_CAPTURED = "(not captured yet)"
 
 
@@ -195,8 +185,8 @@ def _render_system_content(
 
 
 def _render_user_content(state: InterviewState, user_text: str) -> str:
-    transcript = _render_transcript(state.turns[-_TRANSCRIPT_WINDOW:])
-    latest = f"{_ROLE_LABELS['candidate']}: {user_text.strip()}"
+    transcript = render_transcript(state.turns[-_TRANSCRIPT_WINDOW:])
+    latest = f"{ROLE_LABELS['candidate']}: {user_text.strip()}"
     return f"{transcript}\n{latest}" if transcript else latest
 
 

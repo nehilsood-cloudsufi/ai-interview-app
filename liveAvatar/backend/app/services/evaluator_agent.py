@@ -33,13 +33,12 @@ from app.services import gemini_client
 from app.services.interview_config import RubricCategory
 from app.services.interview_state import ScoutFinding
 from app.services.llm_json import parse_llm_json
+from app.services.transcript_render import render_transcript
 
 logger = logging.getLogger(__name__)
 
 # overall >= this -> Scorecard.status = "APPROVED", else "REJECTED".
 STATUS_THRESHOLD = 70
-
-_ROLE_LABELS = {"interviewer": "Interviewer", "candidate": "Candidate"}
 
 # Strict structured output for the holistic scoring call (same rationale as
 # host_agent._TURN_SCHEMA: prevents malformed-JSON completions). `value`
@@ -83,16 +82,6 @@ class Scorecard:
     status: Literal["APPROVED", "REJECTED"] | None  # None until overall is known
 
 
-def _render_transcript(turns: list[TranscriptTurn]) -> str:
-    lines = []
-    for turn in turns:
-        label = _ROLE_LABELS.get(turn.role, turn.role.title())
-        text = turn.text.strip()
-        if text:
-            lines.append(f"{label}: {text}")
-    return "\n".join(lines)
-
-
 def _render_system_content(rubric: dict[str, RubricCategory]) -> str:
     lines = [settings.evaluator_system_prompt, "", "Rubric categories to score:"]
     for category in rubric.values():
@@ -134,7 +123,7 @@ async def score_interview(
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured; cannot score the interview.")
 
-    transcript_text = _render_transcript(turns)
+    transcript_text = render_transcript(turns)
     if not transcript_text:
         raise ValueError("Transcript is empty; nothing to score.")
 

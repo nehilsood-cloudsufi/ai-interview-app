@@ -3,21 +3,9 @@ import logging
 from app.config import settings
 from app.models import TranscriptTurn
 from app.services import gemini_client
+from app.services.transcript_render import render_transcript
 
 logger = logging.getLogger(__name__)
-
-_ROLE_LABELS = {"interviewer": "Interviewer", "candidate": "Candidate"}
-
-
-def _render_transcript(turns: list[TranscriptTurn]) -> str:
-    lines = []
-    for turn in turns:
-        label = _ROLE_LABELS.get(turn.role, turn.role.title())
-        text = turn.text.strip()
-        if text:
-            lines.append(f"{label}: {text}")
-    return "\n".join(lines)
-
 
 async def generate_summary(turns: list[TranscriptTurn]) -> str:
     """Generate an interview-focused summary from transcript turns via Gemini's
@@ -28,7 +16,7 @@ async def generate_summary(turns: list[TranscriptTurn]) -> str:
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured; cannot generate summary.")
 
-    transcript_text = _render_transcript(turns)
+    transcript_text = render_transcript(turns)
     if not transcript_text:
         raise ValueError("Transcript is empty; nothing to summarize.")
 
