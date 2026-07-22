@@ -1,4 +1,6 @@
 import dataclasses
+
+import pytest
 import json
 from datetime import datetime, timezone
 
@@ -119,6 +121,49 @@ def test_create_interview_prod_tier_happy_path(client, patch_settings):
     assert response.status_code == 200
     state = interview_state.get(response.json()["interview_id"])
     assert state.tier == "prod"
+
+
+def test_create_interview_prod_tier_default_duration_5_min(client, patch_settings):
+    patch_settings(prod_avatar_id="avatar-june", demo_passcode="s3cret")
+
+    response = client.post("/api/interview", json={"tier": "prod", "passcode": "s3cret"})
+
+    assert response.status_code == 200
+    state = interview_state.get(response.json()["interview_id"])
+    assert state.max_session_seconds == 300
+
+
+def test_create_interview_prod_tier_custom_duration(client, patch_settings):
+    patch_settings(prod_avatar_id="avatar-june", demo_passcode="s3cret")
+
+    response = client.post(
+        "/api/interview", json={"tier": "prod", "passcode": "s3cret", "duration_minutes": 10}
+    )
+
+    assert response.status_code == 200
+    state = interview_state.get(response.json()["interview_id"])
+    assert state.max_session_seconds == 600
+
+
+@pytest.mark.parametrize("minutes", [0, -1, 11])
+def test_create_interview_prod_tier_duration_out_of_range_400(client, patch_settings, minutes):
+    # The ceiling is PROD_MAX_SESSION_SECONDS (default 600 = 10 min).
+    patch_settings(prod_avatar_id="avatar-june", demo_passcode="s3cret")
+
+    response = client.post(
+        "/api/interview", json={"tier": "prod", "passcode": "s3cret", "duration_minutes": minutes}
+    )
+
+    assert response.status_code == 400
+    assert "duration_minutes" in response.json()["detail"]
+
+
+def test_create_interview_dev_tier_ignores_duration(client):
+    response = client.post("/api/interview", json={"tier": "dev", "duration_minutes": 99})
+
+    assert response.status_code == 200
+    state = interview_state.get(response.json()["interview_id"])
+    assert state.max_session_seconds is None
 
 
 def test_create_interview_dev_tier_ignores_passcode(client, patch_settings):

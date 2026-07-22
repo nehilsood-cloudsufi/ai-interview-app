@@ -15,6 +15,7 @@ export function StartScreen({ onStart }: StartScreenProps) {
   const [domains, setDomains] = useState<DomainInfo[]>([]);
   const [selectedDomain, setSelectedDomain] = useState<string>('');
   const [passcode, setPasscode] = useState<string>('');
+  const [durationMinutes, setDurationMinutes] = useState<number>(5);
 
   // In production an admin assigns the vendor's interview domain; here the
   // vendor picks one. If the fetch fails or returns nothing, hide the select
@@ -50,7 +51,7 @@ export function StartScreen({ onStart }: StartScreenProps) {
         body: JSON.stringify({
           ...(selectedDomain && { domain: selectedDomain }),
           tier: TIER,
-          ...(TIER === 'prod' && { passcode }),
+          ...(TIER === 'prod' && { passcode, duration_minutes: durationMinutes }),
         }),
       });
       if (!res.ok) {
@@ -138,6 +139,25 @@ export function StartScreen({ onStart }: StartScreenProps) {
               placeholder="Required for production sessions"
               className="w-full bg-slate-800/60 border border-slate-700/60 rounded-xl px-4 py-3 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/70 focus:border-transparent transition-all disabled:opacity-50"
             />
+            <label htmlFor="duration-select" className="text-sm font-semibold text-slate-300 mt-2">
+              Session length
+            </label>
+            <select
+              id="duration-select"
+              value={durationMinutes}
+              onChange={(e) => setDurationMinutes(Number(e.target.value))}
+              disabled={busy}
+              className="w-full bg-slate-800/60 border border-slate-700/60 rounded-xl px-4 py-3 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/70 focus:border-transparent transition-all disabled:opacity-50"
+            >
+              {[3, 5, 7, 10].map((minutes) => (
+                <option key={minutes} value={minutes}>
+                  {minutes} minutes
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              The session ends automatically after this long. Production sessions use avatar credits.
+            </p>
           </div>
         )}
 
