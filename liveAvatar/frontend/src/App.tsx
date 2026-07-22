@@ -19,6 +19,7 @@ import { ProfileCard } from './components/ProfileCard';
 import { SummaryPanel } from './components/SummaryPanel';
 import { SessionControls } from './components/SessionControls';
 import { ErrorToast } from './components/ErrorToast';
+import { ScoutModal } from './components/ScoutModal';
 import { formatTime } from './utils/formatTime';
 import { SHOW_SELF_VIEW } from './config';
 import type { InterviewMode } from './types';
@@ -31,6 +32,9 @@ function App() {
   const [mode, setMode] = useState<InterviewMode>('avatar');
   const [interviewId, setInterviewId] = useState<string | null>(null);
   const [networkBannerDismissed, setNetworkBannerDismissed] = useState(false);
+  // Data Scout Agent: a standalone research tool, independent of the
+  // interview flow - available from the start screen only.
+  const [scoutOpen, setScoutOpen] = useState(false);
 
   const networkQuality = useNetworkQuality();
   const concurrencyCount = useConcurrencyPoll();
@@ -86,7 +90,8 @@ function App() {
   if (view === 'start') {
     return (
       <div className="min-h-screen bg-slate-950 text-white">
-        <StartScreen onStart={enterInterview} />
+        <StartScreen onStart={enterInterview} onOpenScout={() => setScoutOpen(true)} />
+        {scoutOpen && <ScoutModal onClose={() => setScoutOpen(false)} />}
         <ErrorToast error={error} onDismiss={() => setError(null)} />
       </div>
     );

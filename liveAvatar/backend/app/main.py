@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.logging_config import configure_logging
-from app.routers import concurrency, interview, llm_gateway, sessions, transcripts
+from app.routers import concurrency, interview, llm_gateway, scout, sessions, transcripts
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ app.add_middleware(
 
 app.include_router(concurrency.router)
 app.include_router(interview.router)
+app.include_router(scout.router)
 app.include_router(sessions.router)
 app.include_router(transcripts.router)
 app.include_router(llm_gateway.router)
