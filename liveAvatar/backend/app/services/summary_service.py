@@ -1,3 +1,14 @@
+"""Interview summary generation: one Gemini call over the finished transcript.
+
+`generate_summary` renders the transcript and asks the pro-tier model
+(`settings.gemini_pro_model`, through the shared `gemini_client` helper - this
+runs after the interview ends so latency doesn't matter and the better
+judgment is free) for the Markdown summary defined by
+`settings.interview_summary_prompt`. It deliberately raises on every failure
+path; the transcripts router is responsible for soft-failing so a summary
+failure never loses the saved transcript.
+"""
+
 import logging
 
 from app.config import settings

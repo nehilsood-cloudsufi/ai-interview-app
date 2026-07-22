@@ -67,6 +67,14 @@ _SCORE_SCHEMA = {
 
 @dataclass
 class CategoryScore:
+    """One rubric category's result on the final scorecard. `value` is the
+    label the LLM chose from that category's fixed `value_options`, and
+    `points` is that label resolved to its rubric points; both are None when
+    the category was never discussed (or the LLM's label failed to resolve),
+    which excludes the category from the overall. `weight` is copied off the
+    rubric so the overall's renormalization can happen downstream, and
+    `evidence` holds the supporting quotes the LLM cited."""
+
     id: str
     name: str
     weight: float
@@ -77,12 +85,22 @@ class CategoryScore:
 
 @dataclass
 class Scorecard:
+    """The full evaluation result: one `CategoryScore` per rubric category (in
+    rubric order), the 0-100 weighted-points `overall` (None until at least
+    one category has data), and the `status` derived from it in code -
+    "APPROVED" at or above `STATUS_THRESHOLD` else "REJECTED", and None while
+    `overall` is still None."""
+
     categories: list[CategoryScore]  # one per rubric category, rubric order
     overall: float | None  # None until any category has data, 0-100
     status: Literal["APPROVED", "REJECTED"] | None  # None until overall is known
 
 
 def _render_system_content(rubric: dict[str, RubricCategory]) -> str:
+    """Build the scoring system message: the base evaluator prompt followed by
+    one line per rubric category giving its id, name, description, and the
+    exact allowed labels the LLM must choose among (the closed `value_options`
+    label set) - so the model can only pick a valid categorical value."""
     lines = [settings.evaluator_system_prompt, "", "Rubric categories to score:"]
     for category in rubric.values():
         labels = ", ".join(option.label for option in category.value_options)
@@ -91,6 +109,10 @@ def _render_system_content(rubric: dict[str, RubricCategory]) -> str:
 
 
 def _render_findings(scout_findings: list[ScoutFinding]) -> str:
+    """Render the Data Scout's independent research as a labelled block for the
+    user message, so the Evaluator can weigh the vendor's claims against
+    external findings. Each finding contributes its topic and summary, plus its
+    source URL when one is present."""
     lines = ["Independent research findings (from internet, not from the vendor):"]
     for finding in scout_findings:
         lines.append(f"- Topic: {finding.topic}")

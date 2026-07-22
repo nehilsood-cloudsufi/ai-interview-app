@@ -33,10 +33,18 @@ class ResearchProvider(Protocol):
     added later by implementing this one method. No registry, no
     config-driven selection, no factory."""
 
-    async def research(self, company_name: str) -> list[ScoutFinding]: ...
+    async def research(self, company_name: str) -> list[ScoutFinding]:
+        """Research the named company and return whatever findings it turns
+        up. Implementations are free to raise on failure - `run()` is the
+        single soft-fail boundary that catches everything and degrades to an
+        empty list."""
+        ...
 
 
 def _is_model_error(response: httpx.Response) -> bool:
+    """True when the response looks like a model-not-found error - a 404, or a
+    400 whose body mentions "model" - which is the signal to retry the call
+    once on the pinned fallback model."""
     # Mirrors gemini_client._is_model_error. Duplicated locally (not
     # imported) because that helper belongs to the OpenAI-compatible
     # transport this module deliberately does not use.
@@ -89,6 +97,14 @@ class GeminiSearchProvider:
     the JSON contract is requested in the prompt and parsed defensively."""
 
     async def research(self, company_name: str) -> list[ScoutFinding]:
+        """Research one vendor company via Gemini's native generateContent API
+        with the google_search grounding tool enabled. Sends the scout
+        research prompt, retries once on the pinned fallback model when the
+        primary model is unavailable (see `_is_model_error`), then parses the
+        JSON object the prompt asked for and coerces it into ScoutFindings,
+        backfilling any missing source URL from the response's grounding
+        metadata. May raise on HTTP or parse failure; `run()` is the soft-fail
+        boundary that swallows it."""
         user_text = (
             f"Vendor company name: {company_name}\n\n"
             f"{settings.scout_research_prompt}"

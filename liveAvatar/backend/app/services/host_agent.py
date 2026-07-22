@@ -90,6 +90,17 @@ _PROFILE_FIELDS = ("company_name", "contact_name", "contact_role")
 
 @dataclass
 class TurnResult:
+    """The outcome of one processed utterance, returned by `handle_turn` (and
+    stashed on `StreamedTurn.result` by the streaming path). It carries both
+    what the avatar should say next and the routing decision the code made:
+    whether the current question is now satisfied and, when it is, which
+    `QuestionNode` just closed plus the vendor's full answer text for it
+    (this utterance joined with any earlier partial answers to the same
+    question). While the answer is still incomplete `completed_question` is
+    None and `answer_text` is empty. The completed-question / answer-text pair
+    is the hook a per-answer Evaluator would consume; the live flow does not
+    score here."""
+
     reply: str  # what the avatar says next
     answer_complete: bool  # True -> current question answered; state advanced
     completed_question: QuestionNode | None  # set when answer_complete (Evaluator hook)
@@ -131,6 +142,10 @@ _NOT_CAPTURED = "(not captured yet)"
 
 
 def _display(value: str | None) -> str:
+    """Render a vendor-profile field for the system prompt, substituting a
+    visible "(not captured yet)" marker when the value is missing or
+    whitespace-only - so the LLM can see which details it still needs to
+    gather from the conversation."""
     return value.strip() if value and value.strip() else _NOT_CAPTURED
 
 
@@ -141,6 +156,16 @@ def _render_system_content(
     mode: Literal["avatar", "chat"] = "avatar",
     time_pressured: bool = False,
 ) -> str:
+    """Assemble the system message for one Host turn: the base host prompt,
+    the vendor profile captured so far (each field via `_display`, plus the
+    standing instruction to report any newly stated or corrected detail in
+    profile_updates), the current question's topic and ask, and the exact next
+    question to speak once this one is answered. The LLM never advances the
+    script itself, but it must voice that next question in the same reply that
+    closes the current one (see the inline note - a bare acknowledgment leaves
+    the avatar silent). Appends `settings.host_chat_mode_prompt` when
+    `mode="chat"` and `settings.host_time_pressure_prompt` when `time_pressured`
+    is set."""
     profile = state.vendor_profile
 
     lines = [
@@ -185,6 +210,10 @@ def _render_system_content(
 
 
 def _render_user_content(state: InterviewState, user_text: str) -> str:
+    """Assemble the user message: the last `_TRANSCRIPT_WINDOW` turns rendered
+    as a transcript, followed by the new candidate utterance. Only the recent
+    window is replayed (not the whole history) to keep the per-turn call cheap
+    and comfortably inside HeyGen's timeout."""
     transcript = render_transcript(state.turns[-_TRANSCRIPT_WINDOW:])
     latest = f"{ROLE_LABELS['candidate']}: {user_text.strip()}"
     return f"{transcript}\n{latest}" if transcript else latest
@@ -227,6 +256,14 @@ async def _call_gemini(
     mode: Literal["avatar", "chat"] = "avatar",
     time_pressured: bool = False,
 ) -> dict:
+    """Make the single per-turn Gemini call and return its parsed JSON turn.
+    A parse failure is retried exactly once with a fresh sample (a cheap, fast
+    reroll); HTTP failures are deliberately not retried here, so a Gemini
+    outage falls back immediately rather than doubling the wait inside
+    HeyGen's timeout window (gemini_client's own model-not-found fallback is
+    the one exception, and returns in under a second). Raises if the second
+    parse also fails or on any HTTP error, leaving the soft-fail to the
+    caller."""
     payload = _build_payload(state, node, user_text, questionnaire, mode, time_pressured)
 
     # Parse failures get one retry (fresh sample, fast); HTTP failures don't -
