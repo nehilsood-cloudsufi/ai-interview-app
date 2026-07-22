@@ -1,3 +1,20 @@
+"""Transcript finalize + read-back endpoints.
+
+Finalize is what the frontend calls once a session ends (whether the vendor
+stopped it or HeyGen ended it on its own): it takes the captured turns,
+generates a Markdown summary, and persists the record via
+`app.services.transcript_store` (GCS when GCS_BUCKET is set, local JSON
+otherwise). When the finalize request carries a live `interview_id`, it also
+hands the interview to the background post-interview pipeline
+(`app.services.pipeline`: Scout -> Evaluator -> Coordinator) - the scorecard,
+insights, and recommendation are NOT in the finalize response; the frontend
+polls GET /api/interview/{id}/state for those as the pipeline runs. The
+summary is generated defensively so a summary failure never loses the
+transcript, but a persistence failure does fail the request. The GET route
+reads a saved record back for the transcript-download / review UI.
+Same-origin UI endpoints - no auth.
+"""
+
 import logging
 from datetime import datetime, timezone
 
@@ -13,6 +30,26 @@ router = APIRouter()
 
 @router.post("/api/transcript/finalize", response_model=FinalizeTranscriptResponse)
 async def finalize_transcript(body: FinalizeTranscriptRequest):
+    """Persist a finished interview transcript and kick off scoring.
+
+    The request body (`FinalizeTranscriptRequest`) carries the `session_id`
+    to store the record under, the list of `turns`, and optionally an
+    `interview_id`. When `interview_id` resolves to an interview still live
+    in memory, the saved record is enriched with the vendor profile and
+    domain, and the interview is handed to the background pipeline. Responds
+    with a `FinalizeTranscriptResponse`: `summary` (Markdown, or "" if
+    generation failed), `summary_ok` (False in that failure case, though the
+    transcript is still saved), and `pipeline_status` ("interviewed" once the
+    pipeline is enqueued, or None for the legacy no-interview_id path). The
+    `scorecard`, `insights`, and `recommendation` fields are always null in
+    this response - they arrive later via GET /api/interview/{id}/state
+    polling, since the pipeline runs in the background after this returns.
+
+    Fails with 400 if `turns` is empty, and 500 if the transcript cannot be
+    persisted. The route is idempotent: a repeated finalize for an interview
+    already handed to the pipeline short-circuits and returns the
+    already-saved summary rather than re-enqueuing or re-saving.
+    """
     if not body.turns:
         raise HTTPException(status_code=400, detail="Transcript has no turns to finalize")
 
@@ -111,6 +148,13 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
 
 @router.get("/api/transcript/{session_id}")
 async def get_transcript(session_id: str):
+    """Read back a previously finalized transcript by its `session_id` path
+    parameter. Responds with the stored record as saved by finalize (a JSON
+    object with `session_id`, `created_at`, `turns`, `summary`,
+    `summary_ok`, and, for gateway-mode interviews, `domain`,
+    `vendor_profile`, and pipeline fields) - it is returned as-is, not
+    reshaped through a response model. Fails with 404 if no record exists
+    for that session id."""
     record = await transcript_store.get(session_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Transcript not found")

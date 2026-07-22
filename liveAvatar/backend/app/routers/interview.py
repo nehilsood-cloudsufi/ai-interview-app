@@ -62,11 +62,36 @@ _REQUIRED_STR_FIELDS = {"company_name", "contact_name"}
 
 @router.get("/api/domains", response_model=DomainsResponse)
 async def get_domains():
+    """List the interview domains a vendor can be assigned, as a
+    `DomainsResponse` holding `domains: [{id, title}]` - one entry per
+    questionnaire YAML under the questionnaires directory. Takes no
+    parameters and never errors (an empty list is valid). In production an
+    admin assigns the vendor's domain; the frontend uses this endpoint only
+    to populate a dev-stand-in domain picker on the start screen."""
     return {"domains": [{"id": domain_id, "title": title} for domain_id, title in list_domains()]}
 
 
 @router.post("/api/interview", response_model=CreateInterviewResponse)
 async def create_interview(body: CreateInterviewRequest | None = None):
+    """Create a fresh in-memory interview and return its id.
+
+    This is the first call in the flow - a session (POST /api/session) can
+    only be created against an interview_id minted here. The request body
+    (`CreateInterviewRequest`) is optional and all its fields are optional:
+    `domain` selects the questionnaire (defaults to `settings.default_domain`),
+    `tier` is "dev" or "prod" (defaults to "dev"), and for the prod tier
+    `passcode` and `duration_minutes` apply. Responds with a
+    `CreateInterviewResponse` carrying the new `interview_id`; the vendor
+    profile starts empty and is filled in conversationally by the Host's
+    onboarding questions.
+
+    Fails with 400 for an unknown `domain` or an unknown `tier`. Prod tier
+    adds more gating: 503 if the tier is not configured (PROD_AVATAR_ID and
+    DEMO_PASSCODE both required), 403 if `passcode` does not match
+    DEMO_PASSCODE, and 400 if `duration_minutes` is outside
+    1..(PROD_MAX_SESSION_SECONDS/60). `duration_minutes` is ignored on the
+    dev tier.
+    """
     domain = (body.domain if body else None) or settings.default_domain
     try:
         get_questionnaire(domain)
@@ -106,6 +131,17 @@ async def create_interview(body: CreateInterviewRequest | None = None):
 
 @router.get("/api/interview/{interview_id}/state", response_model=InterviewStateResponse)
 async def get_interview_state(interview_id: str):
+    """Read-only snapshot of an interview, keyed by the `interview_id` path
+    parameter. Responds with an `InterviewStateResponse`: the interview
+    `status`, its `domain`, the `current_topic` (the current questionnaire
+    node's topic, or None once it reaches END), the `insights` (Scout
+    findings gathered so far), an `updated_at` timestamp, the current
+    `vendor_profile`, and the post-interview pipeline fields
+    (`pipeline_status`, `scorecard`, `recommendation`) which stay null until
+    finalize hands the interview to `app.services.pipeline`. The frontend
+    polls this both during the interview (for profile/topic) and after
+    finalize (to learn when the scorecard is `ready`). Fails with 404 if the
+    interview id is unknown."""
     state = interview_state.get(interview_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Unknown interview")
@@ -154,6 +190,9 @@ async def chat(interview_id: str, body: ChatRequest):
 
 
 def _fmt_profile_value(value: str | None) -> str:
+    """Render a profile value for the human-readable system-note turn: a set
+    value in double quotes, or the literal "(not set)" for None/empty so a
+    cleared field reads sensibly in the note."""
     return f'"{value}"' if value else "(not set)"
 
 

@@ -26,6 +26,10 @@ KEY = os.environ["LIVEAVATAR_API_KEY"]
 
 
 def req(method: str, path: str) -> dict:
+    """Make one authenticated LiveAvatar API call and return the parsed JSON
+    body (or `{}` for an empty body). Best-effort by design: any error is
+    caught and returned as `{"error": <message>}` rather than raised, so a
+    single failed delete never aborts the whole cleanup sweep."""
     r = urllib.request.Request(f"{BASE}{path}", method=method, headers={"X-API-KEY": KEY})
     try:
         with urllib.request.urlopen(r, timeout=20) as resp:
@@ -35,6 +39,12 @@ def req(method: str, path: str) -> dict:
 
 
 def main() -> None:
+    """Run the full cleanup sweep: delete the auto-generated "Resonance Host"
+    LLM configurations, "Resonance Gateway" secrets, and "AI Interviewer w/
+    Context" contexts (contexts are paged through until none remain), printing
+    a count for each category and the names of any contexts left behind.
+    Only the auto-named Resonance resources are matched; everything else on the
+    account is left untouched."""
     cfgs = req("GET", "/llm-configurations").get("data", [])
     kill_cfgs = [c for c in cfgs if c["display_name"].startswith("Resonance Host ")]
     for c in kill_cfgs:

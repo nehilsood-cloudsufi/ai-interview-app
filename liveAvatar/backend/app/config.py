@@ -1,3 +1,18 @@
+"""Central configuration: every env var, secret, and tuning constant the app
+reads lives on the frozen `Settings` dataclass instantiated as the module-level
+`settings` singleton, so nothing elsewhere calls `os.getenv` directly.
+
+`backend/.env` is loaded first with override=True, so values committed to
+`.env` win over anything already exported in the shell (this avoids a stale
+`GEMINI_API_KEY` in the environment silently shadowing the intended one). Each
+field's `default_factory` reads its env var at construction time; fields
+without a factory are fixed constants (not env-overridable). Secrets/URLs
+(API keys, `PUBLIC_BASE_URL`, avatar ids, `GCS_BUCKET`) come from the
+environment, while the long prompt strings and timing thresholds are defaults
+here that can still be overridden where a factory exposes them. See
+`backend/.env.example` for the env vars and CLAUDE.md for how each is used.
+"""
+
 import os
 from dataclasses import dataclass, field
 
@@ -16,6 +31,15 @@ SANDBOX_AVATAR_ID = "dd73ea75-1218-4ef3-92ce-606d5f7fbc0a"
 
 @dataclass(frozen=True)
 class Settings:
+    """All application configuration in one immutable place; the module
+    exposes a single instance as `settings`. Grouped by concern via the
+    section comments below: core LiveAvatar/Gemini credentials and URLs, the
+    production-tier avatar knobs, the time-aware wrap-up thresholds, the Host
+    and Evaluator system prompts, and the transcript/summary/Scout settings.
+    Frozen so config is read-only at runtime; each `field(default_factory=...)`
+    pulls from the environment at startup (env-overridable), while plain
+    defaults are fixed constants."""
+
     liveavatar_api_key: str | None = field(default_factory=lambda: os.getenv("LIVEAVATAR_API_KEY"))
     gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     liveavatar_base_url: str = "https://api.liveavatar.com/v1"

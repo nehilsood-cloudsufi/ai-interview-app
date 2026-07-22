@@ -29,6 +29,10 @@ _GREETING_REPLY = "Hello! Thanks for joining. Whenever you're ready, we can begi
 
 
 def _last_user_text(body: dict) -> str | None:
+    """Pull the vendor's latest utterance out of an OpenAI chat-completions
+    request body, or None if the request carries no user message yet (the
+    pre-utterance greeting probe). The Host only needs the newest thing the
+    vendor said, not the whole replayed history."""
     # Full history is resent every turn; the latest user utterance is always
     # the final "user" message (spike finding).
     for message in reversed(body.get("messages") or []):
@@ -38,6 +42,9 @@ def _last_user_text(body: dict) -> str | None:
 
 
 def _completion_response(completion_id: str, created: int, model: str, reply: str) -> dict:
+    """Build the non-streaming OpenAI `chat.completion` response dict HeyGen
+    expects, wrapping `reply` as the single assistant choice with a "stop"
+    finish reason. Used when HeyGen did not request a streamed response."""
     return {
         "id": completion_id,
         "object": "chat.completion",
@@ -54,6 +61,11 @@ def _completion_response(completion_id: str, created: int, model: str, reply: st
 
 
 def _chunk(completion_id: str, created: int, model: str, delta: dict, finish_reason: str | None) -> str:
+    """Format one Server-Sent-Events line carrying a
+    `chat.completion.chunk`: the `delta` is the incremental piece (e.g.
+    `{"content": "..."}` for a reply fragment, `{}` with
+    finish_reason="stop" to close the stream). Returns the fully-framed
+    `data: <json>\\n\\n` string ready to yield to HeyGen."""
     payload = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -65,6 +77,11 @@ def _chunk(completion_id: str, created: int, model: str, delta: dict, finish_rea
 
 
 def _stream_response(completion_id: str, created: int, model: str, reply: str) -> StreamingResponse:
+    """Wrap an already-decided `reply` as a minimal SSE stream: one content
+    chunk, a stop chunk, then `[DONE]`. This is the streamed-but-not-
+    token-by-token path - it emits the whole reply in a single chunk, used
+    for the greeting, for canned fallbacks, and whenever token-level
+    streaming from the Host isn't in play but HeyGen still asked to stream."""
     async def sse():
         yield _chunk(completion_id, created, model, {"content": reply}, None)
         yield _chunk(completion_id, created, model, {}, "stop")
@@ -123,6 +140,23 @@ def _streaming_host_response(
 
 @router.post("/llm/{interview_id}/v1/chat/completions")
 async def chat_completions(interview_id: str, request: Request):
+    """OpenAI-compatible chat-completions endpoint HeyGen's LiveKit agent
+    calls once per vendor utterance. The `interview_id` path parameter names
+    the interview, and the request must carry `Authorization: Bearer
+    <gateway_token>` matching that interview's token. The body is a standard
+    chat-completions payload (`messages`, `model`, `stream`); only the latest
+    user message is used - the running interview state lives on our side, not
+    in the replayed history.
+
+    Responds in the OpenAI `chat.completion` shape (streamed as SSE when the
+    request set `stream: true`, which HeyGen always does; buffered otherwise).
+    Before any user utterance exists it speaks a canned greeting. This is NOT
+    a general consumer endpoint - it is HeyGen's private callback, so it
+    fails with 404 for an unknown `interview_id` and 401 for a missing or
+    wrong bearer token, but past auth it never fails: any downstream error
+    (including an unparsable body) becomes a 200 with a canned reply, because
+    HeyGen does not retry and the avatar must always have something to say.
+    """
     state = interview_state.get(interview_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Unknown interview")
