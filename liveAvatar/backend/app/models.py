@@ -179,9 +179,11 @@ class DomainInfo(BaseModel):
 
 class DomainsResponse(BaseModel):
     """Response for GET /api/domains: the list of available `(id, title)`
-    domain pairs for a domain picker."""
+    domain pairs for a domain picker, plus which domain id the server treats
+    as the default (settings.default_domain) so the picker can preselect it."""
 
     domains: list[DomainInfo]
+    default: str
 
 
 class VendorProfileModel(BaseModel):

@@ -6,6 +6,7 @@ import httpx
 import pytest
 import respx
 
+from app.config import settings
 from app.models import TranscriptTurn
 from app.services import host_agent, interview_state
 from app.services.coordinator_agent import FollowupRecommendation
@@ -190,6 +191,9 @@ def test_get_domains(client):
     assert set(ids) == {"ai_ml", "cloud_infrastructure", "data_engineering", "frontier_tech"}
     for entry in body["domains"]:
         assert entry["title"]
+    # The picker preselects the server's default rather than the first entry.
+    assert body["default"] == settings.default_domain
+    assert body["default"] in ids
 
 
 def test_create_interview_id_resolves_via_get_state(client):

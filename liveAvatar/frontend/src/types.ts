@@ -33,6 +33,9 @@ export interface DomainInfo {
 
 export interface DomainsResponse {
   domains: DomainInfo[];
+  // The server's default domain id (settings.default_domain) — the picker
+  // preselects it rather than the first list entry.
+  default: string;
 }
 
 // Vendor profile as returned inside GET /api/interview/{id}/state

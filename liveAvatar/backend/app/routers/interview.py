@@ -64,11 +64,16 @@ _REQUIRED_STR_FIELDS = {"company_name", "contact_name"}
 async def get_domains():
     """List the interview domains a vendor can be assigned, as a
     `DomainsResponse` holding `domains: [{id, title}]` - one entry per
-    questionnaire YAML under the questionnaires directory. Takes no
+    questionnaire YAML under the questionnaires directory - plus `default`,
+    the domain id the server falls back to when POST /api/interview carries
+    no domain (settings.default_domain; the picker preselects it). Takes no
     parameters and never errors (an empty list is valid). In production an
     admin assigns the vendor's domain; the frontend uses this endpoint only
     to populate a dev-stand-in domain picker on the start screen."""
-    return {"domains": [{"id": domain_id, "title": title} for domain_id, title in list_domains()]}
+    return {
+        "domains": [{"id": domain_id, "title": title} for domain_id, title in list_domains()],
+        "default": settings.default_domain,
+    }
 
 
 @router.post("/api/interview", response_model=CreateInterviewResponse)

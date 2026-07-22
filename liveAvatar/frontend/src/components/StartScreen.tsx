@@ -40,7 +40,12 @@ export function StartScreen({ onStart }: StartScreenProps) {
         const data: DomainsResponse = await res.json();
         if (cancelled || data.domains.length === 0) return;
         setDomains(data.domains);
-        setSelectedDomain(data.domains[0].id);
+        // Preselect the server's default domain (falling back to the first
+        // entry if the default isn't in the list for any reason).
+        const preselect = data.domains.some((d) => d.id === data.default)
+          ? data.default
+          : data.domains[0].id;
+        setSelectedDomain(preselect);
       } catch (err) {
         console.error('Failed to fetch domains:', err);
       }
