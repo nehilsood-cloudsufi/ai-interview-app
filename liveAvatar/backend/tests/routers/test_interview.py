@@ -70,6 +70,66 @@ def test_create_interview_with_valid_domain(client):
     assert state.domain == "cloud_infrastructure"
 
 
+def test_create_interview_defaults_to_dev_tier(client):
+    response = client.post("/api/interview")
+
+    assert response.status_code == 200
+    state = interview_state.get(response.json()["interview_id"])
+    assert state.tier == "dev"
+
+
+def test_create_interview_with_unknown_tier_returns_400(client):
+    response = client.post("/api/interview", json={"tier": "staging"})
+
+    assert response.status_code == 400
+    assert "staging" in response.json()["detail"]
+
+
+def test_create_interview_prod_tier_unconfigured_returns_503(client, patch_settings):
+    patch_settings(prod_avatar_id=None, demo_passcode=None)
+
+    response = client.post("/api/interview", json={"tier": "prod", "passcode": "anything"})
+
+    assert response.status_code == 503
+    assert "not configured" in response.json()["detail"]
+
+
+def test_create_interview_prod_tier_wrong_passcode_returns_403(client, patch_settings):
+    patch_settings(prod_avatar_id="avatar-june", demo_passcode="s3cret")
+
+    response = client.post("/api/interview", json={"tier": "prod", "passcode": "wrong"})
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Invalid passcode"
+
+
+def test_create_interview_prod_tier_missing_passcode_returns_403(client, patch_settings):
+    patch_settings(prod_avatar_id="avatar-june", demo_passcode="s3cret")
+
+    response = client.post("/api/interview", json={"tier": "prod"})
+
+    assert response.status_code == 403
+
+
+def test_create_interview_prod_tier_happy_path(client, patch_settings):
+    patch_settings(prod_avatar_id="avatar-june", demo_passcode="s3cret")
+
+    response = client.post("/api/interview", json={"tier": "prod", "passcode": "s3cret"})
+
+    assert response.status_code == 200
+    state = interview_state.get(response.json()["interview_id"])
+    assert state.tier == "prod"
+
+
+def test_create_interview_dev_tier_ignores_passcode(client, patch_settings):
+    # Dev tier never checks the passcode, even when prod is configured.
+    patch_settings(prod_avatar_id="avatar-june", demo_passcode="s3cret")
+
+    response = client.post("/api/interview", json={"tier": "dev", "passcode": "wrong"})
+
+    assert response.status_code == 200
+
+
 def test_create_interview_with_unknown_domain_returns_400(client):
     response = client.post("/api/interview", json={"domain": "not_a_real_domain"})
 

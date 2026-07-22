@@ -5,9 +5,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# HeyGen's free sandbox avatar. Only valid with sandbox_mode=True - pairing it
-# with is_sandbox=False makes LiveKit time out silently (see docs/KT.md), so
-# sessions.py rejects that combination up front.
+# HeyGen's free sandbox avatar ("Wayne"), used by dev-tier interviews. Only
+# valid with is_sandbox=True - pairing it with is_sandbox=False makes LiveKit
+# time out silently (see docs/KT.md).
 SANDBOX_AVATAR_ID = "dd73ea75-1218-4ef3-92ce-606d5f7fbc0a"
 
 
@@ -16,10 +16,24 @@ class Settings:
     liveavatar_api_key: str | None = field(default_factory=lambda: os.getenv("LIVEAVATAR_API_KEY"))
     gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     liveavatar_base_url: str = "https://api.liveavatar.com/v1"
-    avatar_id: str = field(default_factory=lambda: os.getenv("AVATAR_ID", SANDBOX_AVATAR_ID))
-    # Sandbox sessions are free but auto-terminate after ~1 minute; production
-    # (SANDBOX_MODE=false) needs a real AVATAR_ID and burns credits.
-    sandbox_mode: bool = field(default_factory=lambda: os.getenv("SANDBOX_MODE", "true").lower() != "false")
+    avatar_id: str = SANDBOX_AVATAR_ID
+
+    # --- Production tier (/prod URL; interviews with tier="prod") ---
+    # Sandbox (dev-tier) sessions are free but auto-terminate after ~1 minute;
+    # prod-tier sessions use this avatar with is_sandbox=false and burn
+    # credits (2/minute). Both PROD_AVATAR_ID and DEMO_PASSCODE must be set or
+    # prod-tier interview creation is rejected.
+    prod_avatar_id: str | None = field(default_factory=lambda: os.getenv("PROD_AVATAR_ID"))
+    # Optional voice override; public video avatars come with a default voice.
+    prod_voice_id: str | None = field(default_factory=lambda: os.getenv("PROD_VOICE_ID"))
+    # Shared passcode required to create a prod-tier interview, so a leaked
+    # URL can't burn credits.
+    demo_passcode: str | None = field(default_factory=lambda: os.getenv("DEMO_PASSCODE"))
+    # Hard cap per prod-tier session (HeyGen's max_session_duration), bounding
+    # the worst-case credit spend of a single session.
+    prod_max_session_seconds: int = field(
+        default_factory=lambda: int(os.getenv("PROD_MAX_SESSION_SECONDS", "600"))
+    )
 
     # --- Resonance multi-agent interview ---
     # Externally reachable base URL of this backend (Cloud Run URL or a dev

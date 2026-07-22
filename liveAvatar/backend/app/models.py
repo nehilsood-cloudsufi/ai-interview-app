@@ -83,6 +83,12 @@ class CreateInterviewRequest(BaseModel):
     # Optional: missing/null resolves to settings.default_domain. An unknown
     # domain is rejected with a 400 by the router.
     domain: str | None = None
+    # Avatar tier ("dev" | "prod"); missing/null resolves to "dev". Anything
+    # else is rejected with a 400 by the router. "prod" additionally requires
+    # the correct passcode and a configured PROD_AVATAR_ID.
+    tier: str | None = None
+    # Shared demo passcode, only consulted for tier="prod" (DEMO_PASSCODE).
+    passcode: str | None = None
 
 
 class CreateInterviewResponse(BaseModel):

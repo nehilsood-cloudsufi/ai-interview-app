@@ -107,7 +107,7 @@ Let's follow the data flow when a user actually uses the app today (gateway mode
 1. **Loading the App**: The user navigates to our Cloud Run URL. The FastAPI backend receives the request and, because it's configured to serve static files, it sends the compiled React app (`index.html`, JavaScript, CSS) to the browser.
 2. **Starting the Interview**: `StartScreen` `POST`s `/api/interview` (no intake form, no resume upload — that flow was removed). The backend creates an in-memory `InterviewState` with an empty vendor profile and returns an `interview_id`.
 3. **Starting the Session**: The React app calls the backend's `/api/session` endpoint with that `interview_id`. The backend registers a per-interview Custom LLM with HeyGen (a secret + LLM config pointing back at our own `/llm/{interview_id}/v1` gateway) plus a minimal, generic context (no resume text — there's nothing candidate-specific to embed anymore).
-4. **Token Generation**: The backend uses our secure `LIVEAVATAR_API_KEY` to ask LiveAvatar for a `session_token`. We hardcode `is_sandbox: True` here to save money during testing, and we use a specific Sandbox Avatar ID (`dd73ea75...`).
+4. **Token Generation**: The backend uses our secure `LIVEAVATAR_API_KEY` to ask LiveAvatar for a `session_token`. The avatar and `is_sandbox` flag come from the interview's tier: dev-tier interviews use the free sandbox avatar (`dd73ea75...`) with `is_sandbox: true`; prod-tier interviews (`/prod` URL, passcode-gated) use `PROD_AVATAR_ID` with `is_sandbox: false` and a `max_session_duration` cap (see §6).
 5. **WebRTC Connection**: The backend gives the `session_token` back to React. React passes it to the `LiveAvatarSession` SDK. The SDK reaches out to LiveKit (the underlying infrastructure) and establishes a direct video/audio peer-to-peer connection. The avatar appears on screen!
 6. **The Interview Itself**: Every time the vendor finishes speaking, HeyGen calls our `/llm/{interview_id}/v1/chat/completions` gateway, which drives the Host agent — a fixed question tree, phrased naturally by Gemini, that also captures the vendor's profile (name, role, company, website) conversationally as the first questions are answered.
 7. **Live Transcript**: During the interview, the SDK emits `USER_TRANSCRIPTION` (vendor) and `AVATAR_TRANSCRIPTION` (interviewer) events, one per completed turn. React accumulates these into a transcript, shown live in the transcript panel.
@@ -151,9 +151,15 @@ We deploy both the frontend and backend together as a single container on Google
 - **The `.gcloudignore` File**: This is critical. It tells Google Cloud "Do NOT upload my local `node_modules` or `.venv` folders to the cloud builder." If you upload a Mac's `.venv` folder to a Linux cloud builder, the build will fail because the binaries are incompatible.
 - **Secret Manager**: The `deploy_setup.sh` script automates creating a secure vault (Google Cloud Secret Manager) for our `LIVEAVATAR_API_KEY` and giving Cloud Run permission to read it. When the container boots, Cloud Run injects the secret securely as an environment variable.
 
-### Production deploy recipe
+### Avatar tiers: /dev vs /prod (one deployment, both modes)
 
-Branches: `main` = production (deployed to Cloud Run, `SANDBOX_MODE=false`), `dev` = development (sandbox mode, local + tunnel). Features merge into `dev`; `dev` merges into `main` to release.
+The avatar tier is chosen **per interview by URL path**, not per deployment: `/` (or anything except `/prod`) → **dev tier** — free sandbox avatar ("Wayne", `dd73ea75-…`), `is_sandbox: true`, HeyGen force-terminates at ~1 minute; `/prod` → **prod tier** — `PROD_AVATAR_ID` with `is_sandbox: false`, burning credits (2/minute), capped at `PROD_MAX_SESSION_SECONDS` (default 600 s ≈ ≤20 credits/session) via HeyGen's `max_session_duration`.
+
+Prod tier is opt-in and passcode-gated: `POST /api/interview` with `tier: "prod"` requires the `DEMO_PASSCODE` value (403 on mismatch) and 503s unless both `PROD_AVATAR_ID` and `DEMO_PASSCODE` are configured — so a leaked URL can't burn credits. Session creation re-checks `PROD_AVATAR_ID` so a prod interview can never silently fall back to the sandbox avatar (which would also time out on LiveKit with `is_sandbox: false`). Pick a public avatar from `GET /v1/avatars/public` (no auth needed); `PROD_VOICE_ID` is optional since public video avatars carry a default voice.
+
+Branches: `main` = stable/released, `dev` = integration. Both tiers exist in every deployment; branches no longer imply an avatar mode.
+
+### Production deploy recipe
 
 One-time setup: `./deploy_setup.sh` (creates the `LIVEAVATAR_API_KEY` secret in Secret Manager and binds IAM). Then, from the repo root on `main`:
 
@@ -164,7 +170,7 @@ gcloud run deploy resonance \
   --allow-unauthenticated \
   --no-cpu-throttling \
   --update-secrets LIVEAVATAR_API_KEY=LIVEAVATAR_API_KEY:latest \
-  --set-env-vars "SANDBOX_MODE=false,AVATAR_ID=<prod-avatar-id>,GEMINI_API_KEY=<key>,GCS_BUCKET=<bucket>"
+  --set-env-vars "PROD_AVATAR_ID=<public-avatar-id>,DEMO_PASSCODE=<passcode>,GEMINI_API_KEY=<key>,GCS_BUCKET=<bucket>"
 ```
 
 `PUBLIC_BASE_URL` is a chicken-and-egg: HeyGen needs the service URL, which doesn't exist until the first deploy. So deploy once without it (session creation 503s until it's set), grab the URL from the deploy output, then:
@@ -174,7 +180,9 @@ gcloud run services update resonance --region <region> \
   --set-env-vars PUBLIC_BASE_URL=<service-url>
 ```
 
-Production prerequisites: LiveAvatar credits on the account (FULL mode is 2 credits/minute), a non-sandbox avatar ID, and — only if that avatar is an *image* avatar — a `voice_id` (video avatars have a built-in voice).
+Then `https://<service-url>/` is the free dev-tier experience and `https://<service-url>/prod` is the credit-burning demo tier (needs the passcode).
+
+Production prerequisites: LiveAvatar credits on the account (FULL mode is 2 credits/minute) and a public (or custom) avatar ID — only if that avatar is an *image* avatar does it also need a `PROD_VOICE_ID` (video avatars have a built-in voice).
 
 ### CPU throttling and the post-interview pipeline
 
@@ -199,7 +207,10 @@ Mitigations:
 **A:** You likely accidentally uploaded your local environments. Ensure `.gcloudignore` is present in the root of the project and contains `node_modules`, `.venv`, and `.env`.
 
 **Q: How do I switch between sandbox and production avatar mode?**
-**A:** Two env vars in `app/config.py`: `SANDBOX_MODE` (default `true` — free, ~1-minute sessions, 2 credits/minute when off) and `AVATAR_ID` (default: the sandbox avatar). Production needs **both** `SANDBOX_MODE=false` and a real avatar ID from the HeyGen dashboard (or `GET /v1/avatars`) — pairing the sandbox avatar with `is_sandbox: false` makes LiveKit inexplicably time out, so `POST /api/session` rejects that combination with a 503 instead of letting it fail silently. Dev keeps the defaults (sandbox on).
+**A:** By URL: open `/` for the free sandbox tier, `/prod` for the production avatar (see "Avatar tiers" in §6). Prod needs `PROD_AVATAR_ID` + `DEMO_PASSCODE` env vars and account credits; the passcode is entered on the start screen. There is no env var that flips the whole deployment's mode — one deployment serves both tiers. (Background: pairing the sandbox avatar with `is_sandbox: false` makes LiveKit inexplicably time out, which is why the sandbox avatar is pinned to the dev tier.)
+
+**Q: Which tunnel should I use locally?**
+**A:** `npx -y localtunnel --port 3001` (grab the printed `https://<name>.loca.lt` URL for `PUBLIC_BASE_URL`). trycloudflare is SNI-blocked on some networks (observed 2026-07-22) so it's no longer the documented default. Two rules: restart the backend whenever the tunnel URL changes (the URL is baked into per-interview LLM configs at session-create time), and if the tunnel returns 502, restart the tunnel process and re-check `curl <url>/api/domains`.
 
 **Q: The interview ended but the summary says it couldn't be generated. Was the transcript lost?**
 **A:** No. Summary generation is best-effort — if Gemini is unavailable or `GEMINI_API_KEY` is missing, the backend sets `summary_ok=False` but still saves the full transcript, and the UI still lets you download it. Check the backend logs for the summary warning. If the transcript itself failed to save (a 500), that's a real error — check `GCS_BUCKET` / credentials, or the local `transcripts/` folder's write permissions.

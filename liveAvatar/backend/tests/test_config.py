@@ -32,24 +32,27 @@ def test_settings_env_overrides(monkeypatch):
     assert fresh.gcs_bucket == "my-bucket"
 
 
-def test_sandbox_mode_defaults():
+def test_prod_tier_defaults():
+    # Prod tier is entirely opt-in: unset env means it's disabled and the
+    # dev-tier avatar is the sandbox one.
     fresh = Settings(liveavatar_api_key=None, gemini_api_key=None, gcs_bucket=None)
-    assert fresh.sandbox_mode is True
     assert fresh.avatar_id == SANDBOX_AVATAR_ID
+    assert fresh.prod_avatar_id is None
+    assert fresh.prod_voice_id is None
+    assert fresh.demo_passcode is None
+    assert fresh.prod_max_session_seconds == 600
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [("false", False), ("False", False), ("true", True), ("1", True), ("", True)],
-)
-def test_sandbox_mode_env_override(monkeypatch, value, expected):
-    monkeypatch.setenv("SANDBOX_MODE", value)
-    assert Settings().sandbox_mode is expected
-
-
-def test_avatar_id_env_override(monkeypatch):
-    monkeypatch.setenv("AVATAR_ID", "prod-avatar-42")
-    assert Settings().avatar_id == "prod-avatar-42"
+def test_prod_tier_env_overrides(monkeypatch):
+    monkeypatch.setenv("PROD_AVATAR_ID", "avatar-june")
+    monkeypatch.setenv("PROD_VOICE_ID", "voice-amy")
+    monkeypatch.setenv("DEMO_PASSCODE", "s3cret")
+    monkeypatch.setenv("PROD_MAX_SESSION_SECONDS", "900")
+    fresh = Settings()
+    assert fresh.prod_avatar_id == "avatar-june"
+    assert fresh.prod_voice_id == "voice-amy"
+    assert fresh.demo_passcode == "s3cret"
+    assert fresh.prod_max_session_seconds == 900
 
 
 def test_host_streaming_disabled_by_default():

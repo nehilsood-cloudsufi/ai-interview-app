@@ -47,6 +47,11 @@ class InterviewState:
     # The empty default only exists so tests can construct states directly
     # without going through create().
     domain: str = ""
+    # Avatar tier, chosen by URL path on the frontend: "dev" = free sandbox
+    # avatar (~1-min sessions), "prod" = settings.prod_avatar_id with
+    # is_sandbox=false (passcode-gated, credit-burning). NOT the avatar/chat
+    # "mode" concept used by host_agent.
+    tier: Literal["dev", "prod"] = "dev"
     heygen_session_id: str | None = None
     llm_config_id: str | None = None
     secret_id: str | None = None
@@ -74,7 +79,7 @@ class InterviewState:
 _interviews: dict[str, InterviewState] = {}
 
 
-def create(profile: VendorProfile, domain: str) -> InterviewState:
+def create(profile: VendorProfile, domain: str, tier: Literal["dev", "prod"] = "dev") -> InterviewState:
     from app.services.interview_config import get_start_node_id
 
     prune_older_than()
@@ -83,6 +88,7 @@ def create(profile: VendorProfile, domain: str) -> InterviewState:
         gateway_token=secrets.token_urlsafe(32),
         vendor_profile=profile,
         domain=domain,
+        tier=tier,
         current_node_id=get_start_node_id(domain),
     )
     _interviews[state.interview_id] = state

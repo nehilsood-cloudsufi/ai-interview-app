@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, ExternalLink, Loader2, MessageSquareText, Sparkles, Video } from 'lucide-react';
-import { API_URL, SESSIONS_SHEET_URL } from '../config';
+import { AlertTriangle, ExternalLink, KeyRound, Loader2, MessageSquareText, Sparkles, Video } from 'lucide-react';
+import { API_URL, SESSIONS_SHEET_URL, TIER } from '../config';
 import type { CreateInterviewResponse, DomainInfo, DomainsResponse, InterviewMode } from '../types';
 
 interface StartScreenProps {
@@ -14,6 +14,7 @@ export function StartScreen({ onStart }: StartScreenProps) {
   const [error, setError] = useState<string | null>(null);
   const [domains, setDomains] = useState<DomainInfo[]>([]);
   const [selectedDomain, setSelectedDomain] = useState<string>('');
+  const [passcode, setPasscode] = useState<string>('');
 
   // In production an admin assigns the vendor's interview domain; here the
   // vendor picks one. If the fetch fails or returns nothing, hide the select
@@ -45,12 +46,22 @@ export function StartScreen({ onStart }: StartScreenProps) {
 
       const res = await fetch(`${API_URL}/api/interview`, {
         method: 'POST',
-        ...(selectedDomain && {
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ domain: selectedDomain }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...(selectedDomain && { domain: selectedDomain }),
+          tier: TIER,
+          ...(TIER === 'prod' && { passcode }),
         }),
       });
-      if (!res.ok) throw new Error('Failed to start the interview');
+      if (!res.ok) {
+        // The prod tier has specific, actionable failures; surface them.
+        if (res.status === 403) throw new Error('Invalid passcode');
+        if (res.status === 503) {
+          const detail = (await res.json().catch(() => null))?.detail;
+          throw new Error(detail || 'Production tier is not configured');
+        }
+        throw new Error('Failed to start the interview');
+      }
 
       const data: CreateInterviewResponse = await res.json();
       onStart(data.interview_id, mode);
@@ -74,6 +85,11 @@ export function StartScreen({ onStart }: StartScreenProps) {
           <span className="text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-slate-200 to-slate-400">
             Resonance
           </span>
+          {TIER === 'prod' && (
+            <span className="ml-1 px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              Production
+            </span>
+          )}
         </div>
         <p className="text-slate-400 text-sm md:text-base max-w-md leading-relaxed">
           A vendor evaluation interview hosted by <span className="text-slate-200 font-medium">Noor</span>.
@@ -107,9 +123,27 @@ export function StartScreen({ onStart }: StartScreenProps) {
           </div>
         )}
 
+        {TIER === 'prod' && (
+          <div className="flex flex-col gap-1.5 mb-1">
+            <label htmlFor="passcode-input" className="text-sm font-semibold text-slate-300 flex items-center gap-1.5">
+              <KeyRound className="w-4 h-4" />
+              Demo passcode
+            </label>
+            <input
+              id="passcode-input"
+              type="password"
+              value={passcode}
+              onChange={(e) => setPasscode(e.target.value)}
+              disabled={busy}
+              placeholder="Required for production sessions"
+              className="w-full bg-slate-800/60 border border-slate-700/60 rounded-xl px-4 py-3 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/70 focus:border-transparent transition-all disabled:opacity-50"
+            />
+          </div>
+        )}
+
         <button
           onClick={() => begin('avatar')}
-          disabled={busy}
+          disabled={busy || (TIER === 'prod' && !passcode)}
           className="w-full flex items-center justify-center gap-3 bg-gradient-to-r from-indigo-500 via-sky-500 to-indigo-500 bg-[length:200%_auto] hover:bg-[position:right_center] text-white px-8 py-4 rounded-2xl font-bold transition-all duration-500 shadow-[0_0_40px_-10px_rgba(99,102,241,0.5)] hover:shadow-[0_0_60px_-15px_rgba(99,102,241,0.7)] hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 text-lg"
         >
           {pending === 'avatar' ? <Loader2 className="w-6 h-6 animate-spin" /> : <Video className="w-6 h-6" />}
@@ -118,7 +152,7 @@ export function StartScreen({ onStart }: StartScreenProps) {
 
         <button
           onClick={() => begin('chat')}
-          disabled={busy}
+          disabled={busy || (TIER === 'prod' && !passcode)}
           className="w-full flex items-center justify-center gap-2.5 bg-slate-800/60 hover:bg-slate-800 text-slate-200 px-8 py-3.5 rounded-2xl font-semibold border border-slate-700/60 transition-all disabled:opacity-50 text-sm"
         >
           {pending === 'chat' ? <Loader2 className="w-5 h-5 animate-spin" /> : <MessageSquareText className="w-5 h-5" />}
