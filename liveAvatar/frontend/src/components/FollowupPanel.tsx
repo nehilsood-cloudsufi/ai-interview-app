@@ -6,9 +6,16 @@ interface FollowupPanelProps {
   scorecard?: ScorecardData | null;
 }
 
-// Compact recommendation card shown inside the summary overlay once the
-// follow-up recommendation arrives from the pipeline. Renders nothing when
-// there is no recommendation.
+/**
+ * Compact recommendation card shown inside the summary overlay once the
+ * follow-up recommendation arrives from the pipeline. Renders nothing when
+ * there is no recommendation.
+ *
+ * Mounted by SummaryPanel below the scorecard. `recommendation` (from the
+ * Coordinator) sets the headline - advance vs clarification-needed - the
+ * reason line, and the focus categories; `scorecard` is used only to map those
+ * category ids to their human-readable names for the chips.
+ */
 export function FollowupPanel({ recommendation, scorecard }: FollowupPanelProps) {
   if (!recommendation) return null;
 

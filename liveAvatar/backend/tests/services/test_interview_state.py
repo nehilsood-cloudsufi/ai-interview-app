@@ -90,32 +90,6 @@ def test_get_missing_returns_none():
     assert interview_state.get("does-not-exist") is None
 
 
-def test_get_by_token_roundtrip():
-    state = interview_state.create(make_profile(), DOMAIN)
-    assert interview_state.get_by_token(state.gateway_token) is state
-
-
-def test_get_by_token_missing_returns_none():
-    assert interview_state.get_by_token("bogus-token") is None
-
-
-def test_get_by_token_finds_correct_state_among_several():
-    first = interview_state.create(make_profile(company_name="First Co"), DOMAIN)
-    second = interview_state.create(make_profile(company_name="Second Co"), DOMAIN)
-    assert interview_state.get_by_token(second.gateway_token) is second
-    assert interview_state.get_by_token(first.gateway_token) is first
-
-
-def test_remove():
-    state = interview_state.create(make_profile(), DOMAIN)
-    interview_state.remove(state.interview_id)
-    assert interview_state.get(state.interview_id) is None
-
-
-def test_remove_missing_is_a_noop():
-    interview_state.remove("does-not-exist")
-
-
 def test_prune_older_than_removes_stale_keeps_fresh():
     fresh = interview_state.create(make_profile(), DOMAIN)
     stale = interview_state.create(make_profile(company_name="Stale Co"), DOMAIN)

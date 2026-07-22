@@ -1,12 +1,12 @@
 import dataclasses
-
-import pytest
 import json
 from datetime import datetime, timezone
 
 import httpx
+import pytest
 import respx
 
+from app.config import settings
 from app.models import TranscriptTurn
 from app.services import host_agent, interview_state
 from app.services.coordinator_agent import FollowupRecommendation
@@ -191,6 +191,23 @@ def test_get_domains(client):
     assert set(ids) == {"ai_ml", "cloud_infrastructure", "data_engineering", "frontier_tech"}
     for entry in body["domains"]:
         assert entry["title"]
+    # The picker preselects the server's default rather than the first entry.
+    assert body["default"] == settings.default_domain
+    assert body["default"] in ids
+
+
+def test_state_reports_done_only_at_end(client):
+    created = client.post("/api/interview", json={"domain": "ai_ml"}).json()
+    interview_id = created["interview_id"]
+
+    body = client.get(f"/api/interview/{interview_id}/state").json()
+    assert body["done"] is False
+
+    # Reaching END flips done - the avatar frontend auto-stops on this.
+    interview_state.get(interview_id).current_node_id = host_agent.END_NODE_ID
+    body = client.get(f"/api/interview/{interview_id}/state").json()
+    assert body["done"] is True
+    assert body["current_topic"] is None
 
 
 def test_create_interview_id_resolves_via_get_state(client):

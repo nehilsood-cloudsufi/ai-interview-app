@@ -24,7 +24,7 @@ cp .env.example .env   # then fill in your keys
 | `SCOUT_ENABLED`        | no       | Default `true`. Set `false` to skip the Data Scout's web research.       |
 | `HOST_STREAMING_ENABLED` | no     | Default `false`. Stream the Host's reply to HeyGen token-by-token.       |
 | `QUESTIONNAIRES_DIR`   | no       | Default `data/questionnaires`. Directory of per-domain `{domain}.yaml` question scripts. |
-| `DEFAULT_DOMAIN`       | no       | Default `ai_ml`. Domain `POST /api/interview` uses when no `{domain}` is given. |
+| `DEFAULT_DOMAIN`       | no       | Default `frontier_tech`. Domain `POST /api/interview` uses when no `{domain}` is given. |
 
 Gemini model names (`GEMINI_MODEL`, `GEMINI_PRO_MODEL`, their `*_FALLBACK` pins), the
 rubric path, and the Host's chat-mode prompt addendum (`HOST_CHAT_MODE_PROMPT`,
@@ -34,9 +34,11 @@ appended when the text-chat fallback drives a turn) are also env-overridable —
 ## Running
 
 ```bash
-# dev: gateway sessions need a public callback URL, e.g. a cloudflared tunnel
-cloudflared tunnel --url http://localhost:3001   # note the printed URL
-PUBLIC_BASE_URL=https://<tunnel-host> uv run uvicorn app.main:app --port 3001 --reload
+# dev: gateway sessions need a public callback URL — ngrok with a free static
+# domain is the recommended tunnel (see ../docs/ONBOARDING.md §4.2 for why, and
+# for alternatives + caveats). Text-chat mode needs NO tunnel at all.
+ngrok http 3001 --url=https://<your-domain>.ngrok-free.dev   # note the URL
+PUBLIC_BASE_URL=https://<your-domain>.ngrok-free.dev uv run uvicorn app.main:app --port 3001 --reload
 ```
 
 No one-time provisioning step — per-interview HeyGen resources (secret, LLM config,

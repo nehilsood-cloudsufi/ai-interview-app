@@ -55,6 +55,14 @@ function CategoryRow({ category }: { category: CategoryScoreData }) {
   );
 }
 
+/**
+ * The Signal Matrix scorecard block inside SummaryPanel (which mounts it once
+ * the pipeline's scorecard has been polled in). Shows the overall 0-100 score
+ * with an APPROVED/REJECTED badge, then one weighted progress bar per rubric
+ * category - categories the Evaluator couldn't judge show as "not covered" -
+ * each with an expandable list of evidence quotes. Renders nothing when
+ * `scorecard` is null (still scoring, or scoring soft-failed).
+ */
 export function ScorecardPanel({ scorecard }: ScorecardPanelProps) {
   if (!scorecard) return null;
 

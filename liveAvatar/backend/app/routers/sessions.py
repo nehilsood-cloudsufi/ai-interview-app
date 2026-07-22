@@ -1,3 +1,23 @@
+"""LiveAvatar session lifecycle endpoints (gateway mode only).
+
+A "session" is one live HeyGen avatar stream. Creating one is a multi-step
+LiveAvatar provisioning dance done server-side per interview: register a
+per-interview Custom LLM (a secret holding the interview's gateway_token,
+plus an LLM configuration pointing HeyGen back at our
+`/llm/{interview_id}/v1` endpoint) and a minimal context, then mint a
+session token the browser SDK uses to open the stream. Because HeyGen must
+be able to call back into our gateway, this only works when the interview
+already exists in memory (created via POST /api/interview) and
+`PUBLIC_BASE_URL` is set to a URL HeyGen can reach. There is no legacy
+non-gateway mode.
+
+The avatar/credits used depend on the interview's tier (chosen at interview
+creation): dev tier uses the free sandbox avatar with is_sandbox=True (~1-min
+HeyGen cap), prod tier uses PROD_AVATAR_ID with is_sandbox=False and a
+credit-bounded max_session_duration. Stopping tears the LiveAvatar resources
+back down best-effort. Same-origin UI endpoints - no auth.
+"""
+
 import logging
 
 import httpx
@@ -91,7 +111,6 @@ async def _create_gateway_session(body: CreateSessionRequest) -> dict:
             liveavatar_key,
             llm_config_id,
             context_id,
-            None,
             avatar_id=avatar_id,
             is_sandbox=is_sandbox,
             voice_id=voice_id,
@@ -123,6 +142,23 @@ async def _create_gateway_session(body: CreateSessionRequest) -> dict:
 
 @router.post("/api/session")
 async def create_session(body: CreateSessionRequest):
+    """Provision and open a LiveAvatar session for an existing interview.
+
+    The request body (`CreateSessionRequest`) must carry the `interview_id`
+    of an interview previously created via POST /api/interview; `avatar_id`
+    in the body is currently ignored (the avatar is chosen server-side from
+    the interview's tier). On success responds with a JSON object holding
+    `session_token` (the token the browser SDK uses to connect the stream)
+    and `session_id` (HeyGen's id for the stream), and stores the created
+    LiveAvatar resource ids on the interview state for later teardown.
+
+    Fails with 400 if `interview_id` is missing, and 503 if
+    `PUBLIC_BASE_URL` is not configured (HeyGen needs a public callback URL).
+    Beyond those, the underlying provisioning can return 404 if the
+    interview id is unknown, 503 if the interview is prod-tier but
+    PROD_AVATAR_ID is unset, the upstream LiveAvatar status code if one of
+    its API calls fails, or 500 for any other unexpected error.
+    """
     # Gateway-only: every session is created against a pre-existing interview
     # (registered via /api/interview) and requires this backend to be
     # externally reachable so HeyGen can call back into /llm/{id}/v1.
@@ -136,6 +172,24 @@ async def create_session(body: CreateSessionRequest):
 
 @router.post("/api/session/stop")
 async def stop_session_route(body: StopSessionRequest):
+    """Stop a running LiveAvatar session and tear down its resources.
+
+    The request body (`StopSessionRequest`) carries the `session_token` to
+    stop, plus optionally `context_id` and `interview_id` so the
+    per-interview LLM configuration, secret, and context provisioned at
+    creation can be cleaned up. If no `session_token` is provided this is a
+    no-op that responds `{"status": "ignored"}`. Otherwise it asks
+    LiveAvatar to stop the stream, decrements the active-session counter,
+    best-effort deletes the associated LiveAvatar resources (each failure is
+    logged, never surfaced), marks the interview state "finished", and
+    responds `{"status": "stopped", "api_status": <upstream status code>}`.
+    Returns 500 only if stopping the session itself raises.
+
+    Note this is the only path that decrements the concurrency counter -
+    sessions HeyGen ends on its own (hitting the duration cap) never call
+    here, so the counter can drift (see the module note in
+    app.services.session_state).
+    """
     try:
         if not body.session_token:
             return {"status": "ignored"}

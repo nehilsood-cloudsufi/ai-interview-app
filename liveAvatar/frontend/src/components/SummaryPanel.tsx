@@ -4,6 +4,7 @@ import { SESSIONS_SHEET_URL } from '../config';
 import { downloadTranscript } from '../utils/downloadTranscript';
 import { FollowupPanel } from './FollowupPanel';
 import { ScorecardPanel } from './ScorecardPanel';
+import { TranscriptBubble } from './TranscriptBubble';
 
 interface SummaryPanelProps {
   visible: boolean;
@@ -16,6 +17,9 @@ interface SummaryPanelProps {
   // included in the downloadable Markdown record.
   pipelineStatus?: PipelineStatus | null;
   scorecard?: ScorecardData | null;
+  // Plumbed in but DELIBERATELY not rendered in this panel - Scout findings
+  // reach the human only through the downloaded Markdown record
+  // (utils/downloadTranscript.ts). Do not "fix" this by rendering them here.
   insights?: ScoutFinding[] | null;
   recommendation?: FollowupRecommendation | null;
   onDismiss: () => void;
@@ -88,6 +92,16 @@ function PipelineStrip({ status }: { status: PipelineStatus }) {
   );
 }
 
+/**
+ * The end-of-interview results overlay (a full-screen modal). App mounts it
+ * always and flips `visible` on once finalize begins. It fills in
+ * progressively as the post-interview pipeline runs (polled into App by
+ * useInterviewSummary): the Gemini summary, a PipelineStrip of the
+ * scouting -> evaluating -> ready steps, the ScorecardPanel, an optional
+ * FollowupPanel recommendation, and the full transcript. The Download button
+ * writes the whole record - including the Scout findings that never render
+ * here - to Markdown via downloadTranscript.
+ */
 export function SummaryPanel({
   visible,
   isGenerating,
@@ -181,18 +195,7 @@ export function SummaryPanel({
               <p className="text-sm text-slate-500 italic">No transcript captured.</p>
             ) : (
               <div className="space-y-3">
-                {turns.map((turn, i) => (
-                  <div key={i} className="flex flex-col gap-1">
-                    <span
-                      className={`text-[11px] font-semibold uppercase tracking-wider ${
-                        turn.role === 'interviewer' ? 'text-emerald-400' : 'text-sky-400'
-                      }`}
-                    >
-                      {turn.role === 'interviewer' ? 'Interviewer' : 'Candidate'}
-                    </span>
-                    <p className="text-sm text-slate-200 leading-relaxed">{turn.text}</p>
-                  </div>
-                ))}
+                {turns.map((turn, i) => <TranscriptBubble key={i} turn={turn} />)}
               </div>
             )}
           </section>

@@ -15,6 +15,24 @@ interface UseChatInterviewOptions {
   onError?: (message: string | null) => void;
 }
 
+/**
+ * Drives the text-chat interview: the low-bandwidth fallback that talks to the
+ * exact same Host agent as the avatar, over POST /api/interview/{id}/chat.
+ * Used both for chat-from-start and for the one-way avatar→chat switch.
+ *
+ * Returns `{ turns, isSending, done, start, send }`:
+ * - `turns` — the running transcript (interviewer + candidate bubbles).
+ * - `isSending` — true while a request is in flight (send is a no-op then).
+ * - `done` — true once the Host reports the interview complete.
+ * - `start(initialTurns)` — enters chat mode: seeds the local greeting bubble
+ *   when there are no carried turns (chat-from-start), or keeps the transcript
+ *   already captured on a mid-session switch. Resets isSending/done.
+ * - `send(text)` — appends the candidate turn, POSTs it, then appends the
+ *   Host's reply and updates `done`; a failed request surfaces via `onError`
+ *   and leaves the interview open to retry.
+ *
+ * No polling or subscriptions — purely request/response driven by send().
+ */
 export function useChatInterview({ interviewId, onError }: UseChatInterviewOptions) {
   const [turns, setTurns] = useState<TranscriptTurn[]>([]);
   const [isSending, setIsSending] = useState(false);

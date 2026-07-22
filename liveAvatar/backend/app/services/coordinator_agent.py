@@ -28,6 +28,15 @@ WEAK_CATEGORY_MAX_POINTS = 40  # a category scoring <= this counts as weak
 
 @dataclass
 class FollowupRecommendation:
+    """The Coordinator's output for the human procurement lead. `kind` is
+    either "advance" (the overall met the advance bar, so a next-round
+    deep-dive is warranted) or "clarify" (a borderline overall paired with one
+    or more weak categories, so a clarification call is recommended); `reason`
+    is the human-readable justification built from the triggering rule; and
+    `focus_categories` lists the rubric category ids that should drive the
+    call's agenda. `evaluate_followup` returns None instead of this when
+    neither rule fires."""
+
     kind: Literal["advance", "clarify"]
     reason: str  # template-built from the triggering rule, human-readable
     focus_categories: list[str]  # rubric category ids driving the agenda

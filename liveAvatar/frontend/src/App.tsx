@@ -1,6 +1,7 @@
-import { useState } from 'react';
-import { MessageSquareText, Sparkles, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { MessageSquareText } from 'lucide-react';
 import { useLiveAvatarSession } from './hooks/useLiveAvatarSession';
+import { useAvatarStall } from './hooks/useAvatarStall';
 import { useNetworkQuality } from './hooks/useNetworkQuality';
 import { useConcurrencyPoll } from './hooks/useConcurrencyPoll';
 import { useSessionTimer } from './hooks/useSessionTimer';
@@ -9,8 +10,9 @@ import { useChatInterview } from './hooks/useChatInterview';
 import { useVendorProfile } from './hooks/useVendorProfile';
 import { StartScreen } from './components/StartScreen';
 import { ChatPanel } from './components/ChatPanel';
-import { NetworkIndicator } from './components/NetworkIndicator';
-import { ConcurrencyBadge } from './components/ConcurrencyBadge';
+import { InterviewHeader } from './components/InterviewHeader';
+import { NetworkBanner } from './components/NetworkBanner';
+import { AvatarStallBanner } from './components/AvatarStallBanner';
 import { SpeakingIndicator } from './components/SpeakingIndicator';
 import { AvatarVideoPanel } from './components/AvatarVideoPanel';
 import { LocalVideoPanel } from './components/LocalVideoPanel';
@@ -19,10 +21,22 @@ import { ProfileCard } from './components/ProfileCard';
 import { SummaryPanel } from './components/SummaryPanel';
 import { SessionControls } from './components/SessionControls';
 import { ErrorToast } from './components/ErrorToast';
-import { formatTime } from './utils/formatTime';
 import { SHOW_SELF_VIEW } from './config';
 import type { InterviewMode } from './types';
 
+/**
+ * Root composition for the interview experience. Renders one of two views:
+ * the StartScreen (pick avatar vs. text-chat mode and mint an interview_id)
+ * and the interview room. The room runs in one of two modes — avatar (live
+ * HeyGen session) or text chat — and supports a ONE-WAY switch from avatar to
+ * chat (never back), carrying the captured transcript into the chat so the
+ * same interview continues rather than being finalized early.
+ *
+ * This component is composition-only: it wires the hooks (session, chat,
+ * profile, summary, network, concurrency, timer) to the presentational
+ * components and holds just the small amount of view/mode state that
+ * coordinates them.
+ */
 function App() {
   const [error, setError] = useState<string | null>(null);
   // Two views: the start screen (pick a mode) and the interview room.
@@ -81,6 +95,32 @@ function App() {
   const showNetworkBanner =
     mode === 'avatar' && status === 'connected' && networkQuality === 'poor' && !networkBannerDismissed;
 
+  // Interview reached END while the avatar session is still live: give the
+  // closing line time to finish speaking, then stop the session ourselves
+  // (normal stop path -> finalize -> summary). Without this, every further
+  // utterance re-spoke the canned closing in a loop (seen live 2026-07-22)
+  // while prod-tier credits kept burning.
+  useEffect(() => {
+    if (!(mode === 'avatar' && status === 'connected' && vendorProfile.interviewDone)) return;
+    const timer = setTimeout(() => stopSession(), 8000);
+    return () => clearTimeout(timer);
+    // stopSession is recreated per render but stable in behavior; deps kept
+    // to the actual trigger conditions so the timer isn't re-armed each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, status, vendorProfile.interviewDone]);
+
+  // Turn-taking stall: HeyGen can drop the avatar's cancelled reply and wait
+  // for fresh user speech - both sides then sit silent. After 20s of neither
+  // party speaking, nudge the user (speaking again resumes the interview).
+  // Dismissal lasts only for the current stall episode; it re-arms once
+  // someone speaks.
+  const avatarStalled = useAvatarStall(mode === 'avatar' && status === 'connected', speakingState);
+  const [stallBannerDismissed, setStallBannerDismissed] = useState(false);
+  useEffect(() => {
+    if (!avatarStalled) setStallBannerDismissed(false);
+  }, [avatarStalled]);
+  const showStallBanner = avatarStalled && !stallBannerDismissed && !showNetworkBanner;
+
   // Card is visible for the whole interview (session/chat active) once the
   // first poll response has arrived - gated by view/mode via each render
   // branch below (avatar: only once connected; chat: only in chat mode).
@@ -107,52 +147,14 @@ function App() {
     // chat mode 2026-07-20) instead of letting the min-h-0 chain scroll it.
     <div className="h-screen bg-slate-950 text-white flex flex-col overflow-hidden">
       <div className="flex-1 flex flex-col h-screen overflow-hidden bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-slate-950 to-black">
-        {/* Header */}
-        <div className="p-4 md:px-8 md:py-5 flex justify-between items-center shrink-0 border-b border-slate-800/60">
-          <div className="flex items-center gap-4 min-w-0">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 to-sky-500 flex items-center justify-center shrink-0">
-                <Sparkles className="w-4.5 h-4.5 text-white" />
-              </div>
-              <div className="min-w-0">
-                <h1 className="text-base md:text-lg font-bold leading-tight truncate">Vendor Interview</h1>
-                <p className="text-xs text-slate-500 leading-tight truncate">
-                  {mode === 'chat' ? 'Text chat · ' : ''}Hosted by Noor
-                </p>
-              </div>
-            </div>
-            {mode === 'avatar' && <NetworkIndicator networkQuality={networkQuality} />}
-          </div>
-          <div className="flex items-center gap-3 shrink-0">
-            <ConcurrencyBadge count={concurrencyCount} />
-            {mode === 'avatar' && status === 'connected' && (
-              <span
-                className={`font-mono px-3 py-1.5 rounded-lg text-sm font-semibold tracking-wider shadow-inner border ${
-                  remainingSeconds !== null && remainingSeconds <= 60
-                    ? 'text-amber-400 bg-amber-500/10 border-amber-500/20'
-                    : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
-                }`}
-                title={remainingSeconds !== null ? 'Time remaining' : 'Session time'}
-              >
-                {remainingSeconds !== null ? `${formatTime(remainingSeconds)} left` : formatTime(sessionDuration)}
-              </span>
-            )}
-            {mode === 'avatar' && (
-              <div className="flex items-center gap-2.5 bg-slate-800/50 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-700/50">
-                <div
-                  className={`w-2.5 h-2.5 rounded-full shadow-sm ${
-                    status === 'connected'
-                      ? 'bg-emerald-500 shadow-emerald-500/50'
-                      : status === 'connecting'
-                        ? 'bg-amber-500 animate-pulse shadow-amber-500/50'
-                        : 'bg-rose-500 shadow-rose-500/50'
-                  }`}
-                />
-                <span className="text-xs font-semibold uppercase tracking-wider text-slate-300">{status}</span>
-              </div>
-            )}
-          </div>
-        </div>
+        <InterviewHeader
+          mode={mode}
+          status={status}
+          networkQuality={networkQuality}
+          concurrencyCount={concurrencyCount}
+          remainingSeconds={remainingSeconds}
+          sessionDuration={sessionDuration}
+        />
 
         {mode === 'chat' ? (
           /* Text-chat column */
@@ -214,27 +216,12 @@ function App() {
 
             {/* Poor-network auto-suggest */}
             {showNetworkBanner && (
-              <div className="px-4 md:px-8 shrink-0">
-                <div className="mx-auto max-w-2xl flex items-center justify-between gap-3 bg-amber-500/10 border border-amber-500/25 rounded-xl px-4 py-2.5">
-                  <span className="text-sm text-amber-200">Network looks weak — switch to text chat?</span>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      onClick={switchToChat}
-                      className="flex items-center gap-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-100 text-sm font-semibold px-3 py-1.5 rounded-lg transition-colors"
-                    >
-                      <MessageSquareText className="w-4 h-4" />
-                      Switch to chat
-                    </button>
-                    <button
-                      onClick={() => setNetworkBannerDismissed(true)}
-                      className="p-1.5 rounded-lg text-amber-300/80 hover:text-amber-100 hover:bg-amber-500/20 transition-colors"
-                      aria-label="Dismiss"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              </div>
+              <NetworkBanner onSwitchToChat={switchToChat} onDismiss={() => setNetworkBannerDismissed(true)} />
+            )}
+
+            {/* Stalled-conversation nudge (see useAvatarStall) */}
+            {showStallBanner && (
+              <AvatarStallBanner onSwitchToChat={switchToChat} onDismiss={() => setStallBannerDismissed(true)} />
             )}
 
             {/* Controls */}

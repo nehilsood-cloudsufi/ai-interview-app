@@ -1,3 +1,18 @@
+"""The in-memory registry of live interviews.
+
+One `InterviewState` per interview holds everything the live interview and the
+post-interview pipeline need: the vendor profile, the running turn history, the
+current position in the domain questionnaire, follow-up accounting, Scout
+findings, the set of manually-corrected profile fields, and the eventual
+pipeline status / scorecard / recommendation. States live in the module-level
+`_interviews` dict for the life of the process (no database), so a backend
+restart drops all in-flight interviews - acceptable for a POC. `create` prunes
+anything older than 6 hours on every call so abandoned interviews don't
+accumulate; there is no explicit remove - the pipeline runs to completion and
+the record is persisted to `transcript_store`, then the state is left to be
+pruned by age."""
+
+import asyncio
 import secrets
 import uuid
 from dataclasses import dataclass, field
@@ -22,6 +37,11 @@ PipelineStatus = Literal["interviewed", "scouting", "evaluating", "ready", "fail
 
 @dataclass
 class VendorProfile:
+    """The vendor's identity details, captured conversationally by the Host
+    during onboarding (there is no intake form) and later correctable by the
+    vendor via PATCH /api/interview/{id}/profile. All fields default to empty
+    so `create` can construct one with no arguments before anything is known."""
+
     # Filled in by conversation (Host agent), not at interview creation -
     # interview_state.create(VendorProfile()) must work with no args.
     company_name: str = ""
@@ -31,6 +51,10 @@ class VendorProfile:
 
 @dataclass
 class ScoutFinding:
+    """One item of post-interview company research produced by the Scout agent:
+    a topic, a short summary, and the grounding source URL (None when the
+    finding is not tied to a single citable page)."""
+
     topic: str
     summary: str
     source_url: str | None
@@ -38,6 +62,18 @@ class ScoutFinding:
 
 @dataclass
 class InterviewState:
+    """Everything tracked for a single interview from creation through scoring.
+
+    Created by `create` with the identity/routing fields set (`interview_id`,
+    `gateway_token`, `domain`, `tier`, the questionnaire's start node) and
+    mutated in place thereafter: `host_agent` appends `turns`, advances
+    `current_node_id`, and updates `followup_count`/`vendor_profile`;
+    `pipeline` fills `scout_findings`, `scorecard`, `recommendation`, and drives
+    `pipeline_status`. The HeyGen resource ids (`heygen_session_id`,
+    `llm_config_id`, `secret_id`, `context_id`) are recorded for later teardown.
+    Most fields carry defaults so tests can construct a state directly without
+    going through `create`. See the inline comments for the per-field nuances."""
+
     interview_id: str
     gateway_token: str
     vendor_profile: VendorProfile
@@ -81,6 +117,18 @@ class InterviewState:
     pipeline_status: PipelineStatus | None = None
     scorecard: "Scorecard | None" = None
     recommendation: "FollowupRecommendation | None" = None
+    # Serializes host_agent.handle_turn/stream_turn per interview. HeyGen's
+    # VAD can fire several gateway calls near-simultaneously when it splits
+    # one flowing answer into fragments (seen live 2026-07-22: two turns
+    # processed concurrently on the same node); without this, both turns read
+    # the same current_node_id and the script double-advances.
+    turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+    # Monotonic counter of gateway utterance requests, bumped by llm_gateway
+    # per real user turn. A turn whose recorded seq no longer equals this head
+    # has been superseded by a newer speech fragment and must not run (its
+    # reply will never be spoken). Our own bookkeeping - request.is_disconnected
+    # proved unreliable through the tunnel/uvicorn stack (2026-07-22).
+    request_seq: int = 0
 
 
 _interviews: dict[str, InterviewState] = {}
@@ -92,6 +140,14 @@ def create(
     tier: Literal["dev", "prod"] = "dev",
     max_session_seconds: int | None = None,
 ) -> InterviewState:
+    """Register a fresh interview and return its `InterviewState`.
+
+    Mints the `interview_id` and the `gateway_token` HeyGen will present on
+    its Custom LLM callbacks, seeds `current_node_id` from the domain
+    questionnaire's start node, and stores the state in `_interviews`. Prunes
+    stale interviews first (see `prune_older_than`) so the registry stays
+    bounded. The `interview_config` import is deferred to call time to avoid an
+    import cycle."""
     from app.services.interview_config import get_start_node_id
 
     prune_older_than()
@@ -109,21 +165,16 @@ def create(
 
 
 def get(interview_id: str) -> InterviewState | None:
+    """Look up a live interview by id, or None if it was never created or has
+    already been pruned."""
     return _interviews.get(interview_id)
 
 
-def get_by_token(token: str) -> InterviewState | None:
-    for state in _interviews.values():
-        if secrets.compare_digest(state.gateway_token, token):
-            return state
-    return None
-
-
-def remove(interview_id: str) -> None:
-    _interviews.pop(interview_id, None)
-
-
 def prune_older_than(hours: int = 6) -> int:
+    """Drop every interview created more than `hours` ago and return how many
+    were removed. Called from `create` on each new interview so abandoned
+    states (the frontend closed, the pipeline never ran) can't accumulate in
+    memory for the life of the process."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     stale_ids = [interview_id for interview_id, state in _interviews.items() if state.created_at < cutoff]
     for interview_id in stale_ids:

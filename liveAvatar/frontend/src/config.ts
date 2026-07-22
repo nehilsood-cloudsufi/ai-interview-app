@@ -1,3 +1,9 @@
+/**
+ * Frontend runtime + build-time configuration. Collects the backend API base,
+ * the URL-derived avatar tier, and the Vite build flags in one place so the
+ * rest of the app imports named constants rather than reading import.meta.env.
+ */
+
 export const API_URL = import.meta.env.PROD ? '' : (import.meta.env.VITE_API_URL || 'http://localhost:3001');
 
 // Avatar tier, chosen by URL path: /prod → production avatar (passcode-gated,

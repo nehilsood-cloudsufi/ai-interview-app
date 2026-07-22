@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import json
 
@@ -202,28 +203,29 @@ async def test_followup_on_incomplete_answer(patch_settings):
 
 
 @respx.mock
-async def test_force_advance_when_followups_exceed_max(patch_settings):
+async def test_incomplete_answer_stays_on_node_even_past_max_followups(patch_settings):
+    # The follow-up-budget force-advance is GONE: repeated non-answers (asides,
+    # repairs, fragments) must never consume script questions the vendor
+    # hasn't heard answered (seen live 2026-07-22). Pacing is time's job -
+    # time pressure upgrades incomplete answers, the wrap-up ends the script.
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     respx.post(CHAT_URL).mock(
-        return_value=gemini_response(reply="Alright, let's move on.", answer_complete=False)
+        return_value=gemini_response(reply="No rush - what does the company focus on?", answer_complete=False)
     )
     prior_turns = [
         TranscriptTurn(role="candidate", text="We do stuff."),
         TranscriptTurn(role="interviewer", text="Could you expand on that?"),
     ]
-    state = make_state(followup_count=1, turns=list(prior_turns))
+    state = make_state(followup_count=1, turns=list(prior_turns))  # already at max_followups
     questionnaire = make_questionnaire()
 
     result = await handle_turn(state, "Just, you know, stuff.", questionnaire, make_rubric())
 
-    # Advanced exactly as if complete, via node.next.
-    assert result.reply == "Alright, let's move on."
-    assert result.answer_complete is True
-    assert result.completed_question is questionnaire["company_overview"]
-    assert "We do stuff." in result.answer_text
-    assert "Just, you know, stuff." in result.answer_text
-    assert state.current_node_id == "ai_ml_depth"
-    assert state.followup_count == 0
+    assert result.reply == "No rush - what does the company focus on?"
+    assert result.answer_complete is False
+    assert result.completed_question is None
+    assert state.current_node_id == "company_overview"  # did NOT advance
+    assert state.followup_count == 2  # counter still tracks the exchanges
     assert len(state.turns) == 4
 
 
@@ -689,8 +691,8 @@ def test_host_agent_settings_are_patchable(patch_settings):
 
 @respx.mock
 async def test_handle_turn_avatar_mode_omits_chat_prompt(patch_settings):
-    # Default mode ("avatar") must render byte-identical to before mode
-    # existed - no chat-mode text anywhere in the system content.
+    # Default mode ("avatar") must not carry any chat-mode text - each mode
+    # appends only its own suffix.
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
     state = make_state()
@@ -699,6 +701,135 @@ async def test_handle_turn_avatar_mode_omits_chat_prompt(patch_settings):
 
     system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
     assert settings.host_chat_mode_prompt not in system_content
+
+
+@respx.mock
+async def test_handle_turn_avatar_mode_appends_avatar_prompt(patch_settings):
+    # Avatar mode carries the VAD-fragment guidance so an unfinished spoken
+    # fragment ("...We provide" / "and") isn't judged a complete answer.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_avatar_mode_prompt in system_content
+
+
+@respx.mock
+async def test_handle_turn_chat_mode_omits_avatar_prompt(patch_settings):
+    # Typed chat input is never VAD-fragmented - the avatar-mode guidance
+    # must not leak into chat mode (it would fight the terse-answers rule).
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric(), mode="chat")
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_avatar_mode_prompt not in system_content
+
+
+@respx.mock
+async def test_cancelled_turn_is_skipped_before_the_gemini_call(patch_settings):
+    # HeyGen cancels a request the moment a newer speech fragment supersedes
+    # it. A turn whose request is already gone must be skipped entirely:
+    # no Gemini call, no state mutation, None returned.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    async def already_cancelled():
+        return True
+
+    result = await handle_turn(
+        state, "I", make_questionnaire(), make_rubric(), is_cancelled=already_cancelled
+    )
+
+    assert result is None
+    assert not route.called
+    assert state.current_node_id == "company_overview"
+    assert state.turns == []
+    assert state.followup_count == 0
+
+
+@respx.mock
+async def test_turn_cancelled_during_gemini_call_discards_outcome(patch_settings):
+    # Cancellation landing while Gemini is answering: the reply will never be
+    # spoken, so the outcome must be discarded before any state mutation -
+    # "if the vendor never heard it, it didn't happen".
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    checks = iter([False, True])  # pre-check passes, post-Gemini check reports cancelled
+
+    async def cancelled_mid_call():
+        return next(checks)
+
+    result = await handle_turn(
+        state, "work as an engineer at", make_questionnaire(), make_rubric(), is_cancelled=cancelled_mid_call
+    )
+
+    assert result is None
+    assert route.call_count == 1
+    assert state.current_node_id == "company_overview"
+    assert state.turns == []
+    assert state.followup_count == 0
+
+
+@respx.mock
+async def test_cancelled_stream_turn_is_skipped_before_the_gemini_call(patch_settings):
+    # Streaming counterpart of the buffered skip: a superseded streaming turn
+    # yields nothing, makes no Gemini call, and leaves state untouched.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+    outcome = host_agent.StreamedTurn()
+
+    async def already_cancelled():
+        return True
+
+    chunks = [
+        text
+        async for text in host_agent.stream_turn(
+            state, "I", make_questionnaire(), make_rubric(), outcome, is_cancelled=already_cancelled
+        )
+    ]
+
+    assert chunks == []
+    assert outcome.result is None
+    assert not route.called
+    assert state.current_node_id == "company_overview"
+    assert state.turns == []
+
+
+@respx.mock
+async def test_concurrent_turns_serialize_per_interview(patch_settings):
+    # HeyGen's VAD can fire overlapping gateway calls when it splits one
+    # flowing answer into fragments (seen live 2026-07-22: two turns processed
+    # concurrently on the same node). state.turn_lock must serialize them so
+    # the second turn sees the node the first advanced to - never the same
+    # node twice, never a skipped question.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def slow_response(request):
+        await asyncio.sleep(0.05)  # keep the first turn in-flight while the second arrives
+        return gemini_response()
+
+    respx.post(CHAT_URL).mock(side_effect=slow_response)
+    state = make_state()  # starts at company_overview
+    questionnaire = make_questionnaire()
+
+    first, second = await asyncio.gather(
+        handle_turn(state, "We build ML pipelines. We provide", questionnaire, make_rubric()),
+        handle_turn(state, "solutions to every problem our clients have.", questionnaire, make_rubric()),
+    )
+
+    completed = {result.completed_question.id for result in (first, second)}
+    assert completed == {"company_overview", "ai_ml_depth"}
+    assert state.current_node_id == "closing"
 
 
 @respx.mock
@@ -754,6 +885,51 @@ def _clocked_state(seconds_elapsed: float, max_session_seconds: int = 300) -> In
     state.max_session_seconds = max_session_seconds
     state.first_turn_at = datetime.now(timezone.utc) - timedelta(seconds=seconds_elapsed)
     return state
+
+
+@respx.mock
+async def test_time_generous_prompt_when_ample_time_remains(patch_settings):
+    # Fresh clocked interview (600s booked, just started): remaining is well
+    # above host_time_generous_seconds (180), so the Host is told to dig
+    # deeper on brief answers instead of racing through the script.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = _clocked_state(seconds_elapsed=10, max_session_seconds=600)
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_time_generous_prompt in system_content
+    assert settings.host_time_pressure_prompt not in system_content
+
+
+@respx.mock
+async def test_no_time_generous_prompt_without_a_clock(patch_settings):
+    # Unclocked interview (dev tier / chat): there is no session clock, so
+    # neither pacing prompt applies.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_time_generous_prompt not in system_content
+
+
+@respx.mock
+async def test_no_time_generous_prompt_when_clock_runs_low(patch_settings):
+    # 300s booked, 150s elapsed -> 150s remaining: below the generous
+    # threshold but above time pressure - neither pacing prompt applies.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = _clocked_state(seconds_elapsed=150, max_session_seconds=300)
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_time_generous_prompt not in system_content
+    assert settings.host_time_pressure_prompt not in system_content
 
 
 @respx.mock

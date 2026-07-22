@@ -1,3 +1,9 @@
+/**
+ * Shared TypeScript types for the frontend: session/UI enums plus the
+ * request/response shapes for the backend interview, chat, profile, and
+ * transcript endpoints (mirroring the backend Pydantic models).
+ */
+
 export type SessionStatus = 'disconnected' | 'connecting' | 'connected';
 export type SpeakingState = 'idle' | 'user_speaking' | 'avatar_speaking' | 'processing';
 export type NetworkQuality = 'excellent' | 'good' | 'poor' | 'unknown';
@@ -27,6 +33,9 @@ export interface DomainInfo {
 
 export interface DomainsResponse {
   domains: DomainInfo[];
+  // The server's default domain id (settings.default_domain) — the picker
+  // preselects it rather than the first list entry.
+  default: string;
 }
 
 // Vendor profile as returned inside GET /api/interview/{id}/state
@@ -93,6 +102,9 @@ export interface FinalizeTranscriptResponse {
 export interface InterviewStateResponse {
   status: 'created' | 'active' | 'finished';
   current_topic: string | null;
+  // True once the script reached END (closing spoken/being spoken). The
+  // avatar view auto-stops the session shortly after this flips.
+  done: boolean;
   insights: ScoutFinding[];
   updated_at: string;
   pipeline_status: PipelineStatus | null;
@@ -108,9 +120,9 @@ export interface ChatResponse {
 }
 
 // PATCH /api/interview/{id}/profile response (backend UpdateProfileResponse).
-// manually_edited_fields is the full set of fields ever manually corrected -
-// unused by the frontend today, but kept for shape fidelity with the backend.
+// The wire response also carries manually_edited_fields (the full set of
+// fields ever manually corrected), but nothing in the frontend reads it, so
+// it's intentionally not typed here.
 export interface UpdateProfileResponse {
   vendor_profile: VendorProfile;
-  manually_edited_fields: string[];
 }

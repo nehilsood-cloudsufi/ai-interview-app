@@ -1,3 +1,18 @@
+"""Central configuration: every env var, secret, and tuning constant the app
+reads lives on the frozen `Settings` dataclass instantiated as the module-level
+`settings` singleton, so nothing elsewhere calls `os.getenv` directly.
+
+`backend/.env` is loaded first with override=True, so values committed to
+`.env` win over anything already exported in the shell (this avoids a stale
+`GEMINI_API_KEY` in the environment silently shadowing the intended one). Each
+field's `default_factory` reads its env var at construction time; fields
+without a factory are fixed constants (not env-overridable). Secrets/URLs
+(API keys, `PUBLIC_BASE_URL`, avatar ids, `GCS_BUCKET`) come from the
+environment, while the long prompt strings and timing thresholds are defaults
+here that can still be overridden where a factory exposes them. See
+`backend/.env.example` for the env vars and CLAUDE.md for how each is used.
+"""
+
 import os
 from dataclasses import dataclass, field
 
@@ -16,6 +31,15 @@ SANDBOX_AVATAR_ID = "dd73ea75-1218-4ef3-92ce-606d5f7fbc0a"
 
 @dataclass(frozen=True)
 class Settings:
+    """All application configuration in one immutable place; the module
+    exposes a single instance as `settings`. Grouped by concern via the
+    section comments below: core LiveAvatar/Gemini credentials and URLs, the
+    production-tier avatar knobs, the time-aware wrap-up thresholds, the Host
+    and Evaluator system prompts, and the transcript/summary/Scout settings.
+    Frozen so config is read-only at runtime; each `field(default_factory=...)`
+    pulls from the environment at startup (env-overridable), while plain
+    defaults are fixed constants."""
+
     liveavatar_api_key: str | None = field(default_factory=lambda: os.getenv("LIVEAVATAR_API_KEY"))
     gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     liveavatar_base_url: str = "https://api.liveavatar.com/v1"
@@ -89,32 +113,30 @@ class Settings:
     # appends the vendor profile and current question as structured blocks
     # after this text.
     host_system_prompt: str = (
-        "You are a professional, friendly AI host conducting a structured "
-        "vendor-qualification interview on behalf of a procurement team. You "
-        "are given the vendor's profile, the single current question to cover, "
-        "and the conversation so far. Phrase the question naturally and "
-        "conversationally - never read it verbatim like a script, do not "
-        "output markdown, and keep each reply to a few spoken sentences. "
-        "Judge whether the vendor's latest message fully answers the current "
-        "question: if it does, acknowledge it briefly and then, IN THE SAME "
-        "reply, naturally ask the next question given to you (or deliver a "
-        "warm closing if there is no next question). Never end a reply with "
-        "a bare acknowledgment - the vendor must always hear a question or a "
-        "closing, or the conversation stalls. Keep acknowledgments to a few "
-        "words and never repeat or re-confirm information that was already "
-        "confirmed earlier in the conversation - a human interviewer says "
-        "things once. If the answer is not complete, "
-        "ask one focused follow-up. The interview flow itself is a fixed "
-        "script controlled by the system, not by you - report your judgement "
-        "only through the JSON fields described below.\n\n"
-        "Always respond with a single JSON object of exactly this shape: "
-        '{"reply": "<what you say to the vendor next>", '
-        '"answer_complete": <true if the current question is fully answered>, '
+        "You are Noor, a friendly professional host running a structured "
+        "vendor-qualification interview. You are given the vendor's profile, "
+        "the current question, and the conversation so far. Speak naturally: "
+        "no markdown, a few short sentences, never re-confirm what was "
+        "already confirmed.\n\n"
+        "Judge the vendor's latest message:\n"
+        "- Fully answers the current question -> acknowledge in a few words "
+        "and, in the same reply, ask the next question given to you (or give "
+        "a warm closing if there is none). They must always hear a question "
+        "or a closing here.\n"
+        "- A genuine but thin attempt -> ask one focused follow-up.\n"
+        "- Not an answer (a correction, a question to you, small talk, an "
+        "unfinished fragment) -> reply in one short human sentence (accept "
+        "corrections, defer off-topic questions until after the interview), "
+        "then return to the current question. Never attach the next question "
+        "here.\n\n"
+        "The script is controlled by the system, not you - report your "
+        "judgement only via the JSON. Always respond with a single JSON "
+        'object: {"reply": "<what you say next>", '
+        '"answer_complete": <true only if the current question is fully answered>, '
         '"profile_updates": {"company_name": <string or null>, '
         '"contact_name": <string or null>, '
-        '"contact_role": <string or null>}}. Set each profile_updates field '
-        "to the vendor's own words only when they just stated or corrected "
-        "that detail this turn; otherwise leave it null."
+        '"contact_role": <string or null>}}. Set a profile_updates field '
+        "only when the vendor just stated or corrected it; otherwise null."
     )
     # Spoken by the Host without an LLM call once the interview has already
     # reached the END node.
@@ -139,6 +161,48 @@ class Settings:
             "earlier, infer it and confirm it instead of re-asking (for "
             "example: 'You mentioned GCP earlier - do you support other "
             "clouds too?').",
+        )
+    )
+    # How long the gateway lets an utterance "settle" before processing it:
+    # HeyGen's VAD fires on short pauses, so a fragment is only treated as
+    # final if no newer fragment supersedes it within this window. The beat a
+    # human interviewer waits before answering. Trade-off: adds this much
+    # latency to every genuine turn (HeyGen's own read timeout is 10s).
+    host_utterance_settle_seconds: float = field(
+        default_factory=lambda: float(os.getenv("HOST_UTTERANCE_SETTLE_SECONDS", "0.5"))
+    )
+    # With more than this many seconds left on a clocked interview, the Host
+    # is told to dig deeper instead of accepting brief answers - the inverse
+    # of host_time_pressure_seconds, so a 5-minute booking actually spends
+    # its time interviewing (observed 2026-07-22: a 5-min session finished in
+    # 3 because every surface answer was accepted and the script just ended).
+    host_time_generous_seconds: int = field(
+        default_factory=lambda: int(os.getenv("HOST_TIME_GENEROUS_SECONDS", "180"))
+    )
+    # Appended to the system prompt while time is generous (see above).
+    host_time_generous_prompt: str = field(
+        default_factory=lambda: os.getenv(
+            "HOST_TIME_GENEROUS_PROMPT",
+            "There is ample time remaining in this interview. When the "
+            "vendor's answer is brief or stays at the surface, do not accept "
+            "it immediately: mark it incomplete and ask one focused follow-up "
+            "that digs a level deeper - a concrete example, a how, or a why. "
+            "Move on once they have added real substance.",
+        )
+    )
+    # Appended to host_system_prompt only in avatar mode. HeyGen's VAD splits
+    # flowing speech at pauses, so one spoken answer can arrive as several
+    # partial utterances ("Actually, we are working on AI services. We
+    # provide" / "and" / ...). Judging such a fragment as a complete answer
+    # burns script questions the vendor never heard - seen live 2026-07-22:
+    # five questions consumed in 46 seconds.
+    host_avatar_mode_prompt: str = field(
+        default_factory=lambda: os.getenv(
+            "HOST_AVATAR_MODE_PROMPT",
+            "The vendor is speaking; transcription may cut them off "
+            "mid-thought or mangle names. A fragment that ends mid-sentence "
+            "is not an answer - just invite them to continue ('Go on, I'm "
+            "listening.'). Accept name corrections the first time.",
         )
     )
 

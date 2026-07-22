@@ -33,13 +33,12 @@ from app.services import gemini_client
 from app.services.interview_config import RubricCategory
 from app.services.interview_state import ScoutFinding
 from app.services.llm_json import parse_llm_json
+from app.services.transcript_render import render_transcript
 
 logger = logging.getLogger(__name__)
 
 # overall >= this -> Scorecard.status = "APPROVED", else "REJECTED".
 STATUS_THRESHOLD = 70
-
-_ROLE_LABELS = {"interviewer": "Interviewer", "candidate": "Candidate"}
 
 # Strict structured output for the holistic scoring call (same rationale as
 # host_agent._TURN_SCHEMA: prevents malformed-JSON completions). `value`
@@ -68,6 +67,14 @@ _SCORE_SCHEMA = {
 
 @dataclass
 class CategoryScore:
+    """One rubric category's result on the final scorecard. `value` is the
+    label the LLM chose from that category's fixed `value_options`, and
+    `points` is that label resolved to its rubric points; both are None when
+    the category was never discussed (or the LLM's label failed to resolve),
+    which excludes the category from the overall. `weight` is copied off the
+    rubric so the overall's renormalization can happen downstream, and
+    `evidence` holds the supporting quotes the LLM cited."""
+
     id: str
     name: str
     weight: float
@@ -78,22 +85,22 @@ class CategoryScore:
 
 @dataclass
 class Scorecard:
+    """The full evaluation result: one `CategoryScore` per rubric category (in
+    rubric order), the 0-100 weighted-points `overall` (None until at least
+    one category has data), and the `status` derived from it in code -
+    "APPROVED" at or above `STATUS_THRESHOLD` else "REJECTED", and None while
+    `overall` is still None."""
+
     categories: list[CategoryScore]  # one per rubric category, rubric order
     overall: float | None  # None until any category has data, 0-100
     status: Literal["APPROVED", "REJECTED"] | None  # None until overall is known
 
 
-def _render_transcript(turns: list[TranscriptTurn]) -> str:
-    lines = []
-    for turn in turns:
-        label = _ROLE_LABELS.get(turn.role, turn.role.title())
-        text = turn.text.strip()
-        if text:
-            lines.append(f"{label}: {text}")
-    return "\n".join(lines)
-
-
 def _render_system_content(rubric: dict[str, RubricCategory]) -> str:
+    """Build the scoring system message: the base evaluator prompt followed by
+    one line per rubric category giving its id, name, description, and the
+    exact allowed labels the LLM must choose among (the closed `value_options`
+    label set) - so the model can only pick a valid categorical value."""
     lines = [settings.evaluator_system_prompt, "", "Rubric categories to score:"]
     for category in rubric.values():
         labels = ", ".join(option.label for option in category.value_options)
@@ -102,6 +109,10 @@ def _render_system_content(rubric: dict[str, RubricCategory]) -> str:
 
 
 def _render_findings(scout_findings: list[ScoutFinding]) -> str:
+    """Render the Data Scout's independent research as a labelled block for the
+    user message, so the Evaluator can weigh the vendor's claims against
+    external findings. Each finding contributes its topic and summary, plus its
+    source URL when one is present."""
     lines = ["Independent research findings (from internet, not from the vendor):"]
     for finding in scout_findings:
         lines.append(f"- Topic: {finding.topic}")
@@ -134,7 +145,7 @@ async def score_interview(
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured; cannot score the interview.")
 
-    transcript_text = _render_transcript(turns)
+    transcript_text = render_transcript(turns)
     if not transcript_text:
         raise ValueError("Transcript is empty; nothing to score.")
 
