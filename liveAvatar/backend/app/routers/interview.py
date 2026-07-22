@@ -54,7 +54,6 @@ router = APIRouter()
 # field sets None.
 _PROFILE_FIELD_LABELS = {
     "company_name": "Company name",
-    "website": "Website",
     "contact_name": "Contact name",
     "contact_role": "Contact role",
 }
@@ -123,11 +122,10 @@ async def get_interview_state(interview_id: str):
         "scorecard": dataclasses.asdict(state.scorecard) if state.scorecard is not None else None,
         "recommendation": dataclasses.asdict(state.recommendation) if state.recommendation is not None else None,
         "vendor_profile": {
-            # Serializes the profile's four fields (company_name, website,
+            # Serializes the profile's three fields (company_name,
             # contact_name, contact_role); matches the finalize route's
             # enrichment.
             "company_name": profile.company_name,
-            "website": profile.website,
             "contact_name": profile.contact_name,
             "contact_role": profile.contact_role,
         },
@@ -203,7 +201,6 @@ async def update_profile(interview_id: str, body: UpdateProfileRequest):
     return {
         "vendor_profile": {
             "company_name": profile.company_name,
-            "website": profile.website,
             "contact_name": profile.contact_name,
             "contact_role": profile.contact_role,
         },

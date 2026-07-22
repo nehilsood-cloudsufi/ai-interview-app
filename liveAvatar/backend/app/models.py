@@ -113,7 +113,6 @@ class DomainsResponse(BaseModel):
 
 class VendorProfileModel(BaseModel):
     company_name: str
-    website: str | None
     contact_name: str
     contact_role: str | None
 
@@ -148,7 +147,6 @@ class UpdateProfileRequest(BaseModel):
     # None = "not provided" (leave alone); a provided string (even empty
     # after strip) IS applied and locks the field against the LLM.
     company_name: str | None = None
-    website: str | None = None
     contact_name: str | None = None
     contact_role: str | None = None
 

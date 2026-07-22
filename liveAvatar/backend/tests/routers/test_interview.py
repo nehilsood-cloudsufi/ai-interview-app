@@ -22,7 +22,6 @@ def _seed_interview(domain="ai_ml"):
     return interview_state.create(
         VendorProfile(
             company_name="Acme Corp",
-            website="https://acme.example",
             contact_name="Jane Doe",
             contact_role="CTO",
         ),
@@ -53,7 +52,7 @@ def test_create_interview_with_no_body_defaults_domain(client):
 
     assert response.status_code == 200
     state = interview_state.get(response.json()["interview_id"])
-    assert state.domain == "ai_ml"
+    assert state.domain == "frontier_tech"
 
 
 def test_create_interview_with_null_domain_defaults_domain(client):
@@ -61,7 +60,7 @@ def test_create_interview_with_null_domain_defaults_domain(client):
 
     assert response.status_code == 200
     state = interview_state.get(response.json()["interview_id"])
-    assert state.domain == "ai_ml"
+    assert state.domain == "frontier_tech"
 
 
 def test_create_interview_with_valid_domain(client):
@@ -237,7 +236,6 @@ def test_fresh_interview_state(client):
 
     assert body["vendor_profile"] == {
         "company_name": "Acme Corp",
-        "website": "https://acme.example",
         "contact_name": "Jane Doe",
         "contact_role": "CTO",
     }
@@ -493,14 +491,12 @@ def test_patch_profile_partial_update_only_touches_provided_fields(client):
     body = response.json()
     assert body["vendor_profile"] == {
         "company_name": "New Co",
-        "website": "https://acme.example",
         "contact_name": "Jane Doe",
         "contact_role": "CTO",
     }
     assert body["manually_edited_fields"] == ["company_name"]
 
     assert state.vendor_profile.company_name == "New Co"
-    assert state.vendor_profile.website == "https://acme.example"
     assert state.vendor_profile.contact_name == "Jane Doe"
     assert state.vendor_profile.contact_role == "CTO"
 
@@ -510,12 +506,12 @@ def test_patch_profile_sorts_manually_edited_fields(client):
 
     response = client.patch(
         _profile_url(state.interview_id),
-        json={"website": "https://acme.io", "company_name": "Acme Corp"},
+        json={"contact_role": "VP Eng", "company_name": "Acme Corp"},
     )
 
     assert response.status_code == 200
     # Sorted alphabetically regardless of request key order.
-    assert response.json()["manually_edited_fields"] == ["company_name", "website"]
+    assert response.json()["manually_edited_fields"] == ["company_name", "contact_role"]
 
 
 def test_patch_profile_unknown_interview_404(client):
@@ -551,7 +547,7 @@ def test_patch_profile_all_fields_none_400(client):
 
     response = client.patch(
         _profile_url(state.interview_id),
-        json={"company_name": None, "website": None, "contact_name": None, "contact_role": None},
+        json={"company_name": None, "contact_name": None, "contact_role": None},
     )
 
     assert response.status_code == 400
@@ -562,7 +558,7 @@ def test_patch_profile_appends_system_note_turn_with_old_and_new_values(client):
 
     response = client.patch(
         _profile_url(state.interview_id),
-        json={"company_name": "Acme Corp International", "website": "https://acme.io"},
+        json={"company_name": "Acme Corp International", "contact_role": "VP Eng"},
     )
 
     assert response.status_code == 200
@@ -571,8 +567,8 @@ def test_patch_profile_appends_system_note_turn_with_old_and_new_values(client):
     assert note_turn.role == "system"
     assert '"Acme Corp"' in note_turn.text
     assert '"Acme Corp International"' in note_turn.text
-    assert '"https://acme.example"' in note_turn.text
-    assert '"https://acme.io"' in note_turn.text
+    assert '"CTO"' in note_turn.text
+    assert '"VP Eng"' in note_turn.text
     assert note_turn.text.startswith("[Vendor manually corrected their profile:")
 
 
@@ -588,16 +584,16 @@ def test_patch_profile_no_note_turn_when_value_unchanged(client):
     assert response.json()["manually_edited_fields"] == ["company_name"]
 
 
-def test_patch_profile_clearing_website_sets_none(client):
+def test_patch_profile_clearing_contact_role_sets_none(client):
     state = _seed_interview()
 
-    response = client.patch(_profile_url(state.interview_id), json={"website": ""})
+    response = client.patch(_profile_url(state.interview_id), json={"contact_role": ""})
 
     assert response.status_code == 200
-    assert response.json()["vendor_profile"]["website"] is None
-    assert state.vendor_profile.website is None
+    assert response.json()["vendor_profile"]["contact_role"] is None
+    assert state.vendor_profile.contact_role is None
     assert len(state.turns) == 1
-    assert '"https://acme.example"' in state.turns[0].text
+    assert '"CTO"' in state.turns[0].text
     assert "(not set)" in state.turns[0].text
 
 
@@ -628,7 +624,6 @@ def test_patch_profile_locks_field_against_subsequent_llm_profile_updates(client
             "answer_complete": True,
             "profile_updates": {
                 "company_name": "LLM Reported Co",
-                "website": None,
                 "contact_name": None,
                 "contact_role": None,
             },

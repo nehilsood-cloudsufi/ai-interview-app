@@ -25,7 +25,6 @@ class VendorProfile:
     # Filled in by conversation (Host agent), not at interview creation -
     # interview_state.create(VendorProfile()) must work with no args.
     company_name: str = ""
-    website: str | None = None
     contact_name: str = ""
     contact_role: str | None = None
 

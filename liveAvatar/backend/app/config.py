@@ -3,7 +3,10 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# override=True makes backend/.env authoritative over any pre-set shell
+# environment variables (e.g. a stale GEMINI_API_KEY exported in the shell),
+# so the app always uses the keys/config committed to .env.
+load_dotenv(override=True)
 
 # HeyGen's free sandbox avatar ("Wayne"), used by dev-tier interviews. Only
 # valid with is_sandbox=True - pairing it with is_sandbox=False makes LiveKit
@@ -71,7 +74,7 @@ class Settings:
     questionnaires_dir: str = field(
         default_factory=lambda: os.getenv("QUESTIONNAIRES_DIR", "data/questionnaires")
     )
-    default_domain: str = field(default_factory=lambda: os.getenv("DEFAULT_DOMAIN", "ai_ml"))
+    default_domain: str = field(default_factory=lambda: os.getenv("DEFAULT_DOMAIN", "frontier_tech"))
     rubric_path: str = field(default_factory=lambda: os.getenv("RUBRIC_PATH", "data/rubric.yaml"))
     scout_enabled: bool = field(default_factory=lambda: os.getenv("SCOUT_ENABLED", "true").lower() != "false")
     # Optional latency polish: when enabled, the gateway streams the Host's
@@ -108,7 +111,7 @@ class Settings:
         '{"reply": "<what you say to the vendor next>", '
         '"answer_complete": <true if the current question is fully answered>, '
         '"profile_updates": {"company_name": <string or null>, '
-        '"website": <string or null>, "contact_name": <string or null>, '
+        '"contact_name": <string or null>, '
         '"contact_role": <string or null>}}. Set each profile_updates field '
         "to the vendor's own words only when they just stated or corrected "
         "that detail this turn; otherwise leave it null."
@@ -223,7 +226,7 @@ class Settings:
     # element (raw_decode stops at the first complete JSON value it finds).
     scout_research_prompt: str = (
         "Research the following vendor company on the web, using the company "
-        "name (and website, if given) below. Cover: company overview; "
+        "name below. Cover: company overview; "
         "products/services offered; notable clients or recent news; and any "
         "red flags (disputes, controversies, credibility concerns). Respond "
         "with STRICTLY a single JSON object (no prose, no markdown fences) of "

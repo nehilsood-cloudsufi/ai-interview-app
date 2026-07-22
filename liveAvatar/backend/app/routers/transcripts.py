@@ -74,10 +74,9 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
             profile = state.vendor_profile
             payload["domain"] = state.domain
             payload["vendor_profile"] = {
-                # Serializes the profile's four fields (company_name, website,
+                # Serializes the profile's three fields (company_name,
                 # contact_name, contact_role); doc_text does not exist here.
                 "company_name": profile.company_name,
-                "website": profile.website,
                 "contact_name": profile.contact_name,
                 "contact_role": profile.contact_role,
             }

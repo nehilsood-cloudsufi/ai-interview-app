@@ -75,18 +75,17 @@ _TURN_SCHEMA = {
             "type": "object",
             "properties": {
                 "company_name": {"type": ["string", "null"]},
-                "website": {"type": ["string", "null"]},
                 "contact_name": {"type": ["string", "null"]},
                 "contact_role": {"type": ["string", "null"]},
             },
-            "required": ["company_name", "website", "contact_name", "contact_role"],
+            "required": ["company_name", "contact_name", "contact_role"],
         },
     },
     "required": ["reply", "answer_complete", "profile_updates"],
 }
 
 # Keys of profile_updates / VendorProfile fields it may overwrite.
-_PROFILE_FIELDS = ("company_name", "website", "contact_name", "contact_role")
+_PROFILE_FIELDS = ("company_name", "contact_name", "contact_role")
 
 
 @dataclass
@@ -159,11 +158,10 @@ def _render_system_content(
         "",
         "Vendor profile:",
         f"- Company: {_display(profile.company_name)}",
-        f"- Website: {_display(profile.website)}",
         f"- Contact name: {_display(profile.contact_name)}",
         f"- Contact role: {_display(profile.contact_role)}",
         "- Whenever the vendor states or corrects any of these details, "
-        "report them in profile_updates; otherwise return null for all four fields.",
+        "report them in profile_updates; otherwise return null for all three fields.",
     ]
 
     next_node = questionnaire.get(node.next)  # None only for the literal END

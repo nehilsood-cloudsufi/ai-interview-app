@@ -8,7 +8,7 @@ import type { ChatResponse, TranscriptTurn } from '../types';
 const GREETING =
   "Hello, and welcome! I'm Noor, and I'll be running today's vendor " +
   'evaluation. To get us started, could you introduce yourself — your ' +
-  "name, your role, the company you represent, and that company's website?";
+  'name, your role, and the company you represent?';
 
 interface UseChatInterviewOptions {
   interviewId: string | null;

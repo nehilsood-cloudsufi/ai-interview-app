@@ -37,13 +37,12 @@ def _gateway_opening_text() -> str:
     gateway call. The intake form is gone, so the vendor profile is empty at
     this point - onboarding happens conversationally via the `intro`
     questionnaire node - so this is a generic opener rather than a by-name
-    greeting. Content is aligned with `intro`'s ask: name, role, company,
-    and website."""
+    greeting. Content is aligned with `intro`'s ask: name, role, and
+    company."""
     return (
         "Hello, and welcome! I'm Noor, and I'll be running today's vendor "
         "evaluation. To get us started, could you introduce yourself - your "
-        "name, your role, the company you represent, and that company's "
-        "website?"
+        "name, your role, and the company you represent?"
     )
 
 

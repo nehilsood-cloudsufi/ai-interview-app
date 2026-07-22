@@ -22,8 +22,8 @@ questions:
     topic: onboarding
     ask: >
       Greet the vendor warmly and invite them to introduce themselves
-      naturally: their name, their role, the company they represent, and
-      that company's website. If their answer leaves any of those out,
+      naturally: their name, their role, and the company they represent.
+      If their answer leaves any of those out,
       ask briefly for just what's missing - do NOT read back the details
       they already gave (a single read-back happens in the next step).
     rubric_categories: []
@@ -33,8 +33,8 @@ questions:
   - id: confirm_profile
     topic: onboarding
     ask: >
-      In ONE short sentence, read the captured name, role, company, and
-      website back to the vendor and ask if it's all correct. No preamble,
+      In ONE short sentence, read the captured name, role, and company
+      back to the vendor and ask if it's all correct. No preamble,
       and never re-confirm a detail that was already confirmed. If they
       correct anything, capture the correction.
     rubric_categories: []

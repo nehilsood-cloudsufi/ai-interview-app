@@ -16,7 +16,6 @@ def _seed_interview(turns=None, findings=None):
     state = interview_state.create(
         VendorProfile(
             company_name="Acme Corp",
-            website="https://acme.example",
             contact_name="Jane Doe",
             contact_role="CTO",
         ),
@@ -217,7 +216,6 @@ def test_finalize_with_interview_returns_fast_and_enqueues_pipeline(
     # Vendor profile is embedded WITHOUT the (potentially huge) doc_text.
     assert saved["vendor_profile"] == {
         "company_name": "Acme Corp",
-        "website": "https://acme.example",
         "contact_name": "Jane Doe",
         "contact_role": "CTO",
     }

@@ -12,7 +12,6 @@ def _seed_interview(tier="dev") -> interview_state.InterviewState:
     return interview_state.create(
         interview_state.VendorProfile(
             company_name="Acme",
-            website=None,
             contact_name="Jo",
             contact_role=None,
         ),

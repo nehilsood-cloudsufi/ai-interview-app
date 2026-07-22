@@ -83,7 +83,6 @@ def make_state(
         gateway_token="tok",
         vendor_profile=VendorProfile(
             company_name="Acme Corp",
-            website="https://acme.example",
             contact_name="Jane Doe",
             contact_role="CTO",
         ),
@@ -105,7 +104,6 @@ def gemini_response(
 
 NULL_PROFILE_UPDATES = {
     "company_name": None,
-    "website": None,
     "contact_name": None,
     "contact_role": None,
 }
@@ -401,7 +399,6 @@ async def test_profile_updates_merged_into_vendor_profile(patch_settings):
         return_value=gemini_response(
             profile_updates={
                 "company_name": "New Co",
-                "website": "https://newco.example",
                 "contact_name": "Sam Lee",
                 "contact_role": "VP Sales",
             }
@@ -414,7 +411,6 @@ async def test_profile_updates_merged_into_vendor_profile(patch_settings):
     )
 
     assert state.vendor_profile.company_name == "New Co"
-    assert state.vendor_profile.website == "https://newco.example"
     assert state.vendor_profile.contact_name == "Sam Lee"
     assert state.vendor_profile.contact_role == "VP Sales"
 
@@ -436,7 +432,7 @@ async def test_empty_string_profile_updates_are_ignored(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     respx.post(CHAT_URL).mock(
         return_value=gemini_response(
-            profile_updates={"company_name": "   ", "website": "", "contact_name": None, "contact_role": None}
+            profile_updates={"company_name": "   ", "contact_name": "", "contact_role": None}
         )
     )
     state = make_state()
@@ -457,7 +453,6 @@ async def test_late_correction_on_non_onboarding_node_overwrites(patch_settings)
             reply="Got it, thanks for the correction.",
             profile_updates={
                 "company_name": "Acme Corp International",
-                "website": None,
                 "contact_name": None,
                 "contact_role": None,
             },
@@ -492,12 +487,11 @@ def test_merge_profile_updates_skips_locked_fields():
     # PATCH /api/interview/{id}/profile) must never be overwritten by the
     # LLM's profile_updates, while unlocked fields still merge normally.
     profile = VendorProfile(
-        company_name="Acme Corp", website="https://acme.example", contact_name="Jane Doe", contact_role="CTO"
+        company_name="Acme Corp", contact_name="Jane Doe", contact_role="CTO"
     )
     updates = {
         "company_name": "New Co",
-        "website": "https://newco.example",
-        "contact_name": None,
+        "contact_name": "Sam Lee",
         "contact_role": None,
     }
 
@@ -506,16 +500,15 @@ def test_merge_profile_updates_skips_locked_fields():
     # Locked field untouched.
     assert profile.company_name == "Acme Corp"
     # Unlocked field still merges.
-    assert profile.website == "https://newco.example"
+    assert profile.contact_name == "Sam Lee"
 
 
 def test_merge_profile_updates_no_locked_fields_behaves_as_before():
     profile = VendorProfile(
-        company_name="Acme Corp", website="https://acme.example", contact_name="Jane Doe", contact_role="CTO"
+        company_name="Acme Corp", contact_name="Jane Doe", contact_role="CTO"
     )
     updates = {
         "company_name": "New Co",
-        "website": None,
         "contact_name": None,
         "contact_role": None,
     }
@@ -653,7 +646,6 @@ async def test_stream_turn_merges_profile_updates_identically(patch_settings):
             reply="Great, thanks!",
             profile_updates={
                 "company_name": "New Co",
-                "website": None,
                 "contact_name": "Sam Lee",
                 "contact_role": None,
             },
@@ -666,7 +658,6 @@ async def test_stream_turn_merges_profile_updates_identically(patch_settings):
     assert state.vendor_profile.company_name == "New Co"
     assert state.vendor_profile.contact_name == "Sam Lee"
     # Fields not reported this turn keep their prior values.
-    assert state.vendor_profile.website == "https://acme.example"
     assert state.vendor_profile.contact_role == "CTO"
 
 

@@ -11,7 +11,6 @@ DOMAIN = "ai_ml"
 def make_profile(**overrides):
     defaults = dict(
         company_name="Acme Corp",
-        website="https://acme.example",
         contact_name="Jane Doe",
         contact_role="CTO",
     )
@@ -34,7 +33,6 @@ def test_create_returns_state_with_defaults():
 def test_vendor_profile_has_empty_defaults():
     profile = VendorProfile()
     assert profile.company_name == ""
-    assert profile.website is None
     assert profile.contact_name == ""
     assert profile.contact_role is None
 

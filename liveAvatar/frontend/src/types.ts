@@ -33,7 +33,6 @@ export interface DomainsResponse {
 // (backend VendorProfileModel — snake_case, doc_text excluded).
 export interface VendorProfile {
   company_name: string;
-  website: string | null;
   contact_name: string;
   contact_role: string | null;
 }

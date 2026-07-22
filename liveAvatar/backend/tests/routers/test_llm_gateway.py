@@ -19,7 +19,6 @@ def _seed_interview():
     return interview_state.create(
         VendorProfile(
             company_name="Acme Corp",
-            website="https://acme.example",
             contact_name="Jane Doe",
             contact_role="CTO",
         ),

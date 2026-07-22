@@ -23,7 +23,6 @@ const FIELDS: FieldConfig[] = [
   { key: 'contact_name', label: 'Name' },
   { key: 'contact_role', label: 'Role' },
   { key: 'company_name', label: 'Company' },
-  { key: 'website', label: 'Website' },
 ];
 
 // Shows the profile Noor has captured, for the whole interview (both avatar
