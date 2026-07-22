@@ -9,3 +9,10 @@ backend/.venv/
 .venv/
 __pycache__/
 frontend/dist/
+.pytest_cache/
+.coverage
+htmlcov/
+# Local interview transcript dumps (real interview data — must never reach Cloud Build)
+backend/transcripts/
+# Tests are CI-only; no need to upload them to Cloud Build
+backend/tests/
