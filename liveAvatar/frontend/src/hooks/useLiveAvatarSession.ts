@@ -194,6 +194,16 @@ export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: Use
   const stopSession = async (options: StopOptions = {}) => {
     if (session) {
       suppressSessionEndRef.current = options.suppressSessionEnd === true;
+      // Tear down the backend side (concurrency counter + per-interview LLM
+      // config/secret/context) BEFORE cleanupSession wipes the stored token.
+      // Without this, an explicit End click never reached /api/session/stop
+      // at all: cleanupSession removes the token synchronously, so the
+      // [session] effect teardown below found nothing to stop - gateway
+      // resources leaked on every normally-ended session.
+      const activeToken = localStorage.getItem('liveavatar_session_token');
+      if (activeToken) {
+        postStopSession(activeToken).catch(console.error);
+      }
       try { await session.stop(); } catch (e) { console.error("Error stopping session:", e); }
       cleanupSession(session);
     }
