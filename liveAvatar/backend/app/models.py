@@ -41,13 +41,15 @@ class CategoryScoreModel(BaseModel):
     id: str
     name: str
     weight: float
-    score: float | None
+    value: str | None
+    points: float | None
     evidence: list[str]
 
 
 class ScorecardModel(BaseModel):
     categories: list[CategoryScoreModel]
     overall: float | None
+    status: Literal["APPROVED", "REJECTED"] | None
 
 
 class ScoutFindingModel(BaseModel):
