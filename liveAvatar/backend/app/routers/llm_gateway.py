@@ -7,6 +7,7 @@ may return real 4xx; after auth the route never fails - any error becomes an
 HTTP 200 with a canned reply so the avatar always has something to say.
 """
 
+import asyncio
 import json
 import logging
 import secrets
@@ -214,23 +215,44 @@ async def chat_completions(interview_id: str, request: Request):
         if user_text is None:
             reply = _GREETING_REPLY
         else:
-            # is_cancelled=request.is_disconnected: HeyGen cancels this request
-            # the moment a newer speech fragment supersedes it, and handle_turn
-            # then skips/discards the turn without touching interview state
-            # (the reply would never be spoken). A None result means exactly
-            # that - answer with a stub; nobody is reading it.
+            # Supersede detection is OUR bookkeeping, not the socket's: bump
+            # the interview's request counter and remember this request's seq.
+            # HeyGen cancels a request the moment a newer speech fragment
+            # arrives, but request.is_disconnected proved unreliable through
+            # the tunnel/uvicorn stack (verified live 2026-07-22 - zero
+            # cancellations detected while four questions were silently
+            # consumed). The seq comparison always works: a newer fragment
+            # bumps the counter, so this turn knows it's been superseded.
+            # is_disconnected stays as a free extra signal where it does fire.
+            state.request_seq += 1
+            seq = state.request_seq
+
+            async def superseded() -> bool:
+                return state.request_seq != seq or await request.is_disconnected()
+
+            # The settle beat: a human interviewer waits a moment before
+            # answering. If the vendor was only pausing mid-thought, the next
+            # fragment lands during this sleep and this turn steps aside.
+            if settings.host_utterance_settle_seconds > 0:
+                await asyncio.sleep(settings.host_utterance_settle_seconds)
+
+            # handle_turn re-checks under the turn lock and again after the
+            # Gemini call; a None result means the turn was superseded and
+            # state untouched - answer with a stub, nobody is reading it.
             result = await host_agent.handle_turn(
                 state,
                 user_text,
                 get_questionnaire(state.domain),
                 get_rubric(),
-                is_cancelled=request.is_disconnected,
+                is_cancelled=superseded,
             )
             if result is None:
                 logger.info(
-                    "Gateway turn superseded: interview=%s node=%s elapsed_ms=%d",
+                    "Gateway turn superseded: interview=%s node=%s seq=%d head=%d elapsed_ms=%d",
                     interview_id,
                     state.current_node_id,
+                    seq,
+                    state.request_seq,
                     int((time.monotonic() - started) * 1000),
                 )
                 return _completion_response(completion_id, created, model, "")

@@ -196,6 +196,39 @@ def test_last_user_text_no_user_messages_returns_none():
     assert llm_gateway._last_user_text(body) is None
 
 
+def test_supersede_callback_reflects_request_seq(client, monkeypatch):
+    # The is_cancelled callback handed to handle_turn is the gateway's own
+    # sequence bookkeeping: it flips to True the moment a newer utterance
+    # request bumps the interview's request_seq (request.is_disconnected
+    # proved unreliable through the tunnel stack, 2026-07-22).
+    state = _seed_interview()
+    observed = {}
+
+    async def fake(s, user_text, questionnaire, rubric, is_cancelled=None):
+        observed["before"] = await is_cancelled()
+        s.request_seq += 1  # a newer speech fragment arrives mid-turn
+        observed["after"] = await is_cancelled()
+        return None  # superseded turns report None
+
+    monkeypatch.setattr(host_agent, "handle_turn", fake)
+
+    response = client.post(_url(state.interview_id), json=_openai_body(stream=False), headers=_auth(state))
+
+    assert observed == {"before": False, "after": True}
+    assert response.json()["choices"][0]["message"]["content"] == ""
+
+
+def test_greeting_probe_does_not_bump_request_seq(client, monkeypatch):
+    # Pre-utterance greeting probes are not utterances; they must not
+    # supersede a real in-flight turn.
+    state = _seed_interview()
+    _fake_handle_turn(monkeypatch, _turn_result())
+
+    client.post(_url(state.interview_id), json=_openai_body(user_text=None, stream=False), headers=_auth(state))
+
+    assert state.request_seq == 0
+
+
 def test_superseded_turn_returns_stub_without_state_claims(client, monkeypatch):
     # handle_turn returns None when the request was cancelled by a newer
     # speech fragment (skip/discard path). The gateway answers with an empty

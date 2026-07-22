@@ -861,6 +861,51 @@ def _clocked_state(seconds_elapsed: float, max_session_seconds: int = 300) -> In
 
 
 @respx.mock
+async def test_time_generous_prompt_when_ample_time_remains(patch_settings):
+    # Fresh clocked interview (600s booked, just started): remaining is well
+    # above host_time_generous_seconds (180), so the Host is told to dig
+    # deeper on brief answers instead of racing through the script.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = _clocked_state(seconds_elapsed=10, max_session_seconds=600)
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_time_generous_prompt in system_content
+    assert settings.host_time_pressure_prompt not in system_content
+
+
+@respx.mock
+async def test_no_time_generous_prompt_without_a_clock(patch_settings):
+    # Unclocked interview (dev tier / chat): there is no session clock, so
+    # neither pacing prompt applies.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_time_generous_prompt not in system_content
+
+
+@respx.mock
+async def test_no_time_generous_prompt_when_clock_runs_low(patch_settings):
+    # 300s booked, 150s elapsed -> 150s remaining: below the generous
+    # threshold but above time pressure - neither pacing prompt applies.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = _clocked_state(seconds_elapsed=150, max_session_seconds=300)
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_time_generous_prompt not in system_content
+    assert settings.host_time_pressure_prompt not in system_content
+
+
+@respx.mock
 async def test_wrapup_when_time_nearly_exhausted(patch_settings):
     # Remaining 50s <= host_wrapup_seconds (60): canned closing, script
     # skipped to END, NO Gemini call.

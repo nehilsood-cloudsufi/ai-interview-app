@@ -165,6 +165,33 @@ class Settings:
             "clouds too?').",
         )
     )
+    # How long the gateway lets an utterance "settle" before processing it:
+    # HeyGen's VAD fires on short pauses, so a fragment is only treated as
+    # final if no newer fragment supersedes it within this window. The beat a
+    # human interviewer waits before answering. Trade-off: adds this much
+    # latency to every genuine turn (HeyGen's own read timeout is 10s).
+    host_utterance_settle_seconds: float = field(
+        default_factory=lambda: float(os.getenv("HOST_UTTERANCE_SETTLE_SECONDS", "1.2"))
+    )
+    # With more than this many seconds left on a clocked interview, the Host
+    # is told to dig deeper instead of accepting brief answers - the inverse
+    # of host_time_pressure_seconds, so a 5-minute booking actually spends
+    # its time interviewing (observed 2026-07-22: a 5-min session finished in
+    # 3 because every surface answer was accepted and the script just ended).
+    host_time_generous_seconds: int = field(
+        default_factory=lambda: int(os.getenv("HOST_TIME_GENEROUS_SECONDS", "180"))
+    )
+    # Appended to the system prompt while time is generous (see above).
+    host_time_generous_prompt: str = field(
+        default_factory=lambda: os.getenv(
+            "HOST_TIME_GENEROUS_PROMPT",
+            "There is ample time remaining in this interview. When the "
+            "vendor's answer is brief or stays at the surface, do not accept "
+            "it immediately: mark it incomplete and ask one focused follow-up "
+            "that digs a level deeper - a concrete example, a how, or a why. "
+            "Move on once they have added real substance.",
+        )
+    )
     # Appended to host_system_prompt only in avatar mode. HeyGen's VAD splits
     # flowing speech at pauses, so one spoken answer can arrive as several
     # partial utterances ("Actually, we are working on AI services. We

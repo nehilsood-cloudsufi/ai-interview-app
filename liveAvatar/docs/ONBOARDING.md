@@ -357,13 +357,22 @@ top level.
   `llm_gateway`/`host_agent` docstrings): cancelled replies never enter
   HeyGen's message history, so fragments arrive as consecutive trailing
   `user` messages — `_last_user_text` joins that run back into the full
-  utterance. `handle_turn` takes `request.is_disconnected` and skips (or
-  discards, if cancellation lands mid-Gemini-call) any turn whose request
-  HeyGen already abandoned: a reply the vendor never heard must not append
-  turns, burn follow-up budget, or advance the script. Turns serialize on
-  `InterviewState.turn_lock`. And once the script reaches END, `/state`
-  reports `done: true` and the frontend auto-stops the session ~8 s later —
-  without that, every post-interview utterance re-spoke the canned closing.
+  utterance. Supersede detection is our own bookkeeping: each utterance
+  request bumps `InterviewState.request_seq`, waits a settle beat
+  (`HOST_UTTERANCE_SETTLE_SECONDS`, default 1.2 s — "let them finish"), and
+  a turn whose seq is no longer the head is skipped before the Gemini call
+  or discarded before any state mutation (a reply the vendor never heard
+  must not append turns, burn follow-up budget, or advance the script).
+  Don't "simplify" this to `request.is_disconnected` — it silently never
+  fires through the tunnel/uvicorn stack; we tried. Turns serialize on
+  `InterviewState.turn_lock`. Once the script reaches END, `/state` reports
+  `done: true` and the frontend auto-stops the session ~8 s later — without
+  that, every post-interview utterance re-spoke the canned closing.
+- **Time-aware pacing, both directions.** Clocked (prod-tier) interviews rush
+  when time runs short (<120 s: no follow-ups; <60 s: canned wrap-up) and now
+  also stretch when time is ample (`HOST_TIME_GENEROUS_SECONDS`, default
+  180 s remaining: brief answers get one deeper follow-up) — so a 5-minute
+  booking is spent interviewing instead of ending at question seven.
 - **Concurrency counter drift.** The active-session counter only decrements on an
   explicit `/api/session/stop`. When HeyGen ends a session server-side (sandbox
   ~1-min cap, or a prod `max_session_duration`), the frontend resets its UI but

@@ -155,6 +155,7 @@ def _render_system_content(
     questionnaire: dict[str, QuestionNode],
     mode: Literal["avatar", "chat"] = "avatar",
     time_pressured: bool = False,
+    time_generous: bool = False,
 ) -> str:
     """Assemble the system message for one Host turn: the base host prompt,
     the vendor profile captured so far (each field via `_display`, plus the
@@ -210,6 +211,11 @@ def _render_system_content(
     if time_pressured:
         lines += ["", settings.host_time_pressure_prompt]
 
+    # Mutually exclusive with time pressure by construction (generous needs
+    # far MORE remaining time than the pressure threshold).
+    if time_generous:
+        lines += ["", settings.host_time_generous_prompt]
+
     return "\n".join(lines)
 
 
@@ -230,6 +236,7 @@ def _build_payload(
     questionnaire: dict[str, QuestionNode],
     mode: Literal["avatar", "chat"] = "avatar",
     time_pressured: bool = False,
+    time_generous: bool = False,
 ) -> dict:
     """The per-turn Gemini request, shared by the buffered and streaming paths.
     `reply` is first in `_TURN_SCHEMA` so the streaming path can speak it before
@@ -239,7 +246,7 @@ def _build_payload(
         "messages": [
             {
                 "role": "system",
-                "content": _render_system_content(state, node, questionnaire, mode, time_pressured),
+                "content": _render_system_content(state, node, questionnaire, mode, time_pressured, time_generous),
             },
             {"role": "user", "content": _render_user_content(state, user_text)},
         ],
@@ -259,6 +266,7 @@ async def _call_gemini(
     questionnaire: dict[str, QuestionNode],
     mode: Literal["avatar", "chat"] = "avatar",
     time_pressured: bool = False,
+    time_generous: bool = False,
 ) -> dict:
     """Make the single per-turn Gemini call and return its parsed JSON turn.
     A parse failure is retried exactly once with a fresh sample (a cheap, fast
@@ -268,7 +276,7 @@ async def _call_gemini(
     the one exception, and returns in under a second). Raises if the second
     parse also fails or on any HTTP error, leaving the soft-fail to the
     caller."""
-    payload = _build_payload(state, node, user_text, questionnaire, mode, time_pressured)
+    payload = _build_payload(state, node, user_text, questionnaire, mode, time_pressured, time_generous)
 
     # Parse failures get one retry (fresh sample, fast); HTTP failures don't -
     # a Gemini outage should fall back immediately, not double the wait inside
@@ -357,11 +365,15 @@ async def _handle_turn(
     if remaining is not None and remaining <= settings.host_wrapup_seconds:
         return _wrapup_turn(state, user_text)
     time_pressured = remaining is not None and remaining <= settings.host_time_pressure_seconds
+    # The inverse of time pressure: with ample clock left, brief answers get
+    # one deeper follow-up instead of instant acceptance, so a 5-minute
+    # booking spends its time interviewing rather than ending at question 7.
+    time_generous = remaining is not None and remaining > settings.host_time_generous_seconds
 
     node = questionnaire[state.current_node_id]
 
     try:
-        parsed = await _call_gemini(state, node, user_text, questionnaire, mode, time_pressured)
+        parsed = await _call_gemini(state, node, user_text, questionnaire, mode, time_pressured, time_generous)
         reply = str(parsed["reply"])
         answer_complete = bool(parsed.get("answer_complete"))
         profile_updates = parsed.get("profile_updates")
@@ -528,9 +540,10 @@ async def _stream_turn(
         yield settings.host_timeup_reply
         return
     time_pressured = remaining is not None and remaining <= settings.host_time_pressure_seconds
+    time_generous = remaining is not None and remaining > settings.host_time_generous_seconds
 
     node = questionnaire[state.current_node_id]
-    payload = _build_payload(state, node, user_text, questionnaire, mode, time_pressured)
+    payload = _build_payload(state, node, user_text, questionnaire, mode, time_pressured, time_generous)
     extractor = ReplyStreamExtractor()
 
     try:

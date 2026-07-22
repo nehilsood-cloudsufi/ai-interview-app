@@ -123,6 +123,12 @@ class InterviewState:
     # processed concurrently on the same node); without this, both turns read
     # the same current_node_id and the script double-advances.
     turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+    # Monotonic counter of gateway utterance requests, bumped by llm_gateway
+    # per real user turn. A turn whose recorded seq no longer equals this head
+    # has been superseded by a newer speech fragment and must not run (its
+    # reply will never be spoken). Our own bookkeeping - request.is_disconnected
+    # proved unreliable through the tunnel/uvicorn stack (2026-07-22).
+    request_seq: int = 0
 
 
 _interviews: dict[str, InterviewState] = {}
