@@ -3,7 +3,7 @@ import logging
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from app.config import SANDBOX_AVATAR_ID, settings
+from app.config import settings
 from app.dependencies import resolve_api_key
 from app.models import CreateSessionRequest, StopSessionRequest
 from app.services import interview_state
@@ -58,12 +58,39 @@ async def _create_gateway_session(body: CreateSessionRequest) -> dict:
         if state is None:
             raise HTTPException(status_code=404, detail="Unknown interview")
 
+        if state.tier == "prod":
+            # Re-checked here (not just at interview creation) in case the
+            # config changed in between; a prod-tier session must never fall
+            # back to the sandbox avatar silently.
+            if not settings.prod_avatar_id:
+                raise HTTPException(
+                    status_code=503, detail="Production tier is not configured (PROD_AVATAR_ID required)"
+                )
+            avatar_id = settings.prod_avatar_id
+            is_sandbox = False
+            voice_id = settings.prod_voice_id
+            max_session_duration = settings.prod_max_session_seconds
+        else:
+            avatar_id = settings.avatar_id
+            is_sandbox = True
+            voice_id = None
+            max_session_duration = None
+
         secret_id = await create_llm_secret(liveavatar_key, state.gateway_token)
         gateway_base_url = f"{settings.public_base_url.rstrip('/')}/llm/{body.interview_id}/v1"
         llm_config_id = await create_llm_configuration(liveavatar_key, secret_id, gateway_base_url)
         context_id = await create_context(liveavatar_key, GATEWAY_CONTEXT_PROMPT, _gateway_opening_text())
 
-        token_data = await create_session_token(liveavatar_key, llm_config_id, context_id, None)
+        token_data = await create_session_token(
+            liveavatar_key,
+            llm_config_id,
+            context_id,
+            None,
+            avatar_id=avatar_id,
+            is_sandbox=is_sandbox,
+            voice_id=voice_id,
+            max_session_duration=max_session_duration,
+        )
 
         state.heygen_session_id = token_data["session_id"]
         state.llm_config_id = llm_config_id
@@ -97,14 +124,6 @@ async def create_session(body: CreateSessionRequest):
         raise HTTPException(status_code=400, detail="interview_id is required")
     if not settings.public_base_url:
         raise HTTPException(status_code=503, detail="PUBLIC_BASE_URL is not configured")
-    if not settings.sandbox_mode and settings.avatar_id == SANDBOX_AVATAR_ID:
-        # The sandbox avatar with is_sandbox=false makes LiveKit time out
-        # silently - fail fast with an actionable error instead.
-        raise HTTPException(
-            status_code=503,
-            detail="SANDBOX_MODE=false requires a production AVATAR_ID; "
-            "the sandbox avatar only works in sandbox mode",
-        )
 
     return await _create_gateway_session(body)
 

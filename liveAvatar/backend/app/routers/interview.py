@@ -74,7 +74,22 @@ async def create_interview(body: CreateInterviewRequest | None = None):
     except KeyError:
         raise HTTPException(status_code=400, detail=f"Unknown domain: {domain!r}")
 
-    state = interview_state.create(VendorProfile(), domain)
+    tier = (body.tier if body else None) or "dev"
+    if tier not in ("dev", "prod"):
+        raise HTTPException(status_code=400, detail=f"Unknown tier: {tier!r}")
+    if tier == "prod":
+        # Prod-tier sessions burn credits (2/min), so they are disabled
+        # entirely until both knobs are configured, and gated behind the
+        # shared demo passcode after that.
+        if not settings.prod_avatar_id or not settings.demo_passcode:
+            raise HTTPException(
+                status_code=503,
+                detail="Production tier is not configured (PROD_AVATAR_ID and DEMO_PASSCODE required)",
+            )
+        if (body.passcode if body else None) != settings.demo_passcode:
+            raise HTTPException(status_code=403, detail="Invalid passcode")
+
+    state = interview_state.create(VendorProfile(), domain, tier)
     return {"interview_id": state.interview_id}
 
 

@@ -91,9 +91,10 @@ async def test_create_session_token_with_llm_and_context(patch_settings):
 
 
 @respx.mock
-@pytest.mark.parametrize("sandbox_mode", [True, False])
-async def test_create_session_token_is_sandbox_follows_settings(patch_settings, sandbox_mode):
-    patch_settings(liveavatar_base_url=BASE_URL, sandbox_mode=sandbox_mode)
+async def test_create_session_token_defaults_are_dev_tier(patch_settings):
+    # No explicit avatar/sandbox args -> settings sandbox avatar, sandbox on,
+    # and neither voice_id nor max_session_duration in the payload.
+    patch_settings(liveavatar_base_url=BASE_URL, avatar_id="sandbox-avatar")
     route = respx.post(f"{BASE_URL}/sessions/token").mock(
         return_value=httpx.Response(
             200, json={"data": {"session_token": "tok", "session_id": "sid"}}
@@ -103,7 +104,38 @@ async def test_create_session_token_is_sandbox_follows_settings(patch_settings, 
     import json
 
     body = json.loads(route.calls[0].request.content)
-    assert body["is_sandbox"] is sandbox_mode
+    assert body["avatar_id"] == "sandbox-avatar"
+    assert body["is_sandbox"] is True
+    assert "max_session_duration" not in body
+    assert "voice_id" not in body["avatar_persona"]
+
+
+@respx.mock
+async def test_create_session_token_prod_tier_args(patch_settings):
+    patch_settings(liveavatar_base_url=BASE_URL, avatar_id="sandbox-avatar")
+    route = respx.post(f"{BASE_URL}/sessions/token").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"session_token": "tok", "session_id": "sid"}}
+        )
+    )
+    await liveavatar_client.create_session_token(
+        "api-key",
+        "llm-1",
+        "ctx-1",
+        "llm-1",
+        avatar_id="avatar-june",
+        is_sandbox=False,
+        voice_id="voice-amy",
+        max_session_duration=600,
+    )
+    import json
+
+    body = json.loads(route.calls[0].request.content)
+    assert body["avatar_id"] == "avatar-june"
+    assert body["is_sandbox"] is False
+    assert body["max_session_duration"] == 600
+    assert body["avatar_persona"]["voice_id"] == "voice-amy"
+    assert body["avatar_persona"]["context_id"] == "ctx-1"
 
 
 @respx.mock

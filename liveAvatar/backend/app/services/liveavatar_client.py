@@ -97,11 +97,16 @@ async def create_session_token(
     llm_configuration_id: str | None,
     context_id: str | None,
     gemini_llm_configuration_id: str | None,
+    *,
+    avatar_id: str | None = None,
+    is_sandbox: bool = True,
+    voice_id: str | None = None,
+    max_session_duration: int | None = None,
 ) -> dict:
     token_payload = {
         "mode": "FULL",
-        "avatar_id": settings.avatar_id,
-        "is_sandbox": settings.sandbox_mode,
+        "avatar_id": avatar_id or settings.avatar_id,
+        "is_sandbox": is_sandbox,
         "avatar_persona": {"language": "en"},
     }
 
@@ -110,6 +115,12 @@ async def create_session_token(
 
     if context_id:
         token_payload["avatar_persona"]["context_id"] = context_id
+
+    if voice_id:
+        token_payload["avatar_persona"]["voice_id"] = voice_id
+
+    if max_session_duration is not None:
+        token_payload["max_session_duration"] = max_session_duration
 
     async with httpx.AsyncClient() as client:
         try:
