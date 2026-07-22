@@ -43,6 +43,26 @@ export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: Use
     interview_id: localStorage.getItem('liveavatar_interview_id') || interviewIdRef.current || undefined,
   });
 
+  // The one POST /api/session/stop. Call sites differ only in which token they
+  // send and what happens afterwards (catch/finally chains stay at the call
+  // site); the beforeunload path passes keepalive so the request survives the
+  // page teardown. Deliberately not awaited anywhere - backend teardown is
+  // fire-and-forget from the UI's perspective.
+  const postStopSession = (sessionToken: string, init?: { keepalive?: boolean }) =>
+    fetch(`${API_URL}/api/session/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: buildStopBody(sessionToken),
+      ...(init?.keepalive ? { keepalive: true } : {}),
+    });
+
+  // Forget the persisted session (token + interview id) - used after every
+  // successful or attempted teardown so orphan cleanup can't fire twice.
+  const clearStoredSession = () => {
+    localStorage.removeItem('liveavatar_session_token');
+    localStorage.removeItem('liveavatar_interview_id');
+  };
+
   // Latest onSessionEnd without re-subscribing the event handlers on every render.
   const onSessionEndRef = useRef(onSessionEnd);
   useEffect(() => { onSessionEndRef.current = onSessionEnd; }, [onSessionEnd]);
@@ -79,8 +99,7 @@ export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: Use
     setSpeakingState('idle');
     setMicEnabled(false);
     setCameraEnabled(SHOW_SELF_VIEW);
-    localStorage.removeItem('liveavatar_session_token');
-    localStorage.removeItem('liveavatar_interview_id');
+    clearStoredSession();
 
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
@@ -167,14 +186,7 @@ export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: Use
 
       const orphanedToken = localStorage.getItem('liveavatar_session_token');
       if (orphanedToken) {
-        fetch(`${API_URL}/api/session/stop`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: buildStopBody(orphanedToken),
-        }).catch(console.error).finally(() => {
-          localStorage.removeItem('liveavatar_session_token');
-          localStorage.removeItem('liveavatar_interview_id');
-        });
+        postStopSession(orphanedToken).catch(console.error).finally(clearStoredSession);
       }
     }
   };
@@ -215,30 +227,20 @@ export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: Use
   useEffect(() => {
     const orphanedToken = localStorage.getItem('liveavatar_session_token');
     if (orphanedToken) {
-      fetch(`${API_URL}/api/session/stop`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_token: orphanedToken,
-          interview_id: localStorage.getItem('liveavatar_interview_id') || undefined,
-        }),
-      }).catch(console.error).finally(() => {
-        localStorage.removeItem('liveavatar_session_token');
-        localStorage.removeItem('liveavatar_interview_id');
-      });
+      postStopSession(orphanedToken).catch(console.error).finally(clearStoredSession);
     }
+    // postStopSession/clearStoredSession are stable for the life of the hook;
+    // this must run exactly once, on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     const handleBeforeUnload = () => {
       const activeToken = localStorage.getItem('liveavatar_session_token');
       if (activeToken) {
-        fetch(`${API_URL}/api/session/stop`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: buildStopBody(activeToken),
-          keepalive: true,
-        });
+        // keepalive lets the request outlive the closing page; errors are moot
+        // mid-unload, so no catch.
+        postStopSession(activeToken, { keepalive: true });
       }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -248,11 +250,7 @@ export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: Use
         session.stop().catch(console.error);
         const activeToken = localStorage.getItem('liveavatar_session_token');
         if (activeToken) {
-          fetch(`${API_URL}/api/session/stop`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: buildStopBody(activeToken),
-          }).catch(console.error);
+          postStopSession(activeToken).catch(console.error);
         }
       }
     };
