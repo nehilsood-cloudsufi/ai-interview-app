@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { FileText } from 'lucide-react';
 import type { TranscriptTurn } from '../types';
+import { TranscriptBubble } from './TranscriptBubble';
 
 interface TranscriptPanelProps {
   turns: TranscriptTurn[];
@@ -33,18 +34,7 @@ export function TranscriptPanel({ turns }: TranscriptPanelProps) {
         {turns.length === 0 ? (
           <p className="text-sm text-slate-500 italic">The conversation transcript will appear here as you speak…</p>
         ) : (
-          turns.map((turn, i) => (
-            <div key={i} className="flex flex-col gap-1">
-              <span
-                className={`text-[11px] font-semibold uppercase tracking-wider ${
-                  turn.role === 'interviewer' ? 'text-emerald-400' : 'text-sky-400'
-                }`}
-              >
-                {turn.role === 'interviewer' ? 'Interviewer' : 'Candidate'}
-              </span>
-              <p className="text-sm text-slate-200 leading-relaxed">{turn.text}</p>
-            </div>
-          ))
+          turns.map((turn, i) => <TranscriptBubble key={i} turn={turn} />)
         )}
       </div>
     </div>

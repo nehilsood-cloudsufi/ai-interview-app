@@ -4,6 +4,7 @@ import { SESSIONS_SHEET_URL } from '../config';
 import { downloadTranscript } from '../utils/downloadTranscript';
 import { FollowupPanel } from './FollowupPanel';
 import { ScorecardPanel } from './ScorecardPanel';
+import { TranscriptBubble } from './TranscriptBubble';
 
 interface SummaryPanelProps {
   visible: boolean;
@@ -181,18 +182,7 @@ export function SummaryPanel({
               <p className="text-sm text-slate-500 italic">No transcript captured.</p>
             ) : (
               <div className="space-y-3">
-                {turns.map((turn, i) => (
-                  <div key={i} className="flex flex-col gap-1">
-                    <span
-                      className={`text-[11px] font-semibold uppercase tracking-wider ${
-                        turn.role === 'interviewer' ? 'text-emerald-400' : 'text-sky-400'
-                      }`}
-                    >
-                      {turn.role === 'interviewer' ? 'Interviewer' : 'Candidate'}
-                    </span>
-                    <p className="text-sm text-slate-200 leading-relaxed">{turn.text}</p>
-                  </div>
-                ))}
+                {turns.map((turn, i) => <TranscriptBubble key={i} turn={turn} />)}
               </div>
             )}
           </section>

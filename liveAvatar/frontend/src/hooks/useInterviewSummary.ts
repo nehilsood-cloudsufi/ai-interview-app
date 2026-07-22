@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { API_URL } from '../config';
+import { useIntervalPoll } from './useIntervalPoll';
 import type {
   FinalizeTranscriptResponse,
   FollowupRecommendation,
@@ -48,39 +49,32 @@ const isTerminal = (status: PipelineStatus | null) => status === 'ready' || stat
 export function useInterviewSummary(interviewId: string | null = null) {
   const [state, setState] = useState<SummaryState>(INITIAL);
 
-  // Active polling interval; cleared on terminal status, dismiss, or unmount.
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const stopPolling = useCallback(() => {
-    if (pollRef.current !== null) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
+  // Which interview to poll; null = not polling. Set by finalize once the
+  // background pipeline starts, cleared on terminal status or dismiss
+  // (unmount cleanup is owned by useIntervalPoll).
+  const [pollingId, setPollingId] = useState<string | null>(null);
 
   // Poll GET /api/interview/{id}/state until the pipeline reaches a terminal
   // status, merging scorecard/insights/recommendation as they arrive.
-  const startPolling = useCallback((id: string) => {
-    stopPolling();
-    const tick = async () => {
-      try {
-        const res = await fetch(`${API_URL}/api/interview/${id}/state`);
-        if (!res.ok) return; // 404 while unknown / transient — keep last good data
-        const data: InterviewStateResponse = await res.json();
-        setState(prev => ({
-          ...prev,
-          pipelineStatus: data.pipeline_status ?? prev.pipelineStatus,
-          scorecard: data.scorecard ?? prev.scorecard,
-          insights: data.insights ?? prev.insights,
-          recommendation: data.recommendation ?? prev.recommendation,
-        }));
-        if (isTerminal(data.pipeline_status)) stopPolling();
-      } catch (err) {
-        console.error('Interview state poll failed:', err);
-      }
-    };
-    tick();
-    pollRef.current = setInterval(tick, POLL_INTERVAL_MS);
-  }, [stopPolling]);
+  useIntervalPoll(async (signal) => {
+    if (!pollingId) return;
+    try {
+      const res = await fetch(`${API_URL}/api/interview/${pollingId}/state`);
+      if (!res.ok) return; // 404 while unknown / transient — keep last good data
+      const data: InterviewStateResponse = await res.json();
+      if (signal.cancelled) return;
+      setState(prev => ({
+        ...prev,
+        pipelineStatus: data.pipeline_status ?? prev.pipelineStatus,
+        scorecard: data.scorecard ?? prev.scorecard,
+        insights: data.insights ?? prev.insights,
+        recommendation: data.recommendation ?? prev.recommendation,
+      }));
+      if (isTerminal(data.pipeline_status)) setPollingId(null);
+    } catch (err) {
+      console.error('Interview state poll failed:', err);
+    }
+  }, POLL_INTERVAL_MS, pollingId !== null);
 
   const finalize = useCallback(async (turns: TranscriptTurn[], sessionId: string | null) => {
     if (turns.length === 0) return;
@@ -118,7 +112,7 @@ export function useInterviewSummary(interviewId: string | null = null) {
       // Gateway mode: the background pipeline fills scorecard/insights/
       // recommendation after finalize returns — poll for them.
       if (interviewId && data.pipeline_status && !isTerminal(data.pipeline_status)) {
-        startPolling(interviewId);
+        setPollingId(interviewId);
       }
     } catch (err) {
       console.error('Transcript finalize failed:', err);
@@ -129,15 +123,12 @@ export function useInterviewSummary(interviewId: string | null = null) {
         error: 'Could not reach the server to generate the summary. The transcript below is still available to download.',
       }));
     }
-  }, [interviewId, startPolling]);
+  }, [interviewId]);
 
   const dismiss = useCallback(() => {
-    stopPolling();
+    setPollingId(null);
     setState(INITIAL);
-  }, [stopPolling]);
-
-  // Stop polling if the component unmounts mid-pipeline.
-  useEffect(() => stopPolling, [stopPolling]);
+  }, []);
 
   return { ...state, finalize, dismiss };
 }
