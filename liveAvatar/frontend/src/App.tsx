@@ -30,6 +30,8 @@ function App() {
   // Interview mode. One-way: an avatar session can switch to chat, never back.
   const [mode, setMode] = useState<InterviewMode>('avatar');
   const [interviewId, setInterviewId] = useState<string | null>(null);
+  // Prod tier only: the session length picked on the start screen (seconds).
+  const [plannedSeconds, setPlannedSeconds] = useState<number | null>(null);
   const [networkBannerDismissed, setNetworkBannerDismissed] = useState(false);
 
   const networkQuality = useNetworkQuality();
@@ -54,12 +56,18 @@ function App() {
 
   const sessionDuration = useSessionTimer(status);
 
-  const enterInterview = (id: string, chosenMode: InterviewMode) => {
+  const enterInterview = (id: string, chosenMode: InterviewMode, durationSeconds?: number) => {
     setInterviewId(id);
     setMode(chosenMode);
+    setPlannedSeconds(durationSeconds ?? null);
     if (chosenMode === 'chat') chat.start([]);
     setView('interview');
   };
+
+  // Prod tier: the picked session length -> the timer badge counts DOWN so
+  // the vendor is conscious of the limit (the Host wraps up in the final
+  // minute server-side). Dev tier: null -> elapsed timer as before.
+  const remainingSeconds = plannedSeconds !== null ? Math.max(0, plannedSeconds - sessionDuration) : null;
 
   // One-way switch from a live avatar session to text chat. The captured
   // transcript is carried into the chat; the normal end-of-session finalize is
@@ -118,8 +126,15 @@ function App() {
           <div className="flex items-center gap-3 shrink-0">
             <ConcurrencyBadge count={concurrencyCount} />
             {mode === 'avatar' && status === 'connected' && (
-              <span className="font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-lg text-sm font-semibold tracking-wider shadow-inner">
-                {formatTime(sessionDuration)}
+              <span
+                className={`font-mono px-3 py-1.5 rounded-lg text-sm font-semibold tracking-wider shadow-inner border ${
+                  remainingSeconds !== null && remainingSeconds <= 60
+                    ? 'text-amber-400 bg-amber-500/10 border-amber-500/20'
+                    : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
+                }`}
+                title={remainingSeconds !== null ? 'Time remaining' : 'Session time'}
+              >
+                {remainingSeconds !== null ? `${formatTime(remainingSeconds)} left` : formatTime(sessionDuration)}
               </span>
             )}
             {mode === 'avatar' && (

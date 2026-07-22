@@ -35,6 +35,30 @@ class Settings:
         default_factory=lambda: int(os.getenv("PROD_MAX_SESSION_SECONDS", "600"))
     )
 
+    # --- Time-aware wrap-up (avatar sessions with a clock, i.e. prod tier) ---
+    # The Host paces the interview against state.max_session_seconds so the
+    # session never ends mid-sentence; HeyGen's hard cap gets this much grace
+    # beyond the picked duration and acts purely as a safety net.
+    prod_session_grace_seconds: int = 60
+    # Under this many remaining seconds: no more follow-ups (answers are
+    # accepted as complete) and replies are kept short via the prompt below.
+    host_time_pressure_seconds: int = 120
+    # Under this many remaining seconds: skip whatever questions remain and
+    # deliver the canned closing while the stream is still alive.
+    host_wrapup_seconds: int = 60
+    # Appended to the system prompt during the time-pressure window.
+    host_time_pressure_prompt: str = (
+        "The session is nearly out of time. Keep your reply to one or two "
+        "short sentences, accept the vendor's answer as complete rather than "
+        "asking follow-ups, and move briskly to the next question."
+    )
+    # Spoken (without an LLM call) when the wrap-up threshold is reached.
+    host_timeup_reply: str = (
+        "I'm afraid we're right at time for today, so let's pause here. "
+        "Thank you for walking me through everything - our evaluation team "
+        "will review the conversation and follow up with next steps."
+    )
+
     # --- Resonance multi-agent interview ---
     # Externally reachable base URL of this backend (Cloud Run URL or a dev
     # tunnel), so HeyGen can call back into /llm/{interview_id}/v1. Required

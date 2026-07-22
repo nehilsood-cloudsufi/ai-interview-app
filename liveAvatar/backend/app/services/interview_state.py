@@ -56,6 +56,10 @@ class InterviewState:
     # sessions, derived from the start screen's duration pick at creation.
     # None on the dev tier (the sandbox ~1-min cap applies regardless).
     max_session_seconds: int | None = None
+    # Stamped by the Host on the first avatar-mode turn of a clocked
+    # (max_session_seconds-bearing) interview; the wrap-up thresholds in
+    # host_agent count down from here. None until then / on dev tier.
+    first_turn_at: datetime | None = None
     heygen_session_id: str | None = None
     llm_config_id: str | None = None
     secret_id: str | None = None

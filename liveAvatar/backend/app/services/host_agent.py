@@ -28,6 +28,7 @@ again" reply is returned and the state is left completely unchanged.
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Literal
 
 from app.config import settings
@@ -96,6 +97,37 @@ class TurnResult:
     answer_text: str  # user's full answer for the completed question ("" if not complete)
 
 
+def _seconds_remaining(state: InterviewState, mode: Literal["avatar", "chat"]) -> float | None:
+    """Session-clock bookkeeping for time-aware pacing. Returns the seconds
+    left on the interview's session clock, stamping `state.first_turn_at` on
+    the first clocked turn. Returns None whenever there is no clock to pace
+    against: chat mode (no HeyGen session, no cap) or an interview without
+    `max_session_seconds` (dev tier - the ~1-min sandbox cap is too short to
+    pace, sessions there just end)."""
+    if mode != "avatar" or state.max_session_seconds is None:
+        return None
+    now = datetime.now(timezone.utc)
+    if state.first_turn_at is None:
+        state.first_turn_at = now
+    return state.max_session_seconds - (now - state.first_turn_at).total_seconds()
+
+
+def _wrapup_turn(state: InterviewState, user_text: str) -> TurnResult:
+    """Deterministic time's-up closing: no LLM call (no latency/failure risk
+    in the final seconds), the remaining script is skipped, and the exchange
+    still lands in the transcript for the Evaluator."""
+    state.turns.append(TranscriptTurn(role="candidate", text=user_text))
+    state.turns.append(TranscriptTurn(role="interviewer", text=settings.host_timeup_reply))
+    state.current_node_id = END_NODE_ID
+    state.followup_count = 0
+    return TurnResult(
+        reply=settings.host_timeup_reply,
+        answer_complete=False,
+        completed_question=None,
+        answer_text="",
+    )
+
+
 def _render_transcript(turns: list[TranscriptTurn]) -> str:
     lines = []
     for turn in turns:
@@ -118,6 +150,7 @@ def _render_system_content(
     node: QuestionNode,
     questionnaire: dict[str, QuestionNode],
     mode: Literal["avatar", "chat"] = "avatar",
+    time_pressured: bool = False,
 ) -> str:
     profile = state.vendor_profile
 
@@ -157,6 +190,9 @@ def _render_system_content(
     if mode == "chat":
         lines += ["", settings.host_chat_mode_prompt]
 
+    if time_pressured:
+        lines += ["", settings.host_time_pressure_prompt]
+
     return "\n".join(lines)
 
 
@@ -172,6 +208,7 @@ def _build_payload(
     user_text: str,
     questionnaire: dict[str, QuestionNode],
     mode: Literal["avatar", "chat"] = "avatar",
+    time_pressured: bool = False,
 ) -> dict:
     """The per-turn Gemini request, shared by the buffered and streaming paths.
     `reply` is first in `_TURN_SCHEMA` so the streaming path can speak it before
@@ -179,7 +216,10 @@ def _build_payload(
     return {
         "model": settings.gemini_model,
         "messages": [
-            {"role": "system", "content": _render_system_content(state, node, questionnaire, mode)},
+            {
+                "role": "system",
+                "content": _render_system_content(state, node, questionnaire, mode, time_pressured),
+            },
             {"role": "user", "content": _render_user_content(state, user_text)},
         ],
         "response_format": {
@@ -197,8 +237,9 @@ async def _call_gemini(
     user_text: str,
     questionnaire: dict[str, QuestionNode],
     mode: Literal["avatar", "chat"] = "avatar",
+    time_pressured: bool = False,
 ) -> dict:
-    payload = _build_payload(state, node, user_text, questionnaire, mode)
+    payload = _build_payload(state, node, user_text, questionnaire, mode, time_pressured)
 
     # Parse failures get one retry (fresh sample, fast); HTTP failures don't -
     # a Gemini outage should fall back immediately, not double the wait inside
@@ -248,10 +289,15 @@ async def handle_turn(
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured; cannot run the host agent.")
 
+    remaining = _seconds_remaining(state, mode)
+    if remaining is not None and remaining <= settings.host_wrapup_seconds:
+        return _wrapup_turn(state, user_text)
+    time_pressured = remaining is not None and remaining <= settings.host_time_pressure_seconds
+
     node = questionnaire[state.current_node_id]
 
     try:
-        parsed = await _call_gemini(state, node, user_text, questionnaire, mode)
+        parsed = await _call_gemini(state, node, user_text, questionnaire, mode, time_pressured)
         reply = str(parsed["reply"])
         answer_complete = bool(parsed.get("answer_complete"))
         profile_updates = parsed.get("profile_updates")
@@ -269,7 +315,12 @@ async def handle_turn(
             answer_text="",
         )
 
-    return _apply_outcome(state, node, user_text, reply, answer_complete, profile_updates)
+    # Under time pressure the script must keep moving: even if the LLM judged
+    # the answer incomplete, accept it and advance rather than spend the
+    # remaining seconds on follow-ups.
+    return _apply_outcome(
+        state, node, user_text, reply, answer_complete or time_pressured, profile_updates
+    )
 
 
 def _merge_profile_updates(profile: VendorProfile, updates: dict | None, locked: set[str]) -> None:
@@ -377,8 +428,15 @@ async def stream_turn(
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured; cannot run the host agent.")
 
+    remaining = _seconds_remaining(state, mode)
+    if remaining is not None and remaining <= settings.host_wrapup_seconds:
+        outcome.result = _wrapup_turn(state, user_text)
+        yield settings.host_timeup_reply
+        return
+    time_pressured = remaining is not None and remaining <= settings.host_time_pressure_seconds
+
     node = questionnaire[state.current_node_id]
-    payload = _build_payload(state, node, user_text, questionnaire, mode)
+    payload = _build_payload(state, node, user_text, questionnaire, mode, time_pressured)
     extractor = ReplyStreamExtractor()
 
     try:
@@ -388,7 +446,7 @@ async def stream_turn(
             chunk = extractor.feed(delta)
             if chunk:
                 yield chunk
-        parsed, remaining = extractor.finalize()
+        parsed, remainder = extractor.finalize()
     except Exception:
         logger.warning(
             "Streaming host turn failed for interview %s at node %s.",
@@ -413,13 +471,13 @@ async def stream_turn(
             )
         return
 
-    if remaining:
-        yield remaining
+    if remainder:
+        yield remainder
     outcome.result = _apply_outcome(
         state,
         node,
         user_text,
-        extractor.emitted + remaining,
-        bool(parsed.get("answer_complete")),
+        extractor.emitted + remainder,
+        bool(parsed.get("answer_complete")) or time_pressured,
         parsed.get("profile_updates"),
     )
