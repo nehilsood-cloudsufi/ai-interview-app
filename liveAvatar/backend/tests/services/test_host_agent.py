@@ -731,6 +731,54 @@ async def test_handle_turn_chat_mode_omits_avatar_prompt(patch_settings):
 
 
 @respx.mock
+async def test_cancelled_turn_is_skipped_before_the_gemini_call(patch_settings):
+    # HeyGen cancels a request the moment a newer speech fragment supersedes
+    # it. A turn whose request is already gone must be skipped entirely:
+    # no Gemini call, no state mutation, None returned.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    async def already_cancelled():
+        return True
+
+    result = await handle_turn(
+        state, "I", make_questionnaire(), make_rubric(), is_cancelled=already_cancelled
+    )
+
+    assert result is None
+    assert not route.called
+    assert state.current_node_id == "company_overview"
+    assert state.turns == []
+    assert state.followup_count == 0
+
+
+@respx.mock
+async def test_turn_cancelled_during_gemini_call_discards_outcome(patch_settings):
+    # Cancellation landing while Gemini is answering: the reply will never be
+    # spoken, so the outcome must be discarded before any state mutation -
+    # "if the vendor never heard it, it didn't happen".
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    checks = iter([False, True])  # pre-check passes, post-Gemini check reports cancelled
+
+    async def cancelled_mid_call():
+        return next(checks)
+
+    result = await handle_turn(
+        state, "work as an engineer at", make_questionnaire(), make_rubric(), is_cancelled=cancelled_mid_call
+    )
+
+    assert result is None
+    assert route.call_count == 1
+    assert state.current_node_id == "company_overview"
+    assert state.turns == []
+    assert state.followup_count == 0
+
+
+@respx.mock
 async def test_concurrent_turns_serialize_per_interview(patch_settings):
     # HeyGen's VAD can fire overlapping gateway calls when it splits one
     # flowing answer into fragments (seen live 2026-07-22: two turns processed

@@ -208,6 +208,11 @@ class InterviewStateResponse(BaseModel):
     # Topic of the current questionnaire node; None when the interview has
     # reached END (or the node id is unknown).
     current_topic: str | None
+    # True once the script has reached END - the closing has been (or is
+    # being) spoken and no further questions remain. The avatar frontend
+    # auto-stops the session shortly after this flips, so post-interview
+    # utterances can't loop the canned closing forever.
+    done: bool = False
     insights: list[ScoutFindingModel]
     updated_at: str  # ISO-8601 UTC timestamp of this snapshot
     # Post-interview pipeline progress (None until finalize hands the

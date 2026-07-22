@@ -196,6 +196,20 @@ def test_get_domains(client):
     assert body["default"] in ids
 
 
+def test_state_reports_done_only_at_end(client):
+    created = client.post("/api/interview", json={"domain": "ai_ml"}).json()
+    interview_id = created["interview_id"]
+
+    body = client.get(f"/api/interview/{interview_id}/state").json()
+    assert body["done"] is False
+
+    # Reaching END flips done - the avatar frontend auto-stops on this.
+    interview_state.get(interview_id).current_node_id = host_agent.END_NODE_ID
+    body = client.get(f"/api/interview/{interview_id}/state").json()
+    assert body["done"] is True
+    assert body["current_topic"] is None
+
+
 def test_create_interview_id_resolves_via_get_state(client):
     response = client.post("/api/interview")
     interview_id = response.json()["interview_id"]

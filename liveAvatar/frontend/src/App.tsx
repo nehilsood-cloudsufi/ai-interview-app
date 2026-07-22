@@ -95,6 +95,20 @@ function App() {
   const showNetworkBanner =
     mode === 'avatar' && status === 'connected' && networkQuality === 'poor' && !networkBannerDismissed;
 
+  // Interview reached END while the avatar session is still live: give the
+  // closing line time to finish speaking, then stop the session ourselves
+  // (normal stop path -> finalize -> summary). Without this, every further
+  // utterance re-spoke the canned closing in a loop (seen live 2026-07-22)
+  // while prod-tier credits kept burning.
+  useEffect(() => {
+    if (!(mode === 'avatar' && status === 'connected' && vendorProfile.interviewDone)) return;
+    const timer = setTimeout(() => stopSession(), 8000);
+    return () => clearTimeout(timer);
+    // stopSession is recreated per render but stable in behavior; deps kept
+    // to the actual trigger conditions so the timer isn't re-armed each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, status, vendorProfile.interviewDone]);
+
   // Turn-taking stall: HeyGen can drop the avatar's cancelled reply and wait
   // for fresh user speech - both sides then sit silent. After 20s of neither
   // party speaking, nudge the user (speaking again resumes the interview).

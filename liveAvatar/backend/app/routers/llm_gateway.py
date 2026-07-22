@@ -31,11 +31,33 @@ _GREETING_REPLY = "Hello! Thanks for joining. Whenever you're ready, we can begi
 def _last_user_text(body: dict) -> str | None:
     """Pull the vendor's latest utterance out of an OpenAI chat-completions
     request body, or None if the request carries no user message yet (the
-    pre-utterance greeting probe). The Host only needs the newest thing the
-    vendor said, not the whole replayed history."""
-    # Full history is resent every turn; the latest user utterance is always
-    # the final "user" message (spike finding).
-    for message in reversed(body.get("messages") or []):
+    pre-utterance greeting probe).
+
+    The latest utterance is the TRAILING RUN of consecutive `user` messages
+    joined in order - not just the final message. HeyGen's VAD splits flowing
+    speech into fragments and cancels the in-flight completion each time a
+    new fragment arrives; the cancelled reply never enters HeyGen's history,
+    so the next request shows the earlier fragments as back-to-back user
+    messages (verified live 2026-07-22 via the tunnel inspector: 'I' / 'work
+    as an engineer at CloudSufi.' / 'And I'm working there for about 6
+    months.' arrived as three consecutive user messages). Joining the run
+    reassembles the vendor's full utterance for the Host to judge."""
+    messages = body.get("messages") or []
+
+    run: list[str] = []
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            content = str(message.get("content") or "")
+            if content:
+                run.append(content)
+        else:
+            break
+    if run:
+        return " ".join(reversed(run))
+
+    # No trailing user run (e.g. the history ends with an assistant turn):
+    # fall back to the newest user message anywhere, the original behavior.
+    for message in reversed(messages):
         if message.get("role") == "user":
             return str(message.get("content") or "")
     return None
@@ -192,7 +214,26 @@ async def chat_completions(interview_id: str, request: Request):
         if user_text is None:
             reply = _GREETING_REPLY
         else:
-            result = await host_agent.handle_turn(state, user_text, get_questionnaire(state.domain), get_rubric())
+            # is_cancelled=request.is_disconnected: HeyGen cancels this request
+            # the moment a newer speech fragment supersedes it, and handle_turn
+            # then skips/discards the turn without touching interview state
+            # (the reply would never be spoken). A None result means exactly
+            # that - answer with a stub; nobody is reading it.
+            result = await host_agent.handle_turn(
+                state,
+                user_text,
+                get_questionnaire(state.domain),
+                get_rubric(),
+                is_cancelled=request.is_disconnected,
+            )
+            if result is None:
+                logger.info(
+                    "Gateway turn superseded: interview=%s node=%s elapsed_ms=%d",
+                    interview_id,
+                    state.current_node_id,
+                    int((time.monotonic() - started) * 1000),
+                )
+                return _completion_response(completion_id, created, model, "")
             reply = result.reply
             # answer_complete only feeds the timing log now - scoring happens
             # once, holistically, at finalize (never mid-interview).

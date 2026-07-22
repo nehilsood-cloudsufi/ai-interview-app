@@ -102,6 +102,9 @@ export interface FinalizeTranscriptResponse {
 export interface InterviewStateResponse {
   status: 'created' | 'active' | 'finished';
   current_topic: string | null;
+  // True once the script reached END (closing spoken/being spoken). The
+  // avatar view auto-stops the session shortly after this flips.
+  done: boolean;
   insights: ScoutFinding[];
   updated_at: string;
   pipeline_status: PipelineStatus | null;

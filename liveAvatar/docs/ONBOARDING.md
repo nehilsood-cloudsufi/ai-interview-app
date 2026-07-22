@@ -352,9 +352,18 @@ top level.
   dropped and both sides wait for the other (diagnosed live 2026-07-22: backend
   200s, then zero further `/llm/` calls on a healthy tunnel). Saying anything
   ("shall we continue?") forces a new gateway call and resumes the script. The
-  UI shows a nudge banner after ~20 s of mutual silence, and the Host prompt
-  now treats unfinished speech fragments as incomplete answers so they don't
-  burn script questions.
+  UI shows a nudge banner after ~20 s of mutual silence.
+- **How the gateway survives VAD fragmentation** (also 2026-07-22, see the
+  `llm_gateway`/`host_agent` docstrings): cancelled replies never enter
+  HeyGen's message history, so fragments arrive as consecutive trailing
+  `user` messages — `_last_user_text` joins that run back into the full
+  utterance. `handle_turn` takes `request.is_disconnected` and skips (or
+  discards, if cancellation lands mid-Gemini-call) any turn whose request
+  HeyGen already abandoned: a reply the vendor never heard must not append
+  turns, burn follow-up budget, or advance the script. Turns serialize on
+  `InterviewState.turn_lock`. And once the script reaches END, `/state`
+  reports `done: true` and the frontend auto-stops the session ~8 s later —
+  without that, every post-interview utterance re-spoke the canned closing.
 - **Concurrency counter drift.** The active-session counter only decrements on an
   explicit `/api/session/stop`. When HeyGen ends a session server-side (sandbox
   ~1-min cap, or a prod `max_session_duration`), the frontend resets its UI but

@@ -26,7 +26,7 @@ again" reply is returned and the state is left completely unchanged.
 """
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
@@ -299,7 +299,8 @@ async def handle_turn(
     questionnaire: dict[str, QuestionNode],
     rubric: dict[str, RubricCategory] | None,
     mode: Literal["avatar", "chat"] = "avatar",
-) -> TurnResult:
+    is_cancelled: Callable[[], Awaitable[bool]] | None = None,
+) -> TurnResult | None:
     """Process one user utterance: one Gemini call, then code-driven state
     mutation. `rubric` is accepted for interface parity with the Evaluator
     flow; the Host itself does not score answers. `mode` selects which
@@ -312,9 +313,24 @@ async def handle_turn(
     Turns for the same interview are serialized on `state.turn_lock`: HeyGen's
     VAD can fire overlapping gateway calls for one flowing answer, and two
     concurrent turns reading the same `current_node_id` would double-advance
-    the script (seen live 2026-07-22)."""
+    the script (seen live 2026-07-22).
+
+    `is_cancelled` (the gateway passes `request.is_disconnected`) makes
+    superseded turns invisible: HeyGen cancels its in-flight request whenever
+    a new speech fragment arrives, so a turn whose request is already gone is
+    skipped before the Gemini call - and its outcome is discarded before any
+    state mutation if the cancellation lands mid-call. Returns None in both
+    cases (nobody is listening for the reply); the interview state then only
+    ever advances on turns the vendor could actually hear."""
     async with state.turn_lock:
-        return await _handle_turn(state, user_text, questionnaire, rubric, mode)
+        if is_cancelled is not None and await is_cancelled():
+            logger.info(
+                "Turn superseded before processing for interview %s at node %s; skipping.",
+                state.interview_id,
+                state.current_node_id,
+            )
+            return None
+        return await _handle_turn(state, user_text, questionnaire, rubric, mode, is_cancelled)
 
 
 async def _handle_turn(
@@ -323,7 +339,8 @@ async def _handle_turn(
     questionnaire: dict[str, QuestionNode],
     rubric: dict[str, RubricCategory] | None,
     mode: Literal["avatar", "chat"] = "avatar",
-) -> TurnResult:
+    is_cancelled: Callable[[], Awaitable[bool]] | None = None,
+) -> TurnResult | None:
     """`handle_turn`'s body, running with `state.turn_lock` already held."""
     if state.current_node_id == END_NODE_ID:
         return TurnResult(
@@ -361,6 +378,18 @@ async def _handle_turn(
             completed_question=None,
             answer_text="",
         )
+
+    # A new speech fragment may have superseded this turn while Gemini was
+    # answering - HeyGen has already dropped the connection, so the reply will
+    # never be spoken. Discard the outcome before ANY state mutation: if the
+    # vendor never heard it, it didn't happen.
+    if is_cancelled is not None and await is_cancelled():
+        logger.info(
+            "Turn superseded during Gemini call for interview %s at node %s; discarding outcome.",
+            state.interview_id,
+            state.current_node_id,
+        )
+        return None
 
     # Under time pressure the script must keep moving: even if the LLM judged
     # the answer incomplete, accept it and advance rather than spend the

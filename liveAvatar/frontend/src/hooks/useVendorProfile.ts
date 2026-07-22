@@ -11,6 +11,9 @@ const POLL_INTERVAL_MS = 5000;
 interface VendorProfileState {
   profile: VendorProfile | null;
   isOnboarding: boolean;
+  // True once the interview script has reached END - App uses this to
+  // auto-stop a still-connected avatar session after the closing line.
+  interviewDone: boolean;
   saveProfile: (changes: Partial<VendorProfile>) => Promise<boolean>;
 }
 
@@ -34,6 +37,7 @@ interface VendorProfileState {
 export function useVendorProfile(interviewId: string | null, active: boolean): VendorProfileState {
   const [profile, setProfile] = useState<VendorProfile | null>(null);
   const [isOnboarding, setIsOnboarding] = useState(false);
+  const [interviewDone, setInterviewDone] = useState(false);
 
   // The hook's own stop conditions (a 404, or MAX_CONSECUTIVE_FAILURES in a
   // row) flip `gaveUp`, which deactivates the shared poll below. A new
@@ -42,6 +46,7 @@ export function useVendorProfile(interviewId: string | null, active: boolean): V
   const failuresRef = useRef(0);
   useEffect(() => {
     setGaveUp(false);
+    setInterviewDone(false);
     failuresRef.current = 0;
   }, [interviewId, active]);
 
@@ -71,6 +76,7 @@ export function useVendorProfile(interviewId: string | null, active: boolean): V
 
       setProfile(data.vendor_profile);
       setIsOnboarding(data.current_topic === 'onboarding');
+      setInterviewDone(data.done === true);
     } catch {
       if (signal.cancelled) return;
       recordFailure();
@@ -105,5 +111,5 @@ export function useVendorProfile(interviewId: string | null, active: boolean): V
     [interviewId],
   );
 
-  return { profile, isOnboarding, saveProfile };
+  return { profile, isOnboarding, interviewDone, saveProfile };
 }
