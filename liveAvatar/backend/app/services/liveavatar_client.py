@@ -1,22 +1,11 @@
-import logging
 import uuid
 
 import httpx
 
 from app.config import settings
 
-logger = logging.getLogger(__name__)
 
-
-# Spoken by the avatar before any LLM call. The legacy (candidate-interview)
-# default; gateway mode passes a per-vendor greeting instead.
-DEFAULT_OPENING_TEXT = (
-    "Hello! I've reviewed the documents you shared. "
-    "Let me know when you're ready to begin the technical interview."
-)
-
-
-async def create_context(api_key: str, full_prompt: str, opening_text: str = DEFAULT_OPENING_TEXT) -> str:
+async def create_context(api_key: str, full_prompt: str, opening_text: str) -> str:
     unique_name = f"AI Interviewer w/ Context {uuid.uuid4().hex[:8]}"
     async with httpx.AsyncClient() as client:
         context_res = await client.post(
@@ -96,7 +85,6 @@ async def create_session_token(
     api_key: str,
     llm_configuration_id: str | None,
     context_id: str | None,
-    gemini_llm_configuration_id: str | None,
     *,
     avatar_id: str | None = None,
     is_sandbox: bool = True,
@@ -123,30 +111,12 @@ async def create_session_token(
         token_payload["max_session_duration"] = max_session_duration
 
     async with httpx.AsyncClient() as client:
-        try:
-            token_response = await client.post(
-                f"{settings.liveavatar_base_url}/sessions/token",
-                json=token_payload,
-                headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-            )
-            token_response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            # Fallback to HeyGen AI if Gemini config fails (e.g., config got deleted, or API key issue)
-            if llm_configuration_id and gemini_llm_configuration_id:
-                logger.warning(
-                    "Failed to create session with Gemini LLM config (%s). Falling back to default HeyGen AI...",
-                    e.response.text,
-                )
-                token_payload.pop("llm_configuration_id", None)
-                token_response = await client.post(
-                    f"{settings.liveavatar_base_url}/sessions/token",
-                    json=token_payload,
-                    headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-                )
-                token_response.raise_for_status()
-            else:
-                raise
-
+        token_response = await client.post(
+            f"{settings.liveavatar_base_url}/sessions/token",
+            json=token_payload,
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+        )
+        token_response.raise_for_status()
         return token_response.json()["data"]
 
 

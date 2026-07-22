@@ -112,17 +112,6 @@ def get(interview_id: str) -> InterviewState | None:
     return _interviews.get(interview_id)
 
 
-def get_by_token(token: str) -> InterviewState | None:
-    for state in _interviews.values():
-        if secrets.compare_digest(state.gateway_token, token):
-            return state
-    return None
-
-
-def remove(interview_id: str) -> None:
-    _interviews.pop(interview_id, None)
-
-
 def prune_older_than(hours: int = 6) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     stale_ids = [interview_id for interview_id, state in _interviews.items() if state.created_at < cutoff]

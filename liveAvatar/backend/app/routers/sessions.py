@@ -91,7 +91,6 @@ async def _create_gateway_session(body: CreateSessionRequest) -> dict:
             liveavatar_key,
             llm_config_id,
             context_id,
-            None,
             avatar_id=avatar_id,
             is_sandbox=is_sandbox,
             voice_id=voice_id,
