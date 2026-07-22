@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { MessageSquareText } from 'lucide-react';
 import { useLiveAvatarSession } from './hooks/useLiveAvatarSession';
+import { useAvatarStall } from './hooks/useAvatarStall';
 import { useNetworkQuality } from './hooks/useNetworkQuality';
 import { useConcurrencyPoll } from './hooks/useConcurrencyPoll';
 import { useSessionTimer } from './hooks/useSessionTimer';
@@ -11,6 +12,7 @@ import { StartScreen } from './components/StartScreen';
 import { ChatPanel } from './components/ChatPanel';
 import { InterviewHeader } from './components/InterviewHeader';
 import { NetworkBanner } from './components/NetworkBanner';
+import { AvatarStallBanner } from './components/AvatarStallBanner';
 import { SpeakingIndicator } from './components/SpeakingIndicator';
 import { AvatarVideoPanel } from './components/AvatarVideoPanel';
 import { LocalVideoPanel } from './components/LocalVideoPanel';
@@ -92,6 +94,18 @@ function App() {
 
   const showNetworkBanner =
     mode === 'avatar' && status === 'connected' && networkQuality === 'poor' && !networkBannerDismissed;
+
+  // Turn-taking stall: HeyGen can drop the avatar's cancelled reply and wait
+  // for fresh user speech - both sides then sit silent. After 20s of neither
+  // party speaking, nudge the user (speaking again resumes the interview).
+  // Dismissal lasts only for the current stall episode; it re-arms once
+  // someone speaks.
+  const avatarStalled = useAvatarStall(mode === 'avatar' && status === 'connected', speakingState);
+  const [stallBannerDismissed, setStallBannerDismissed] = useState(false);
+  useEffect(() => {
+    if (!avatarStalled) setStallBannerDismissed(false);
+  }, [avatarStalled]);
+  const showStallBanner = avatarStalled && !stallBannerDismissed && !showNetworkBanner;
 
   // Card is visible for the whole interview (session/chat active) once the
   // first poll response has arrived - gated by view/mode via each render
@@ -189,6 +203,11 @@ function App() {
             {/* Poor-network auto-suggest */}
             {showNetworkBanner && (
               <NetworkBanner onSwitchToChat={switchToChat} onDismiss={() => setNetworkBannerDismissed(true)} />
+            )}
+
+            {/* Stalled-conversation nudge (see useAvatarStall) */}
+            {showStallBanner && (
+              <AvatarStallBanner onSwitchToChat={switchToChat} onDismiss={() => setStallBannerDismissed(true)} />
             )}
 
             {/* Controls */}

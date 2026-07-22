@@ -345,6 +345,16 @@ top level.
 - **Check credits before a demo.** `uv run python scripts/check_account.py`
   prints your credit balance and any active sessions. Prod-tier avatar time
   burns 2 credits/minute.
+- **Avatar goes quiet mid-interview? Just speak.** HeyGen cancels the avatar's
+  in-flight reply whenever new user speech arrives (its VAD splits flowing
+  answers into fragments, each firing a fresh gateway call), and after the last
+  cancellation it may never re-request one — the avatar's next line is silently
+  dropped and both sides wait for the other (diagnosed live 2026-07-22: backend
+  200s, then zero further `/llm/` calls on a healthy tunnel). Saying anything
+  ("shall we continue?") forces a new gateway call and resumes the script. The
+  UI shows a nudge banner after ~20 s of mutual silence, and the Host prompt
+  now treats unfinished speech fragments as incomplete answers so they don't
+  burn script questions.
 - **Concurrency counter drift.** The active-session counter only decrements on an
   explicit `/api/session/stop`. When HeyGen ends a session server-side (sandbox
   ~1-min cap, or a prod `max_session_duration`), the frontend resets its UI but
