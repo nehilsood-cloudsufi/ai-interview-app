@@ -259,7 +259,6 @@ export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: Use
   }, [session]);
 
   return {
-    session,
     status,
     speakingState,
     micEnabled,
