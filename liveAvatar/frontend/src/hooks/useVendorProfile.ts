@@ -14,14 +14,23 @@ interface VendorProfileState {
   saveProfile: (changes: Partial<VendorProfile>) => Promise<boolean>;
 }
 
-// Polls GET /api/interview/{id}/state for the WHOLE interview (both avatar
-// and chat modes), so a ProfileCard can show - and let the vendor edit via
-// PATCH /api/interview/{id}/profile - the profile Noor has captured, not
-// just during onboarding. Stops only on a 404 or after a few consecutive
-// failures; unmount / active=false tears the poll down too. isOnboarding
-// still reflects current_topic === 'onboarding' so the card's heading can
-// change once onboarding wraps up, but (unlike the old onboarding-only hook)
-// the poll itself keeps running past that point.
+/**
+ * Polls GET /api/interview/{id}/state for the WHOLE interview (both avatar
+ * and chat modes), so a ProfileCard can show - and let the vendor edit via
+ * PATCH /api/interview/{id}/profile - the profile Noor has captured, not
+ * just during onboarding.
+ *
+ * Returns `{ profile, isOnboarding, saveProfile }`: the captured profile (null
+ * until the first response), whether onboarding is still in progress
+ * (current_topic === 'onboarding', so the card's heading can change once it
+ * wraps up), and saveProfile — a PATCH of the changed fields that applies the
+ * server's echoed profile immediately.
+ *
+ * Lifecycle: polls every 5s while `active` and an interviewId is set. Stops on
+ * a 404 or after a few consecutive failures (giving up quietly); unmount or
+ * `active` turning false tears the poll down too. Unlike the old
+ * onboarding-only hook, the poll keeps running past onboarding.
+ */
 export function useVendorProfile(interviewId: string | null, active: boolean): VendorProfileState {
   const [profile, setProfile] = useState<VendorProfile | null>(null);
   const [isOnboarding, setIsOnboarding] = useState(false);

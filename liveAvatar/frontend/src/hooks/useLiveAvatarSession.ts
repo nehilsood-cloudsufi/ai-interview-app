@@ -20,6 +20,31 @@ interface StopOptions {
   suppressSessionEnd?: boolean;
 }
 
+/**
+ * Owns the full LiveAvatar (HeyGen) session lifecycle for one avatar
+ * interview: creating the backend session, wiring the SDK's stream/speaking/
+ * transcription events, managing mic + local camera, capturing the transcript,
+ * and tearing everything down cleanly (including orphaned sessions left by a
+ * crash/reload and the beforeunload path).
+ *
+ * Returns session state and controls:
+ * - `status` ('disconnected' | 'connecting' | 'connected'), `speakingState`,
+ *   `micEnabled`, `cameraEnabled`, `transcript` (turns captured live from the
+ *   SDK's transcription events).
+ * - `videoRef` / `localVideoRef` — attach points for the avatar and self-view.
+ * - `startSession()` — POSTs /api/session, opens the SDK session, subscribes
+ *   its event handlers. `stopSession({ suppressSessionEnd })` — tears down
+ *   both the backend (POST /api/session/stop) and the SDK; suppressSessionEnd
+ *   skips the onSessionEnd handoff (the avatar→chat switch, where chat owns
+ *   the transcript). `toggleMic()` / `toggleCamera()`.
+ *
+ * Lifecycle: on mount it clears any orphaned session from a previous load;
+ * event subscriptions live for the session's duration and are removed on
+ * cleanup; a beforeunload listener fires a keepalive stop so a closing tab
+ * still releases backend resources. `onSessionEnd` fires once when a session
+ * ends (stop button or server-side SESSION_DISCONNECTED), handing the captured
+ * transcript + session id to the caller for finalize — unless suppressed.
+ */
 export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: UseLiveAvatarSessionOptions) {
   const [session, setSession] = useState<LiveAvatarSession | null>(null);
   const [status, setStatus] = useState<SessionStatus>('disconnected');

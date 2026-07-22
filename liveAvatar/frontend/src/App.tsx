@@ -22,6 +22,19 @@ import { ErrorToast } from './components/ErrorToast';
 import { SHOW_SELF_VIEW } from './config';
 import type { InterviewMode } from './types';
 
+/**
+ * Root composition for the interview experience. Renders one of two views:
+ * the StartScreen (pick avatar vs. text-chat mode and mint an interview_id)
+ * and the interview room. The room runs in one of two modes — avatar (live
+ * HeyGen session) or text chat — and supports a ONE-WAY switch from avatar to
+ * chat (never back), carrying the captured transcript into the chat so the
+ * same interview continues rather than being finalized early.
+ *
+ * This component is composition-only: it wires the hooks (session, chat,
+ * profile, summary, network, concurrency, timer) to the presentational
+ * components and holds just the small amount of view/mode state that
+ * coordinates them.
+ */
 function App() {
   const [error, setError] = useState<string | null>(null);
   // Two views: the start screen (pick a mode) and the interview room.

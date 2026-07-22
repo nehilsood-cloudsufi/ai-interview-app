@@ -22,11 +22,16 @@ interface SummaryState {
   sessionId: string | null;
   // Set when the transcript was saved but the summary could not be generated.
   error: string | null;
-  // Post-interview pipeline progress; null in legacy mode (no interview_id).
+  // Post-interview pipeline progress; null until finalize hands the interview
+  // off to the background pipeline (terminal states: "ready" | "failed").
   pipelineStatus: PipelineStatus | null;
   // Scorecard / research insights / follow-up recommendation. Null at finalize;
   // filled in as the background pipeline reports them via state polling.
   scorecard: ScorecardData | null;
+  // Scout research findings. Intentionally NOT rendered anywhere in the
+  // SummaryPanel UI — the interview must stay unbiased by company research, so
+  // the findings reach the human reviewer only via the downloaded Markdown
+  // record (utils/downloadTranscript.ts). Kept here purely to feed that export.
   insights: ScoutFinding[] | null;
   recommendation: FollowupRecommendation | null;
 }
@@ -46,6 +51,23 @@ const INITIAL: SummaryState = {
 
 const isTerminal = (status: PipelineStatus | null) => status === 'ready' || status === 'failed';
 
+/**
+ * Owns the end-of-interview finalize + summary flow behind the SummaryPanel.
+ *
+ * Returns the flattened SummaryState (visible, isGenerating, summary, turns,
+ * sessionId, error, pipelineStatus, scorecard, insights, recommendation) plus:
+ * - `finalize(turns, sessionId)` — POSTs /api/transcript/finalize, then shows
+ *   the panel with the summary (or a soft-fail error if it couldn't be
+ *   generated). When an interviewId is set, this starts polling for the
+ *   background pipeline's results.
+ * - `dismiss()` — hides the panel and stops polling.
+ *
+ * Lifecycle: after finalize hands the interview to the pipeline, polls GET
+ * /api/interview/{id}/state every 3s, merging scorecard/insights/
+ * recommendation as they arrive, until the pipeline reaches a terminal status
+ * ('ready' | 'failed') — then polling stops. dismiss() also stops it; unmount
+ * cleanup is owned by useIntervalPoll.
+ */
 export function useInterviewSummary(interviewId: string | null = null) {
   const [state, setState] = useState<SummaryState>(INITIAL);
 

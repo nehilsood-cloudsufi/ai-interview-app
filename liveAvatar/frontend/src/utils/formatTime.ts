@@ -1,3 +1,7 @@
+/**
+ * Formats a whole-second count as a zero-padded MM:SS string
+ * (e.g. 75 → "01:15"). Used by the session timer badge.
+ */
 export function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60).toString().padStart(2, '0');
   const s = (seconds % 60).toString().padStart(2, '0');

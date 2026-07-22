@@ -1,3 +1,9 @@
+/**
+ * Shared TypeScript types for the frontend: session/UI enums plus the
+ * request/response shapes for the backend interview, chat, profile, and
+ * transcript endpoints (mirroring the backend Pydantic models).
+ */
+
 export type SessionStatus = 'disconnected' | 'connecting' | 'connected';
 export type SpeakingState = 'idle' | 'user_speaking' | 'avatar_speaking' | 'processing';
 export type NetworkQuality = 'excellent' | 'good' | 'poor' | 'unknown';
