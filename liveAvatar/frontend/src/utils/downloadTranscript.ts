@@ -28,12 +28,13 @@ export function buildTranscriptMarkdown(
   if (scorecard) {
     parts.push('\n## Scorecard\n');
     for (const category of scorecard.categories) {
-      const score = category.score !== null ? `${category.score}/5` : 'not scored';
-      parts.push(`- **${category.name}:** ${score} (weight ${Math.round(category.weight * 100)}%)`);
+      const value = category.value !== null ? category.value : 'not covered';
+      parts.push(`- **${category.name}:** ${value} (weight ${Math.round(category.weight * 100)}%)`);
     }
+    const statusStr = scorecard.status ?? 'unscored';
     parts.push(
       scorecard.overall !== null
-        ? `\n**Overall:** ${scorecard.overall}/5`
+        ? `\n**Overall:** ${scorecard.overall}/100 (**${statusStr}**)`
         : '\n**Overall:** not scored',
     );
   }

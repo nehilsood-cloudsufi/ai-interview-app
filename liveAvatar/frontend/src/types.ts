@@ -48,18 +48,21 @@ export type PipelineStatus =
   | 'failed';
 
 // Final scorecard from the holistic end-of-interview scoring pass; arrives via
-// polling the state endpoint (never during the interview). Scores are 0-5.
+// polling the state endpoint (never during the interview). Categories have a text
+// value (e.g. "Strategic") plus resolved 0-100 points; overall is 0-100 with status.
 export interface CategoryScoreData {
   id: string;
   name: string;
   weight: number;
-  score: number | null;
+  value: string | null;   // e.g. "Strategic", null if not covered
+  points: number | null;  // resolved points (0-100) for this value
   evidence: string[];
 }
 
 export interface ScorecardData {
   categories: CategoryScoreData[];
-  overall: number | null;
+  overall: number | null;                    // 0-100
+  status: 'APPROVED' | 'REJECTED' | null;    // approval status
 }
 
 // Scout research insights; arrive via the state payload.
