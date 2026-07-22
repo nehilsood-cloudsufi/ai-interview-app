@@ -12,6 +12,7 @@ accumulate; there is no explicit remove - the pipeline runs to completion and
 the record is persisted to `transcript_store`, then the state is left to be
 pruned by age."""
 
+import asyncio
 import secrets
 import uuid
 from dataclasses import dataclass, field
@@ -116,6 +117,12 @@ class InterviewState:
     pipeline_status: PipelineStatus | None = None
     scorecard: "Scorecard | None" = None
     recommendation: "FollowupRecommendation | None" = None
+    # Serializes host_agent.handle_turn/stream_turn per interview. HeyGen's
+    # VAD can fire several gateway calls near-simultaneously when it splits
+    # one flowing answer into fragments (seen live 2026-07-22: two turns
+    # processed concurrently on the same node); without this, both turns read
+    # the same current_node_id and the script double-advances.
+    turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
 
 _interviews: dict[str, InterviewState] = {}

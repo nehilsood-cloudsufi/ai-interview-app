@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import json
 
@@ -689,8 +690,8 @@ def test_host_agent_settings_are_patchable(patch_settings):
 
 @respx.mock
 async def test_handle_turn_avatar_mode_omits_chat_prompt(patch_settings):
-    # Default mode ("avatar") must render byte-identical to before mode
-    # existed - no chat-mode text anywhere in the system content.
+    # Default mode ("avatar") must not carry any chat-mode text - each mode
+    # appends only its own suffix.
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
     state = make_state()
@@ -699,6 +700,61 @@ async def test_handle_turn_avatar_mode_omits_chat_prompt(patch_settings):
 
     system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
     assert settings.host_chat_mode_prompt not in system_content
+
+
+@respx.mock
+async def test_handle_turn_avatar_mode_appends_avatar_prompt(patch_settings):
+    # Avatar mode carries the VAD-fragment guidance so an unfinished spoken
+    # fragment ("...We provide" / "and") isn't judged a complete answer.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_avatar_mode_prompt in system_content
+
+
+@respx.mock
+async def test_handle_turn_chat_mode_omits_avatar_prompt(patch_settings):
+    # Typed chat input is never VAD-fragmented - the avatar-mode guidance
+    # must not leak into chat mode (it would fight the terse-answers rule).
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric(), mode="chat")
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert settings.host_avatar_mode_prompt not in system_content
+
+
+@respx.mock
+async def test_concurrent_turns_serialize_per_interview(patch_settings):
+    # HeyGen's VAD can fire overlapping gateway calls when it splits one
+    # flowing answer into fragments (seen live 2026-07-22: two turns processed
+    # concurrently on the same node). state.turn_lock must serialize them so
+    # the second turn sees the node the first advanced to - never the same
+    # node twice, never a skipped question.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def slow_response(request):
+        await asyncio.sleep(0.05)  # keep the first turn in-flight while the second arrives
+        return gemini_response()
+
+    respx.post(CHAT_URL).mock(side_effect=slow_response)
+    state = make_state()  # starts at company_overview
+    questionnaire = make_questionnaire()
+
+    first, second = await asyncio.gather(
+        handle_turn(state, "We build ML pipelines. We provide", questionnaire, make_rubric()),
+        handle_turn(state, "solutions to every problem our clients have.", questionnaire, make_rubric()),
+    )
+
+    completed = {result.completed_question.id for result in (first, second)}
+    assert completed == {"company_overview", "ai_ml_depth"}
+    assert state.current_node_id == "closing"
 
 
 @respx.mock

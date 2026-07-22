@@ -163,9 +163,10 @@ def _render_system_content(
     question to speak once this one is answered. The LLM never advances the
     script itself, but it must voice that next question in the same reply that
     closes the current one (see the inline note - a bare acknowledgment leaves
-    the avatar silent). Appends `settings.host_chat_mode_prompt` when
-    `mode="chat"` and `settings.host_time_pressure_prompt` when `time_pressured`
-    is set."""
+    the avatar silent). Appends `settings.host_avatar_mode_prompt` when
+    `mode="avatar"` (VAD-fragment awareness - see that setting's comment),
+    `settings.host_chat_mode_prompt` when `mode="chat"`, and
+    `settings.host_time_pressure_prompt` when `time_pressured` is set."""
     profile = state.vendor_profile
 
     lines = [
@@ -199,6 +200,9 @@ def _render_system_content(
         "If the answer is complete, the next question to ask in the same reply:",
         next_line,
     ]
+
+    if mode == "avatar":
+        lines += ["", settings.host_avatar_mode_prompt]
 
     if mode == "chat":
         lines += ["", settings.host_chat_mode_prompt]
@@ -299,10 +303,28 @@ async def handle_turn(
     """Process one user utterance: one Gemini call, then code-driven state
     mutation. `rubric` is accepted for interface parity with the Evaluator
     flow; the Host itself does not score answers. `mode` selects which
-    frontend is driving the turn: "avatar" (HeyGen, spoken) is the default and
-    renders byte-identical to before this parameter existed; "chat" appends
+    frontend is driving the turn: "avatar" (HeyGen, spoken - the default)
+    appends settings.host_avatar_mode_prompt so VAD fragments of an unfinished
+    answer aren't judged complete; "chat" appends
     settings.host_chat_mode_prompt so terse typed answers aren't treated as
-    incomplete."""
+    incomplete.
+
+    Turns for the same interview are serialized on `state.turn_lock`: HeyGen's
+    VAD can fire overlapping gateway calls for one flowing answer, and two
+    concurrent turns reading the same `current_node_id` would double-advance
+    the script (seen live 2026-07-22)."""
+    async with state.turn_lock:
+        return await _handle_turn(state, user_text, questionnaire, rubric, mode)
+
+
+async def _handle_turn(
+    state: InterviewState,
+    user_text: str,
+    questionnaire: dict[str, QuestionNode],
+    rubric: dict[str, RubricCategory] | None,
+    mode: Literal["avatar", "chat"] = "avatar",
+) -> TurnResult:
+    """`handle_turn`'s body, running with `state.turn_lock` already held."""
     if state.current_node_id == END_NODE_ID:
         return TurnResult(
             reply=settings.host_closing_reply,
@@ -439,7 +461,25 @@ async def stream_turn(
     reply character is spoken, the canned fallback reply is yielded and state
     is left unchanged. If it fails after the reply is (partly) spoken - e.g.
     the trailing JSON is malformed - the spoken text stands and state is left
-    unchanged rather than half-advanced."""
+    unchanged rather than half-advanced.
+
+    Like `handle_turn`, turns for the same interview serialize on
+    `state.turn_lock` - held for the whole stream, so an overlapping gateway
+    call waits out the in-flight turn instead of racing its state mutation."""
+    async with state.turn_lock:
+        async for text in _stream_turn(state, user_text, questionnaire, rubric, outcome, mode):
+            yield text
+
+
+async def _stream_turn(
+    state: InterviewState,
+    user_text: str,
+    questionnaire: dict[str, QuestionNode],
+    rubric: dict[str, RubricCategory] | None,
+    outcome: StreamedTurn,
+    mode: Literal["avatar", "chat"] = "avatar",
+) -> AsyncIterator[str]:
+    """`stream_turn`'s body, running with `state.turn_lock` already held."""
     if state.current_node_id == END_NODE_ID:
         outcome.result = TurnResult(
             reply=settings.host_closing_reply,

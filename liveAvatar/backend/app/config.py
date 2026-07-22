@@ -165,6 +165,26 @@ class Settings:
             "clouds too?').",
         )
     )
+    # Appended to host_system_prompt only in avatar mode. HeyGen's VAD splits
+    # flowing speech at pauses, so one spoken answer can arrive as several
+    # partial utterances ("Actually, we are working on AI services. We
+    # provide" / "and" / ...). Judging such a fragment as a complete answer
+    # burns script questions the vendor never heard - seen live 2026-07-22:
+    # five questions consumed in 46 seconds.
+    host_avatar_mode_prompt: str = field(
+        default_factory=lambda: os.getenv(
+            "HOST_AVATAR_MODE_PROMPT",
+            "The vendor is speaking aloud and their words arrive via voice "
+            "transcription, which can cut them off mid-thought: a message may "
+            "be an unfinished fragment, ending mid-sentence or consisting "
+            "only of a filler like 'and' or 'so'. When the latest message "
+            "reads as an unfinished fragment of an answer still in progress, "
+            "set answer_complete to false and make your reply a very short "
+            "invitation to continue (for example: 'Go on, I'm listening.') - "
+            "do not judge the answer or ask a follow-up question until the "
+            "thought is finished.",
+        )
+    )
 
     # System prompt for the Evaluator agent's single holistic scoring call,
     # made once at finalize over the WHOLE transcript (not per answer - a
