@@ -28,11 +28,18 @@ class QuestionNode:
 
 
 @dataclass(frozen=True)
+class ValueOption:
+    label: str
+    points: float
+
+
+@dataclass(frozen=True)
 class RubricCategory:
     id: str
     name: str
     weight: float
     description: str
+    value_options: list[ValueOption]
 
 
 @dataclass(frozen=True)
@@ -98,6 +105,10 @@ def load_rubric(path: Path) -> dict[str, RubricCategory]:
             name=entry["name"],
             weight=entry["weight"],
             description=entry["description"].strip(),
+            value_options=[
+                ValueOption(label=option["label"], points=option["points"])
+                for option in entry["value_options"]
+            ],
         )
         for entry in raw["categories"]
     }
@@ -109,6 +120,21 @@ def _validate_rubric(categories: dict[str, RubricCategory]) -> None:
     total_weight = sum(category.weight for category in categories.values())
     if abs(total_weight - 1.0) > 0.01:
         raise ValueError(f"rubric weights must sum to 1.0 (got {total_weight})")
+
+    for category in categories.values():
+        if not category.value_options:
+            raise ValueError(f"rubric category '{category.id}' must define at least one value_option")
+
+        labels = [option.label for option in category.value_options]
+        if len(labels) != len(set(labels)):
+            raise ValueError(f"rubric category '{category.id}' has duplicate value_option labels")
+
+        for option in category.value_options:
+            if not 0 <= option.points <= 100:
+                raise ValueError(
+                    f"rubric category '{category.id}' value_option '{option.label}' "
+                    f"points must be in [0, 100] (got {option.points})"
+                )
 
 
 def _resolve_path(path_str: str) -> Path:

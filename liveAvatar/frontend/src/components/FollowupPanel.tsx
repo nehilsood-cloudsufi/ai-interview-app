@@ -1,15 +1,18 @@
 import { CalendarClock } from 'lucide-react';
-import type { FollowupRecommendation } from '../types';
+import type { FollowupRecommendation, ScorecardData } from '../types';
 
 interface FollowupPanelProps {
   recommendation: FollowupRecommendation | null | undefined;
+  scorecard?: ScorecardData | null;
 }
 
 // Compact recommendation card shown inside the summary overlay once the
 // follow-up recommendation arrives from the pipeline. Renders nothing when
 // there is no recommendation.
-export function FollowupPanel({ recommendation }: FollowupPanelProps) {
+export function FollowupPanel({ recommendation, scorecard }: FollowupPanelProps) {
   if (!recommendation) return null;
+
+  const nameById = new Map((scorecard?.categories ?? []).map((c) => [c.id, c.name]));
 
   const headline =
     recommendation.kind === 'advance'
@@ -32,7 +35,7 @@ export function FollowupPanel({ recommendation }: FollowupPanelProps) {
               key={category}
               className="text-[11px] font-medium px-2 py-0.5 bg-indigo-500/15 border border-indigo-500/25 rounded-full text-indigo-200"
             >
-              {category}
+              {nameById.get(category) ?? category}
             </span>
           ))}
         </div>

@@ -51,7 +51,7 @@ questions:
     ask: >
       Ask for a brief overview of their company: what they do, how long
       they've been operating, and which industries they serve.
-    rubric_categories: [experience]
+    rubric_categories: []
     max_followups: 1
     next: ai_ml_depth
 
@@ -60,7 +60,7 @@ questions:
     ask: >
       Ask what AI/ML techniques, models, or platforms they use (if any),
       and for a concrete example of a project they delivered with them.
-    rubric_categories: [capability]
+    rubric_categories: []
     max_followups: 1
     next: services_offered
 
@@ -69,7 +69,7 @@ questions:
     ask: >
       Ask what specific services or products they're proposing for this
       engagement, and how that fits their company's core strengths.
-    rubric_categories: [capability]
+    rubric_categories: []
     max_followups: 1
     next: delivery_team
 
@@ -79,7 +79,7 @@ questions:
       Ask about the team that would deliver this engagement: its size,
       seniority, and how they typically structure delivery (onsite,
       remote, hybrid) and project management.
-    rubric_categories: [delivery]
+    rubric_categories: []
     max_followups: 1
     next: references
 
@@ -88,7 +88,7 @@ questions:
     ask: >
       Ask for one or two reference clients or case studies relevant to
       this kind of engagement, and what outcomes were achieved.
-    rubric_categories: [experience, credibility]
+    rubric_categories: []
     max_followups: 1
     next: data_governance
 
@@ -98,7 +98,7 @@ questions:
       Ask how they handle data governance and model evaluation: how they
       manage training data quality/provenance, and how they measure and
       validate model performance before it ships.
-    rubric_categories: [capability]
+    rubric_categories: []
     max_followups: 1
     next: mlops_productionization
 
@@ -108,7 +108,7 @@ questions:
       Ask how they take a model from prototype to production: their
       MLOps tooling, deployment/monitoring approach, and how they handle
       model drift or retraining over time.
-    rubric_categories: [capability]
+    rubric_categories: []
     max_followups: 1
     next: security_posture
 
@@ -118,7 +118,7 @@ questions:
       Ask about their security posture and any relevant compliance
       certifications (for example SOC 2 or ISO 27001) relevant to
       handling company data.
-    rubric_categories: [credibility]
+    rubric_categories: []
     max_followups: 1
     next: closing
 

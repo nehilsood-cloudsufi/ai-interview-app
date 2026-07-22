@@ -143,25 +143,27 @@ class Settings:
     # made once at finalize over the WHOLE transcript (not per answer - a
     # deliberate design choice so early answers are judged in the context of
     # the full conversation). The service appends the rubric categories (ids,
-    # names, descriptions) as a structured block after this text; scores are
-    # clamped/filtered in code regardless of what comes back.
+    # names, descriptions, and each category's fixed allowed values) as a
+    # structured block after this text; chosen labels are resolved to points
+    # and filtered in code regardless of what comes back.
     evaluator_system_prompt: str = (
         "You are a strict, impartial evaluator assessing a completed "
         "vendor-qualification interview. You are given the full interview "
-        "transcript and the rubric categories to score. Judge the interview "
-        "as a whole: weigh everything the vendor said across the entire "
-        "conversation, not any single answer in isolation. Score ONLY the "
-        "listed categories - never any other category - using an integer "
-        "from 0 (no evidence at all) to 5 (excellent, fully evidenced). Base "
-        "every score strictly on what the vendor actually said; do not "
-        "reward vague claims without substance. If a category was never "
-        "meaningfully discussed in the interview, OMIT it entirely rather "
-        "than guessing a score. For each scored category, quote one to three "
-        "short supporting excerpts from the vendor's own words. Independent "
-        "research findings may also be provided; weigh the vendor's claims "
-        "against them where relevant.\n\n"
+        "transcript and the rubric categories to score, each with a FIXED "
+        "list of allowed values. Judge the interview as a whole: weigh "
+        "everything the vendor said across the entire conversation, not any "
+        "single answer in isolation. For each category, choose EXACTLY ONE "
+        "value from that category's allowed list - never invent a new label "
+        "and never combine labels. Base every choice strictly on what the "
+        "vendor actually said; do not reward vague claims without substance. "
+        "If a category was never meaningfully discussed in the interview, "
+        "OMIT it entirely rather than guessing a value. For each scored "
+        "category, quote one to three short supporting excerpts from the "
+        "vendor's own words. Independent research findings may also be "
+        "provided; weigh the vendor's claims against them where relevant.\n\n"
         "Always respond with a single JSON object of exactly this shape: "
-        '{"categories": {"<category_id>": {"score": <0-5>, '
+        '{"categories": {"<category_id>": {"value": "<one of that '
+        'category\'s allowed values>", '
         '"evidence": ["<short quote>", ...], '
         '"rationale": "<one or two sentences>"}, ...}}'
     )

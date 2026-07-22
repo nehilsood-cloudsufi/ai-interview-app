@@ -46,7 +46,7 @@ questions:
     ask: >
       Ask for a brief overview of their company: what they do, how long
       they've been operating, and which industries they serve.
-    rubric_categories: [experience]
+    rubric_categories: []
     max_followups: 1
     next: cloud_platforms_expertise
 
@@ -56,7 +56,7 @@ questions:
       Ask which cloud platforms they specialize in (for example AWS,
       Azure, or GCP), which certifications their team holds, and how
       deep that expertise runs.
-    rubric_categories: [capability]
+    rubric_categories: []
     max_followups: 1
     next: architecture_approach
 
@@ -66,7 +66,7 @@ questions:
       Ask how they typically design and provision cloud infrastructure -
       their infrastructure-as-code tooling, architecture patterns, and
       how they approach reliability and cost efficiency.
-    rubric_categories: [capability]
+    rubric_categories: []
     max_followups: 1
     next: migration_experience
 
@@ -75,7 +75,7 @@ questions:
     ask: >
       Ask about a cloud migration or modernization project they've led:
       the scope, the approach taken, and the outcome.
-    rubric_categories: [experience]
+    rubric_categories: []
     max_followups: 1
     next: delivery_team
 
@@ -85,7 +85,7 @@ questions:
       Ask about the team that would deliver this engagement: its size,
       seniority, and how they typically structure delivery (onsite,
       remote, hybrid) and project management.
-    rubric_categories: [delivery]
+    rubric_categories: []
     max_followups: 1
     next: monitoring_and_reliability
 
@@ -95,7 +95,7 @@ questions:
       Ask how they monitor production infrastructure and respond to
       incidents: their observability stack, on-call practices, and
       typical response times.
-    rubric_categories: [capability]
+    rubric_categories: []
     max_followups: 1
     next: references
 
@@ -104,7 +104,7 @@ questions:
     ask: >
       Ask for one or two reference clients or case studies relevant to
       this kind of engagement, and what outcomes were achieved.
-    rubric_categories: [experience, credibility]
+    rubric_categories: []
     max_followups: 1
     next: security_posture
 
@@ -114,7 +114,7 @@ questions:
       Ask about their security posture and any relevant compliance
       certifications (for example SOC 2 or ISO 27001) relevant to
       handling company infrastructure and data.
-    rubric_categories: [credibility]
+    rubric_categories: []
     max_followups: 1
     next: closing
 

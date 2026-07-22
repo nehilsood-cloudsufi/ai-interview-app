@@ -9,7 +9,7 @@ from app.config import settings
 from app.models import TranscriptTurn
 from app.services import host_agent
 from app.services.host_agent import TurnResult, handle_turn
-from app.services.interview_config import QuestionNode, RubricCategory
+from app.services.interview_config import QuestionNode, RubricCategory, ValueOption
 from app.services.interview_state import InterviewState, VendorProfile
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -55,9 +55,21 @@ def make_questionnaire() -> dict[str, QuestionNode]:
 
 
 def make_rubric() -> dict[str, RubricCategory]:
+    # Host never scores against these value_options - they exist only to
+    # satisfy RubricCategory's constructor, since handle_turn takes the
+    # rubric purely to know which categories a node's answer maps to.
+    value_options = [ValueOption(label="High", points=100), ValueOption(label="Low", points=0)]
     return {
-        "experience": RubricCategory(id="experience", name="Experience", weight=0.5, description="Track record."),
-        "capability": RubricCategory(id="capability", name="Capability", weight=0.5, description="Technical depth."),
+        "experience": RubricCategory(
+            id="experience", name="Experience", weight=0.5, description="Track record.", value_options=value_options
+        ),
+        "capability": RubricCategory(
+            id="capability",
+            name="Capability",
+            weight=0.5,
+            description="Technical depth.",
+            value_options=value_options,
+        ),
     }
 
 

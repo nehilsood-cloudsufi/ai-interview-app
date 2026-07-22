@@ -172,7 +172,7 @@ export function SummaryPanel({
           {!isGenerating && <ScorecardPanel scorecard={scorecard} />}
 
           {/* Follow-up recommendation card (only when one was recommended) */}
-          {!isGenerating && <FollowupPanel recommendation={recommendation} />}
+          {!isGenerating && <FollowupPanel recommendation={recommendation} scorecard={scorecard} />}
 
           {/* Full transcript section */}
           <section>
