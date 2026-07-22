@@ -6,7 +6,6 @@ import yaml
 from app.config import settings
 from app.services.interview_config import (
     get_questionnaire,
-    get_rubric,
     get_start_node_id,
     list_domains,
     load_questionnaire,

@@ -1,9 +1,6 @@
 import asyncio
 import json
 
-import httpx
-import respx
-
 from app.config import settings
 from app.routers import llm_gateway
 from app.services import evaluator_agent, gemini_client, host_agent, interview_state
