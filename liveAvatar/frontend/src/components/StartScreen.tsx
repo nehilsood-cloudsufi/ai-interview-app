@@ -6,7 +6,9 @@ import type { CreateInterviewResponse, DomainInfo, DomainsResponse, InterviewMod
 interface StartScreenProps {
   // Creates the interview and hands control to the interview view in the
   // chosen mode. The caller owns the interview_id from here on.
-  onStart: (interviewId: string, mode: InterviewMode) => void;
+  // durationSeconds is set only on the prod tier (the picked session length),
+  // so the interview view can show a countdown instead of an elapsed timer.
+  onStart: (interviewId: string, mode: InterviewMode, durationSeconds?: number) => void;
 }
 
 export function StartScreen({ onStart }: StartScreenProps) {
@@ -65,7 +67,7 @@ export function StartScreen({ onStart }: StartScreenProps) {
       }
 
       const data: CreateInterviewResponse = await res.json();
-      onStart(data.interview_id, mode);
+      onStart(data.interview_id, mode, TIER === 'prod' ? durationMinutes * 60 : undefined);
     } catch (err) {
       console.error('Failed to create interview:', err);
       setError(err instanceof Error ? err.message : 'Failed to start the interview');

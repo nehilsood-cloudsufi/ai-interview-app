@@ -71,7 +71,12 @@ async def _create_gateway_session(body: CreateSessionRequest) -> dict:
             voice_id = settings.prod_voice_id
             # Picked on the start screen at interview creation; the settings
             # ceiling only backstops states created before that field existed.
-            max_session_duration = state.max_session_seconds or settings.prod_max_session_seconds
+            # The grace buffer moves HeyGen's hard cut past the Host's own
+            # time-aware wrap-up (host_agent), so the closing is spoken while
+            # the stream is still alive and the cap is purely a safety net.
+            max_session_duration = (
+                state.max_session_seconds or settings.prod_max_session_seconds
+            ) + settings.prod_session_grace_seconds
         else:
             avatar_id = settings.avatar_id
             is_sandbox = True

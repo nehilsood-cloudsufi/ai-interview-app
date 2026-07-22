@@ -101,7 +101,9 @@ def test_create_session_prod_tier_token_payload(client, patch_settings):
     body = json.loads(token_route.calls[0].request.content)
     assert body["avatar_id"] == "avatar-june"
     assert body["is_sandbox"] is False
-    assert body["max_session_duration"] == 300
+    # picked 300s + prod_session_grace_seconds (60): HeyGen's cap sits past
+    # the Host's own wrap-up so the closing is spoken before the cut.
+    assert body["max_session_duration"] == 360
     assert body["avatar_persona"]["voice_id"] == "voice-amy"
 
 

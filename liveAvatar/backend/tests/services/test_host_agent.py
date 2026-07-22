@@ -739,3 +739,103 @@ async def test_stream_turn_chat_mode_appends_chat_prompt(patch_settings):
 
     system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
     assert settings.host_chat_mode_prompt in system_content
+
+
+# --- Time-aware wrap-up (clocked, i.e. prod-tier avatar sessions) ---
+
+
+def _clocked_state(seconds_elapsed: float, max_session_seconds: int = 300) -> InterviewState:
+    from datetime import datetime, timedelta, timezone
+
+    state = make_state()
+    state.max_session_seconds = max_session_seconds
+    state.first_turn_at = datetime.now(timezone.utc) - timedelta(seconds=seconds_elapsed)
+    return state
+
+
+@respx.mock
+async def test_wrapup_when_time_nearly_exhausted(patch_settings):
+    # Remaining 50s <= host_wrapup_seconds (60): canned closing, script
+    # skipped to END, NO Gemini call.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = _clocked_state(seconds_elapsed=250)
+
+    result = await handle_turn(state, "And another thing...", make_questionnaire(), make_rubric())
+
+    assert result.reply == settings.host_timeup_reply
+    assert result.answer_complete is False
+    assert state.current_node_id == "END"
+    assert [turn.role for turn in state.turns] == ["candidate", "interviewer"]
+    assert state.turns[1].text == settings.host_timeup_reply
+    assert not route.called
+
+
+@respx.mock
+async def test_time_pressure_forces_advance_and_prompt(patch_settings):
+    # Remaining 100s: between wrapup (60) and pressure (120) thresholds ->
+    # normal Gemini turn, but the system prompt carries the time-pressure
+    # suffix and an "incomplete" judgement still advances the script.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(
+        return_value=gemini_response(reply="Quickly then - your AI work?", answer_complete=False)
+    )
+    state = _clocked_state(seconds_elapsed=200)
+
+    result = await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    assert result.answer_complete is True
+    assert state.current_node_id == "ai_ml_depth"
+    body = json.loads(route.calls[0].request.content)
+    assert settings.host_time_pressure_prompt in body["messages"][0]["content"]
+
+
+@respx.mock
+async def test_no_time_pressure_with_plenty_of_time(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = _clocked_state(seconds_elapsed=10)
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    body = json.loads(route.calls[0].request.content)
+    assert settings.host_time_pressure_prompt not in body["messages"][0]["content"]
+
+
+@respx.mock
+async def test_first_clocked_turn_stamps_first_turn_at(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+    state.max_session_seconds = 300
+    assert state.first_turn_at is None
+
+    await handle_turn(state, "Hello!", make_questionnaire(), make_rubric())
+
+    assert state.first_turn_at is not None
+
+
+@respx.mock
+async def test_unclocked_interview_never_stamps_or_paces(patch_settings):
+    # Dev tier: max_session_seconds is None -> no clock, byte-identical flow.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "Hello!", make_questionnaire(), make_rubric())
+
+    assert state.first_turn_at is None
+
+
+@respx.mock
+async def test_chat_mode_ignores_session_clock(patch_settings):
+    # Chat mode has no HeyGen session/cap even on the prod tier - an ancient
+    # first_turn_at must not trigger the wrap-up.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = _clocked_state(seconds_elapsed=9999)
+
+    result = await handle_turn(state, "Hi!", make_questionnaire(), make_rubric(), mode="chat")
+
+    assert route.called
+    assert result.reply != settings.host_timeup_reply
