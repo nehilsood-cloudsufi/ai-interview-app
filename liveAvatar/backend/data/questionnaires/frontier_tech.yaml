@@ -9,8 +9,11 @@
 # node's `next` must be the literal "END".
 #
 # Each domain file is a COMPLETE, standalone script (deliberate duplication
-# of the onboarding/closing nodes across domain files - no shared-prefix
-# compose mechanism - so each file stays admin-legible on its own).
+# of the closing node across domain files - no shared-prefix compose
+# mechanism - so each file stays admin-legible on its own). There are no
+# onboarding nodes: the vendor profile (name, role, company) comes from the
+# start screen's intake form, and the Host greets the vendor by name on the
+# opening exchange instead.
 #
 # Unlike the other domain files, this one maps its 7 substantive questions
 # 1:1 onto the 7 Signal Matrix rubric categories (data/rubric.yaml) - one
@@ -21,29 +24,6 @@
 domain: frontier_tech
 title: "Frontier Technology"
 questions:
-  - id: intro
-    topic: onboarding
-    ask: >
-      Greet the vendor warmly and invite them to introduce themselves
-      naturally: their name, their role, and the company they represent.
-      If their answer leaves any of those out,
-      ask briefly for just what's missing - do NOT read back the details
-      they already gave (a single read-back happens in the next step).
-    rubric_categories: []
-    max_followups: 2
-    next: confirm_profile
-
-  - id: confirm_profile
-    topic: onboarding
-    ask: >
-      In ONE short sentence, read the captured name, role, and company
-      back to the vendor and ask if it's all correct. No preamble,
-      and never re-confirm a detail that was already confirmed. If they
-      correct anything, capture the correction.
-    rubric_categories: []
-    max_followups: 1
-    next: theme_interest
-
   - id: theme_interest
     topic: theme_interest
     ask: >

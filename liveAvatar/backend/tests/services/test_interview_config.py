@@ -5,6 +5,7 @@ import yaml
 
 from app.config import settings
 from app.services.interview_config import (
+    build_question_plan,
     get_questionnaire,
     get_start_node_id,
     list_domains,
@@ -217,6 +218,48 @@ def test_load_rubric_value_option_points_out_of_range_raises(tmp_path, bad_point
         load_rubric(path)
 
 
+# --- value_option aliases (paraphrase-tolerant Evaluator label matching) ---
+
+
+def test_load_rubric_value_option_aliases_parsed(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"][0]["aliases"] = ["Profound", "In-depth"]
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    categories = load_rubric(path)
+
+    assert categories["experience"].value_options[0].aliases == ("Profound", "In-depth")
+
+
+def test_load_rubric_value_option_aliases_default_empty(tmp_path):
+    # No `aliases:` key at all -> defaults to an empty tuple so existing
+    # rubric YAML (without aliases) loads unchanged.
+    path = _write_yaml(tmp_path / "r.yaml", _valid_rubric_data())
+
+    categories = load_rubric(path)
+
+    assert categories["experience"].value_options[0].aliases == ()
+    assert categories["capability"].value_options[0].aliases == ()
+
+
+def test_load_rubric_value_option_aliases_not_a_list_raises(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"][0]["aliases"] = "not-a-list"
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(ValueError, match="alias"):
+        load_rubric(path)
+
+
+def test_load_rubric_value_option_aliases_empty_string_raises(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"][0]["aliases"] = ["ok", ""]
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(ValueError, match="alias"):
+        load_rubric(path)
+
+
 def test_shipped_rubric_loads_and_weights_sum_to_one():
     categories = load_rubric(Path(settings.rubric_path))
     assert abs(sum(c.weight for c in categories.values()) - 1.0) < 0.01
@@ -303,9 +346,40 @@ def test_all_shipped_questionnaires_load_and_validate():
         questionnaire = load_questionnaire(path)
         assert questionnaire.domain == path.stem
         assert questionnaire.title
-        assert next(iter(questionnaire.nodes)) == "intro"
+        # Onboarding nodes are gone (profile comes from the intake form) -
+        # every script must open straight on a substantive question.
+        assert "intro" not in questionnaire.nodes
+        assert "confirm_profile" not in questionnaire.nodes
         for node in questionnaire.nodes.values():
             for category_id in node.rubric_categories:
                 assert category_id in rubric, (
                     f"{path.name} question '{node.id}' references unknown rubric category '{category_id}'"
                 )
+
+
+# --- build_question_plan (top-K question sizing for clocked interviews) ---
+
+
+def test_build_question_plan_unclocked_is_full_script():
+    # No clock (dev tier, chat mode) -> every node in script order.
+    plan = build_question_plan("frontier_tech")
+    assert plan == list(get_questionnaire("frontier_tech"))
+
+
+def test_build_question_plan_long_session_keeps_everything():
+    # 600s fits far more than 7 questions - identical to the unclocked plan.
+    assert build_question_plan("frontier_tech", 600) == build_question_plan("frontier_tech")
+
+
+def test_build_question_plan_short_session_keeps_top_weights_in_script_order():
+    # 180s: K = round((180 - 30) / 40) = 4 -> the four heaviest rubric
+    # categories (interest .20, offerings .20, maturity .15, connectivity
+    # .15), kept in script order, plus the always-included closing.
+    plan = build_question_plan("frontier_tech", 180)
+    assert plan == ["theme_interest", "existing_offerings", "tech_maturity", "connectivity", "closing"]
+
+
+def test_build_question_plan_minimum_one_question():
+    # 60s: round((60 - 30) / 40) rounds to 1 -> the single heaviest question
+    # (interest and offerings tie at .20; script order breaks the tie).
+    assert build_question_plan("frontier_tech", 60) == ["theme_interest", "closing"]

@@ -24,6 +24,15 @@ export interface CreateInterviewResponse {
   interview_id: string;
 }
 
+// POST /api/interview/{id}/document response (backend UploadDocumentResponse).
+// Oversize documents are trimmed to the intake word limit, never rejected —
+// `truncated` drives the StartScreen's short trim notice.
+export interface UploadDocumentResponse {
+  filename: string;
+  word_count: number;
+  truncated: boolean;
+}
+
 // GET /api/domains -> DomainsResponse. Dev stand-in for the admin-assigned
 // domain: the vendor picks one on the start screen.
 export interface DomainInfo {
@@ -110,6 +119,11 @@ export interface InterviewStateResponse {
   pipeline_status: PipelineStatus | null;
   scorecard: ScorecardData | null;
   recommendation: FollowupRecommendation | null;
+  // True when the pipeline's Evaluator call itself raised (e.g. a too-short
+  // transcript) - scorecard stays null in that case too, but this flag lets
+  // the UI tell the vendor scoring genuinely failed rather than silently
+  // rendering nothing where the scorecard would be.
+  evaluation_failed?: boolean;
   vendor_profile: VendorProfile;
 }
 

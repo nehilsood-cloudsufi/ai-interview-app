@@ -57,7 +57,7 @@ async def test_run_happy_path_transitions_scouting_evaluating_ready(monkeypatch)
         transitions.append(("scout", state.pipeline_status))
         return findings
 
-    async def fake_score_interview(turns, rubric, scout_findings):
+    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
         transitions.append(("evaluator", state.pipeline_status))
         return scorecard
 
@@ -100,7 +100,7 @@ async def test_scout_soft_fail_empty_findings_still_reaches_ready(monkeypatch):
     async def fake_scout_run(state):
         return []  # Scout's own soft-fail contract.
 
-    async def fake_score_interview(turns, rubric, scout_findings):
+    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
         assert scout_findings == []
         return scorecard
 
@@ -125,7 +125,7 @@ async def test_evaluator_raises_leaves_scorecard_and_recommendation_null_but_sti
     async def fake_scout_run(state):
         return []
 
-    async def fake_score_interview(turns, rubric, scout_findings):
+    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
         raise RuntimeError("scoring exploded")
 
     def _must_not_run(scorecard, rubric):
@@ -156,13 +156,48 @@ async def test_evaluator_raises_leaves_scorecard_and_recommendation_null_but_sti
     assert save_calls[0]["recommendation"] is None
 
 
+async def test_evaluator_failure_sets_evaluation_failed_and_still_reaches_ready(monkeypatch):
+    # The evaluator failing (e.g. a too-short transcript) must not be
+    # silently swallowed - state.evaluation_failed and the saved payload both
+    # carry the flag so the frontend can tell the vendor scoring didn't run,
+    # instead of just showing an empty scorecard with no explanation.
+    async def fake_scout_run(state):
+        return []
+
+    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
+        raise ValueError("Transcript too short to score (fewer than 2 vendor answers).")
+
+    save_calls: list[dict] = []
+
+    async def fake_save(session_id, payload):
+        save_calls.append(dict(payload))
+
+    monkeypatch.setattr(scout_agent, "run", fake_scout_run)
+    monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
+    monkeypatch.setattr(transcript_store, "save", fake_save)
+
+    state = make_state()
+    assert state.evaluation_failed is False
+
+    await pipeline.run(state, "sid", make_payload())
+
+    assert state.pipeline_status == "ready"
+    assert state.evaluation_failed is True
+    assert state.scorecard is None
+
+    assert len(save_calls) == 1
+    assert save_calls[0]["pipeline_status"] == "ready"
+    assert save_calls[0]["scorecard"] is None
+    assert save_calls[0]["evaluation_failed"] is True
+
+
 async def test_final_save_failure_marks_failed_and_attempts_resave(monkeypatch):
     async def fake_scout_run(state):
         return []
 
     scorecard = make_scorecard({"interest": 40.0}, overall=40.0)
 
-    async def fake_score_interview(turns, rubric, scout_findings):
+    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
         return scorecard
 
     save_payloads: list[dict] = []
@@ -199,7 +234,7 @@ async def test_ready_status_only_set_after_successful_save(monkeypatch):
 
     scorecard = make_scorecard({"interest": 80.0}, overall=80.0)
 
-    async def fake_score_interview(turns, rubric, scout_findings):
+    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
         return scorecard
 
     status_during_save: list[str | None] = []
@@ -224,7 +259,7 @@ async def test_resave_failure_after_final_save_failure_does_not_raise(monkeypatc
     async def fake_scout_run(state):
         return []
 
-    async def fake_score_interview(turns, rubric, scout_findings):
+    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
         return make_scorecard({}, overall=None)
 
     async def fake_save(session_id, payload):
@@ -248,7 +283,7 @@ async def test_unexpected_exception_mid_run_marks_failed_and_attempts_resave(mon
 
     scorecard = make_scorecard({"interest": 100.0}, overall=100.0)
 
-    async def fake_score_interview(turns, rubric, scout_findings):
+    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
         return scorecard
 
     def _boom(scorecard, rubric):

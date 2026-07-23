@@ -47,16 +47,22 @@ END_NODE_ID = "END"
 # How many trailing entries of state.turns are replayed to Gemini as context.
 _TRANSCRIPT_WINDOW = 10
 
-# HeyGen's LiveKit agent gives our gateway a 10s read timeout (see
-# docs/llm-gateway-notes.md); Gemini must answer well inside that so a slow
-# call becomes our fallback reply instead of HeyGen timing out to silence.
-_GEMINI_TIMEOUT_SECONDS = 8.0
+# Avatar: HeyGen's LiveKit agent gives our gateway a ~10s read window (see
+# docs/llm-gateway-notes.md), so the turn must resolve well inside it. Chat:
+# no HeyGen, no clock - the vendor can take as long as they want, so the
+# budget is generous instead of tight.
+_MODE_TIMEOUT_SECONDS = {"avatar": 8.0, "chat": 60.0}
 # Bounds the spoken reply. Gemini counts thinking tokens against this cap
 # (~150 at low effort, measured live), so keep enough headroom that the JSON
 # never truncates mid-object - a truncated turn is worse than a long one.
-# 800 (was 500): replies now carry acknowledgment + the next question, and a
-# 500-cap turn was observed truncating mid-JSON live on 2026-07-20.
-_MAX_TOKENS = 800
+# Avatar 800 (was 500): replies now carry acknowledgment + the next question,
+# and a 500-cap turn was observed truncating mid-JSON live on 2026-07-20. Chat
+# has no HeyGen read window to stay inside, so a detailed typed answer gets a
+# much larger budget instead of hitting the same avatar-sized cap - the
+# avatar cap applied to chat too used to make a long typed answer hit
+# ReadTimeout/truncation, then soft-fail with state untouched, forever
+# (a live test found this wedging the interview deterministically).
+_MODE_MAX_TOKENS = {"avatar": 800, "chat": 4000}
 
 # Strict structured output: the compat endpoint constrains decoding to this
 # schema, which (with parse_llm_json as the belt) prevents the malformed-JSON
@@ -138,6 +144,22 @@ def _wrapup_turn(state: InterviewState, user_text: str) -> TurnResult:
     )
 
 
+def _next_node_id(state: InterviewState, node: QuestionNode) -> str:
+    """The node the interview moves to once `node` is answered: the next
+    entry of `state.question_plan` (which may skip questionnaire nodes when a
+    short prod session only fits the top-K questions), or END after the
+    plan's last entry. States without a plan (built directly in tests) fall
+    back to the questionnaire's own `next` pointer, as does a current node
+    that somehow isn't in the plan."""
+    if not state.question_plan:
+        return node.next
+    try:
+        index = state.question_plan.index(node.id)
+    except ValueError:
+        return node.next
+    return state.question_plan[index + 1] if index + 1 < len(state.question_plan) else END_NODE_ID
+
+
 _NOT_CAPTURED = "(not captured yet)"
 
 
@@ -181,7 +203,33 @@ def _render_system_content(
         "report them in profile_updates; otherwise return null for all three fields.",
     ]
 
-    next_node = questionnaire.get(node.next)  # None only for the literal END
+    # Intake material the vendor submitted before the interview (the "about
+    # you" text / uploaded documents, already summarized to bullets). It
+    # colors HOW questions are asked, never WHETHER they are asked - the
+    # unbiased fixed script stays intact.
+    if state.vendor_context:
+        lines += [
+            "",
+            "Vendor-provided background (submitted by the vendor before the interview):",
+            state.vendor_context,
+            "Use this background only to phrase your questions naturally and "
+            "acknowledge specifics the vendor already shared. Never skip or "
+            "shorten a question because of it, never treat it as the vendor's "
+            "answer, and never recite it back to them.",
+        ]
+
+    # Onboarding questions are gone (the profile arrives via the intake
+    # form), so the very first exchange carries the greeting instead.
+    if not state.turns:
+        lines += [
+            "",
+            "This is the interview's opening exchange: begin your reply with a "
+            "one-sentence warm greeting using the vendor's name and company "
+            "from the profile above (skip whatever isn't captured), then ask "
+            "the current question in the same reply.",
+        ]
+
+    next_node = questionnaire.get(_next_node_id(state, node))  # None only for the literal END
     if next_node is None:
         next_line = "- no further questions - thank them and close the interview."
     else:
@@ -266,7 +314,7 @@ def _build_payload(
             "json_schema": {"name": "host_turn", "strict": True, "schema": _TURN_SCHEMA},
         },
         "reasoning_effort": "low",
-        "max_tokens": _MAX_TOKENS,
+        "max_tokens": _MODE_MAX_TOKENS[mode],
     }
 
 
@@ -280,22 +328,25 @@ async def _call_gemini(
     time_generous: bool = False,
 ) -> dict:
     """Make the single per-turn Gemini call and return its parsed JSON turn.
-    A parse failure is retried exactly once with a fresh sample (a cheap, fast
-    reroll); HTTP failures are deliberately not retried here, so a Gemini
-    outage falls back immediately rather than doubling the wait inside
-    HeyGen's timeout window (gemini_client's own model-not-found fallback is
-    the one exception, and returns in under a second). Raises if the second
-    parse also fails or on any HTTP error, leaving the soft-fail to the
-    caller."""
+    A parse failure is retried exactly once with `max_tokens` doubled (token
+    truncation is the dominant parse-failure cause, so a bigger budget is a
+    more meaningful retry than an identical resend); HTTP failures are
+    deliberately not retried here, so a Gemini outage falls back immediately
+    rather than doubling the wait inside the mode's timeout window
+    (gemini_client's own model-not-found fallback is the one exception, and
+    returns in under a second). Raises if the second parse also fails or on
+    any HTTP error, leaving the soft-fail to the caller."""
     payload = _build_payload(state, node, user_text, questionnaire, mode, time_pressured, time_generous)
+    timeout = _MODE_TIMEOUT_SECONDS[mode]
 
-    # Parse failures get one retry (fresh sample, fast); HTTP failures don't -
-    # a Gemini outage should fall back immediately, not double the wait inside
-    # HeyGen's timeout window. The single exception is gemini_client's
-    # model-fallback retry (a model-not-found 404 returns in <1s).
+    # Parse failures get one retry with double the token budget; HTTP
+    # failures don't - a Gemini outage should fall back immediately, not
+    # double the wait inside the mode's timeout window. The single exception
+    # is gemini_client's model-fallback retry (a model-not-found 404 returns
+    # in <1s).
     for attempt in (1, 2):
         data = await gemini_client.chat_completion(
-            payload, timeout=_GEMINI_TIMEOUT_SECONDS, fallback_model=settings.gemini_model_fallback
+            payload, timeout=timeout, fallback_model=settings.gemini_model_fallback
         )
         content = data["choices"][0]["message"]["content"]
         try:
@@ -304,11 +355,15 @@ async def _call_gemini(
             if attempt == 2:
                 raise
             logger.warning(
-                "Unparsable host turn for interview %s at node %s; retrying once. Content: %.500r",
+                "Unparsable host turn for interview %s at node %s; retrying once with "
+                "max_tokens doubled (%d -> %d). Content: %.500r",
                 state.interview_id,
                 state.current_node_id,
+                payload["max_tokens"],
+                payload["max_tokens"] * 2,
                 content,
             )
+            payload = {**payload, "max_tokens": payload["max_tokens"] * 2}
     raise AssertionError("unreachable")
 
 
@@ -388,15 +443,40 @@ async def _handle_turn(
         reply = str(parsed["reply"])
         answer_complete = bool(parsed.get("answer_complete"))
         profile_updates = parsed.get("profile_updates")
+        # Reset before any state mutation below - a success always clears a
+        # prior failure streak, regardless of what this turn goes on to do.
+        state.consecutive_soft_fails = 0
     except Exception:
-        logger.warning(
-            "Host turn failed for interview %s at node %s; returning fallback reply.",
-            state.interview_id,
-            state.current_node_id,
-            exc_info=True,
+        # consecutive_soft_fails ONLY ever selects a reply/log level here - it
+        # never gates or mutates script state (no advancement, no turn
+        # append), so a wedged interview still surfaces via this counter even
+        # though nothing else about the turn changes.
+        state.consecutive_soft_fails += 1
+        if state.consecutive_soft_fails >= 2:
+            logger.error(
+                "Host turn failed for interview %s at node %s (mode=%s); %d consecutive "
+                "failures - interview may be wedged.",
+                state.interview_id,
+                state.current_node_id,
+                mode,
+                state.consecutive_soft_fails,
+                exc_info=True,
+            )
+        else:
+            logger.warning(
+                "Host turn failed for interview %s at node %s (mode=%s); returning fallback reply.",
+                state.interview_id,
+                state.current_node_id,
+                mode,
+                exc_info=True,
+            )
+        fallback_reply = (
+            settings.host_fallback_reply_repeat
+            if state.consecutive_soft_fails >= 2
+            else settings.host_fallback_reply
         )
         return TurnResult(
-            reply=settings.host_fallback_reply,
+            reply=fallback_reply,
             answer_complete=False,
             completed_question=None,
             answer_text="",
@@ -481,7 +561,7 @@ def _apply_outcome(
             answer_text="",
         )
 
-    state.current_node_id = node.next
+    state.current_node_id = _next_node_id(state, node)
     state.followup_count = 0
     return TurnResult(
         reply=reply,
@@ -577,28 +657,66 @@ async def _stream_turn(
 
     try:
         async for delta in gemini_client.stream_chat_completion(
-            payload, timeout=_GEMINI_TIMEOUT_SECONDS, fallback_model=settings.gemini_model_fallback
+            payload, timeout=_MODE_TIMEOUT_SECONDS[mode], fallback_model=settings.gemini_model_fallback
         ):
             chunk = extractor.feed(delta)
             if chunk:
                 yield chunk
         parsed, remainder = extractor.finalize()
+        # Reset before any state mutation below - mirrors _handle_turn's reset.
+        state.consecutive_soft_fails = 0
     except Exception:
-        logger.warning(
-            "Streaming host turn failed for interview %s at node %s.",
-            state.interview_id,
-            state.current_node_id,
-            exc_info=True,
-        )
         if not extractor.emitted:
+            # Nothing was spoken - a full soft-fail, same as the buffered
+            # path, so the counter mirrors _handle_turn's full escalation
+            # here: increment, WARNING->ERROR at 2+ consecutive failures
+            # (count + mode, so a wedged streaming interview - the default
+            # avatar path whenever HOST_STREAMING_ENABLED is set - is just as
+            # loud in Cloud Logging), and the repeat-fallback reply at 2+.
+            # The counter never gates or mutates script state either way.
+            state.consecutive_soft_fails += 1
+            if state.consecutive_soft_fails >= 2:
+                logger.error(
+                    "Streaming host turn failed for interview %s at node %s (mode=%s); "
+                    "%d consecutive failures - interview may be wedged.",
+                    state.interview_id,
+                    state.current_node_id,
+                    mode,
+                    state.consecutive_soft_fails,
+                    exc_info=True,
+                )
+            else:
+                logger.warning(
+                    "Streaming host turn failed for interview %s at node %s (mode=%s).",
+                    state.interview_id,
+                    state.current_node_id,
+                    mode,
+                    exc_info=True,
+                )
+            fallback_reply = (
+                settings.host_fallback_reply_repeat
+                if state.consecutive_soft_fails >= 2
+                else settings.host_fallback_reply
+            )
             outcome.result = TurnResult(
-                reply=settings.host_fallback_reply,
+                reply=fallback_reply,
                 answer_complete=False,
                 completed_question=None,
                 answer_text="",
             )
-            yield settings.host_fallback_reply
+            yield fallback_reply
         else:
+            # A partially-spoken reply keeps the existing contract: the
+            # already-spoken text stands as-is, so the counter is untouched
+            # here (switching the reply mid-stream is not an option).
+            logger.warning(
+                "Streaming host turn failed for interview %s at node %s (mode=%s) after a "
+                "partial reply.",
+                state.interview_id,
+                state.current_node_id,
+                mode,
+                exc_info=True,
+            )
             outcome.result = TurnResult(
                 reply=extractor.emitted,
                 answer_complete=False,

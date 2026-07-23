@@ -25,10 +25,14 @@ sees that a correction happened. Same-origin UI endpoints like the rest of
 /api - no auth.
 """
 
+import asyncio
 import dataclasses
+import io
+import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile
 
 from app.config import settings
 from app.models import (
@@ -41,12 +45,65 @@ from app.models import (
     TranscriptTurn,
     UpdateProfileRequest,
     UpdateProfileResponse,
+    UploadDocumentResponse,
 )
-from app.services import host_agent, interview_state
-from app.services.interview_config import get_questionnaire, get_rubric, list_domains
+from app.services import gemini_client, host_agent, interview_state
+from app.services.interview_config import build_question_plan, get_questionnaire, get_rubric, list_domains
 from app.services.interview_state import VendorProfile
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# Intake-document policy: oversize documents are TRIMMED to the word limit
+# (with a notice to the vendor), never rejected - only unreadable/unsupported
+# files or absurd byte sizes error. Plain constants, not env knobs.
+_INTAKE_WORD_LIMIT = 3000
+_INTAKE_MAX_FILE_BYTES = 10 * 1024 * 1024
+_INTAKE_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
+
+
+def _extract_document_text(filename: str, raw: bytes) -> str:
+    """Extract plain text from an uploaded intake document by extension.
+    Sync (pypdf/python-docx are blocking) - the route runs it via
+    asyncio.to_thread. Raises ValueError on an unsupported extension or a
+    file the parser can't read; both surface as a 400."""
+    suffix = Path(filename or "").suffix.lower()
+    if suffix not in _INTAKE_EXTENSIONS:
+        raise ValueError(f"Unsupported document type: {suffix or '(none)'}")
+    try:
+        if suffix == ".pdf":
+            from pypdf import PdfReader
+
+            reader = PdfReader(io.BytesIO(raw))
+            return "\n".join(page.extract_text() or "" for page in reader.pages)
+        if suffix == ".docx":
+            import docx
+
+            document = docx.Document(io.BytesIO(raw))
+            return "\n".join(paragraph.text for paragraph in document.paragraphs)
+        return raw.decode("utf-8", errors="replace")
+    except Exception as e:
+        raise ValueError("Could not read the document") from e
+
+
+async def _summarize_context(text: str) -> str:
+    """Condense intake material (about-text or a document) into the short
+    plain-language bullet list the Host and Evaluator consume, via one fast-
+    tier Gemini call. Raises on failure - callers soft-fail to "" because
+    missing background must never block the interview."""
+    payload = {
+        "model": settings.gemini_model,
+        "messages": [
+            {"role": "system", "content": settings.intake_summary_prompt},
+            {"role": "user", "content": text},
+        ],
+        "max_tokens": 800,
+    }
+    data = await gemini_client.chat_completion(
+        payload, timeout=20.0, fallback_model=settings.gemini_model_fallback
+    )
+    return str(data["choices"][0]["message"]["content"]).strip()
 
 # Maps UpdateProfileRequest/VendorProfile field names to their display label
 # in the system-note turn, in canonical (request-shape) order. Clearing a
@@ -85,10 +142,17 @@ async def create_interview(body: CreateInterviewRequest | None = None):
     (`CreateInterviewRequest`) is optional and all its fields are optional:
     `domain` selects the questionnaire (defaults to `settings.default_domain`),
     `tier` is "dev" or "prod" (defaults to "dev"), and for the prod tier
-    `passcode` and `duration_minutes` apply. Responds with a
-    `CreateInterviewResponse` carrying the new `interview_id`; the vendor
-    profile starts empty and is filled in conversationally by the Host's
-    onboarding questions.
+    `passcode` and `duration_minutes` apply. The intake fields pre-fill the
+    vendor profile: `contact_name`/`contact_role`/`company_name` are applied
+    and locked against the Host's LLM-reported profile_updates (same
+    semantics as a manual PATCH edit), and `about_text` is summarized into
+    the interview's vendor context (soft-failing to none - a summary hiccup
+    never blocks creation). Responds with a `CreateInterviewResponse`
+    carrying the new `interview_id`.
+
+    The interview's question plan is also fixed here: every questionnaire
+    node normally, or the top-K-by-rubric-weight subset that fits the picked
+    duration on the prod tier (see interview_config.build_question_plan).
 
     Fails with 400 for an unknown `domain` or an unknown `tier`. Prod tier
     adds more gating: 503 if the tier is not configured (PROD_AVATAR_ID and
@@ -130,8 +194,92 @@ async def create_interview(body: CreateInterviewRequest | None = None):
             )
         max_session_seconds = minutes * 60
 
-    state = interview_state.create(VendorProfile(), domain, tier, max_session_seconds)
+    # Start-screen intake: pre-fill the profile and lock the provided fields
+    # (vendor-typed values beat the Host's LLM-reported profile_updates,
+    # exactly like a manual PATCH correction).
+    profile = VendorProfile()
+    provided_fields = set()
+    for field_name in _PROFILE_FIELD_LABELS:
+        value = (getattr(body, field_name, None) or "").strip() if body else ""
+        if value:
+            setattr(profile, field_name, value)
+            provided_fields.add(field_name)
+
+    state = interview_state.create(
+        profile,
+        domain,
+        tier,
+        max_session_seconds,
+        question_plan=build_question_plan(domain, max_session_seconds),
+    )
+    state.manually_edited_fields |= provided_fields
+
+    about_text = (body.about_text or "").strip() if body else ""
+    if about_text:
+        try:
+            state.vendor_context = await _summarize_context(about_text)
+        except Exception:
+            logger.warning(
+                "Intake about-text summarization failed for interview %s; continuing without it.",
+                state.interview_id,
+                exc_info=True,
+            )
+
     return {"interview_id": state.interview_id}
+
+
+@router.post("/api/interview/{interview_id}/document", response_model=UploadDocumentResponse)
+async def upload_document(interview_id: str, file: UploadFile):
+    """Attach one intake document (.pdf/.docx/.txt/.md) as interview context.
+
+    The file is parsed to text, trimmed to the first 3,000 words when longer
+    (`truncated: true` in the response - the frontend shows a short notice;
+    oversize documents are never rejected), summarized into plain-language
+    bullets, and appended to the interview's vendor context alongside any
+    earlier material. Responds with an `UploadDocumentResponse` carrying the
+    `filename`, the document's original `word_count`, and the `truncated`
+    flag.
+
+    Fails with 404 for an unknown interview, 409 once the interview has been
+    finalized, 400 for an unsupported/unreadable/empty document, and 413 over
+    10 MB. A summarization failure is soft: the upload still succeeds, the
+    context just goes unenriched."""
+    state = interview_state.get(interview_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Unknown interview")
+    if state.pipeline_status is not None:
+        raise HTTPException(status_code=409, detail="Interview already finalized")
+
+    raw = await file.read()
+    if len(raw) > _INTAKE_MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="Document is too large (10 MB max)")
+
+    try:
+        text = await asyncio.to_thread(_extract_document_text, file.filename or "", raw)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    words = text.split()
+    if not words:
+        raise HTTPException(status_code=400, detail="Document contains no readable text")
+
+    truncated = len(words) > _INTAKE_WORD_LIMIT
+    trimmed_text = " ".join(words[:_INTAKE_WORD_LIMIT])
+
+    try:
+        bullets = await _summarize_context(trimmed_text)
+    except Exception:
+        bullets = ""
+        logger.warning(
+            "Intake document summarization failed for interview %s (%s); continuing without it.",
+            interview_id,
+            file.filename,
+            exc_info=True,
+        )
+    if bullets:
+        state.vendor_context = f"{state.vendor_context}\n{bullets}".strip()
+
+    return {"filename": file.filename or "", "word_count": len(words), "truncated": truncated}
 
 
 @router.get("/api/interview/{interview_id}/state", response_model=InterviewStateResponse)
@@ -143,7 +291,10 @@ async def get_interview_state(interview_id: str):
     findings gathered so far), an `updated_at` timestamp, the current
     `vendor_profile`, and the post-interview pipeline fields
     (`pipeline_status`, `scorecard`, `recommendation`) which stay null until
-    finalize hands the interview to `app.services.pipeline`. The frontend
+    finalize hands the interview to `app.services.pipeline`, plus
+    `evaluation_failed` (False by default, True if the Evaluator call itself
+    raised - e.g. a too-short transcript - so the frontend can tell scoring
+    genuinely failed instead of silently showing nothing). The frontend
     polls this both during the interview (for profile/topic) and after
     finalize (to learn when the scorecard is `ready`). Fails with 404 if the
     interview id is unknown."""
@@ -163,6 +314,7 @@ async def get_interview_state(interview_id: str):
         "pipeline_status": state.pipeline_status,
         "scorecard": dataclasses.asdict(state.scorecard) if state.scorecard is not None else None,
         "recommendation": dataclasses.asdict(state.recommendation) if state.recommendation is not None else None,
+        "evaluation_failed": state.evaluation_failed,
         "vendor_profile": {
             # Serializes the profile's three fields (company_name,
             # contact_name, contact_role); matches the finalize route's

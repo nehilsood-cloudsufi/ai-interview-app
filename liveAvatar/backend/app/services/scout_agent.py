@@ -103,8 +103,10 @@ class GeminiSearchProvider:
         primary model is unavailable (see `_is_model_error`), then parses the
         JSON object the prompt asked for and coerces it into ScoutFindings,
         backfilling any missing source URL from the response's grounding
-        metadata. May raise on HTTP or parse failure; `run()` is the soft-fail
-        boundary that swallows it."""
+        metadata. On an unparsable response, retries the same call once more
+        (grounded sampling varies between calls - mirrors host_agent's
+        parse-retry) before re-raising. May raise on HTTP or parse failure;
+        `run()` is the soft-fail boundary that swallows it."""
         user_text = (
             f"Vendor company name: {company_name}\n\n"
             f"{settings.scout_research_prompt}"
@@ -125,20 +127,32 @@ class GeminiSearchProvider:
                     response.status_code,
                     settings.gemini_model_fallback,
                 )
-                fallback_url = (
-                    f"{settings.gemini_native_base_url}models/{settings.gemini_model_fallback}:generateContent"
-                )
-                response = await client.post(fallback_url, json=payload, headers=headers)
+                url = f"{settings.gemini_native_base_url}models/{settings.gemini_model_fallback}:generateContent"
+                response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
 
-        text = "".join(part.get("text", "") for part in data["candidates"][0]["content"]["parts"])
-        # The prompt asks for a JSON object (not a bare array) so the shared
-        # parse_llm_json helper can be reused as-is: it only ever extracts a
-        # top-level JSON *object* (see tests/services/test_llm_json.py -
-        # top-level arrays are rejected there by design), and a bare array of
-        # objects would silently decode to just its first element.
-        parsed = parse_llm_json(text)
+            # The prompt asks for a JSON object (not a bare array) so the
+            # shared parse_llm_json helper can be reused as-is: it only ever
+            # extracts a top-level JSON *object* (see
+            # tests/services/test_llm_json.py - top-level arrays are rejected
+            # there by design), and a bare array of objects would silently
+            # decode to just its first element.
+            text = "".join(part.get("text", "") for part in data["candidates"][0]["content"]["parts"])
+            try:
+                parsed = parse_llm_json(text)
+            except ValueError:
+                logger.warning(
+                    "Unparsable Scout research response for %r; retrying once. Content: %.500r",
+                    company_name,
+                    text,
+                )
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                text = "".join(part.get("text", "") for part in data["candidates"][0]["content"]["parts"])
+                parsed = parse_llm_json(text)
+
         return _coerce_findings(parsed.get("findings"), _grounding_urls(data))
 
 

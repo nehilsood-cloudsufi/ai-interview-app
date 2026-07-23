@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 import pytest
@@ -192,15 +193,16 @@ async def test_full_coverage_plain_weighted_sum(patch_settings):
 
 
 @respx.mock
-async def test_no_categories_scored_overall_none(patch_settings):
+async def test_zero_resolved_categories_raises(patch_settings):
+    # Every category unscored (all omitted or unresolved) must not ship a
+    # scorecard shell with overall=None - it raises so the pipeline's
+    # evaluator-failure handling takes over instead of silently "succeeding"
+    # with nothing scored.
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     respx.post(CHAT_URL).mock(return_value=gemini_response({}))
 
-    scorecard = await score_interview(make_turns(), make_rubric(), [])
-
-    assert all(c.value is None and c.points is None for c in scorecard.categories)
-    assert scorecard.overall is None
-    assert scorecard.status is None
+    with pytest.raises(ValueError, match="zero rubric categories"):
+        await score_interview(make_turns(), make_rubric(), [])
 
 
 @respx.mock
@@ -253,6 +255,38 @@ async def test_empty_transcript_raises(patch_settings):
         with pytest.raises(ValueError, match="empty"):
             await score_interview([], make_rubric(), [])
         assert len(respx.calls) == 0
+
+
+async def test_too_short_transcript_raises(patch_settings):
+    # Fewer than 2 candidate turns is too thin to score meaningfully (e.g. a
+    # greeting-only session) - raise a clear error instead of letting an
+    # opaque model-side failure surface later.
+    patch_settings(gemini_api_key="gem-key")
+    turns = [
+        TranscriptTurn(role="interviewer", text="Tell me about your company."),
+        TranscriptTurn(role="candidate", text="We shipped ML pipelines for three banks."),
+    ]
+    with respx.mock:
+        with pytest.raises(ValueError, match="Transcript too short"):
+            await score_interview(turns, make_rubric(), [])
+        assert len(respx.calls) == 0
+
+
+@respx.mock
+async def test_exactly_two_candidate_turns_proceeds_to_call(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    turns = [
+        TranscriptTurn(role="interviewer", text="Tell me about your company."),
+        TranscriptTurn(role="candidate", text="We shipped ML pipelines for three banks."),
+        TranscriptTurn(role="interviewer", text="How do you deliver?"),
+        TranscriptTurn(role="candidate", text="Two-week sprints with a dedicated PM."),
+    ]
+
+    scorecard = await score_interview(turns, make_rubric(), [])
+
+    assert route.call_count == 1
+    assert scorecard.overall is not None
 
 
 # --- status thresholding ---
@@ -355,8 +389,139 @@ async def test_scout_findings_do_not_change_scoring_behavior(patch_settings):
     assert scorecard.overall == 75.0
 
 
+# --- unresolved-label warning + alias resolution ---
+
+
+def make_rubric_with_aliases():
+    # "quality" mirrors the shipped Architecture category's paraphrase-prone
+    # shape (Native/Wrapper), with aliases attached to exercise the alias
+    # resolution path independently of the real rubric.yaml.
+    return {
+        "quality": RubricCategory(
+            id="quality",
+            name="Quality",
+            weight=0.5,
+            description="Answer quality.",
+            value_options=[
+                ValueOption(label="Native", points=100, aliases=("Proprietary", "In-house")),
+                ValueOption(label="Wrapper", points=40, aliases=("Third-party",)),
+            ],
+        ),
+        "speed": RubricCategory(
+            id="speed",
+            name="Speed",
+            weight=0.5,
+            description="Delivery speed.",
+            value_options=[ValueOption(label="Fast", points=100), ValueOption(label="Slow", points=50)],
+        ),
+    }
+
+
+@respx.mock
+async def test_unresolved_label_logs_warning(patch_settings, caplog):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=gemini_response(
+            {
+                "quality": {"value": "Amazing", "evidence": ["irrelevant"], "rationale": ""},
+                "speed": {"value": "Fast", "evidence": [], "rationale": ""},
+            }
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.services.evaluator_agent"):
+        await score_interview(make_turns(), make_rubric(), [])
+
+    assert "Amazing" in caplog.text
+    assert "quality" in caplog.text
+
+
+@respx.mock
+async def test_alias_resolves_to_label_and_points(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=gemini_response(
+            {
+                "quality": {"value": "Proprietary", "evidence": [], "rationale": ""},
+                "speed": {"value": "Fast", "evidence": [], "rationale": ""},
+            }
+        )
+    )
+
+    scorecard = await score_interview(make_turns(), make_rubric_with_aliases(), [])
+
+    quality = next(c for c in scorecard.categories if c.id == "quality")
+    assert quality.value == "Native"
+    assert quality.points == 100.0
+
+
+@respx.mock
+async def test_alias_match_is_case_insensitive(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=gemini_response(
+            {
+                "quality": {"value": "proprietary", "evidence": [], "rationale": ""},
+                "speed": {"value": "Fast", "evidence": [], "rationale": ""},
+            }
+        )
+    )
+
+    scorecard = await score_interview(make_turns(), make_rubric_with_aliases(), [])
+
+    quality = next(c for c in scorecard.categories if c.id == "quality")
+    assert quality.value == "Native"
+
+
+@respx.mock
+async def test_no_substring_alias_matching(patch_settings):
+    # "not a wrapper" must NOT resolve to Wrapper - exact alias matching
+    # only, no substring/fuzzy matching.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=gemini_response(
+            {
+                "quality": {"value": "not a wrapper", "evidence": [], "rationale": ""},
+                "speed": {"value": "Fast", "evidence": [], "rationale": ""},
+            }
+        )
+    )
+
+    scorecard = await score_interview(make_turns(), make_rubric_with_aliases(), [])
+
+    quality = next(c for c in scorecard.categories if c.id == "quality")
+    assert quality.value is None
+    assert quality.points is None
+
+
 # evaluator_agent must be listed in conftest._SETTINGS_IMPORTERS or
 # patch_settings silently won't reach it; this guards against that regression.
 def test_evaluator_agent_settings_are_patchable(patch_settings):
     patched = patch_settings(gemini_api_key="sentinel-key")
     assert evaluator_agent.settings is patched
+
+
+@respx.mock
+async def test_vendor_context_included_as_self_reported_background(patch_settings):
+    patch_settings(gemini_api_key="gem-key")
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+
+    await score_interview(
+        make_turns(), make_rubric(), [], vendor_context="- Builds reusable rockets"
+    )
+
+    user_content = json.loads(route.calls[0].request.content)["messages"][1]["content"]
+    assert "- Builds reusable rockets" in user_content
+    # Framed as unverified self-reporting so the Evaluator weighs it properly.
+    assert "self-reported" in user_content
+
+
+@respx.mock
+async def test_no_vendor_context_block_when_empty(patch_settings):
+    patch_settings(gemini_api_key="gem-key")
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+
+    await score_interview(make_turns(), make_rubric(), [])
+
+    user_content = json.loads(route.calls[0].request.content)["messages"][1]["content"]
+    assert "self-reported" not in user_content

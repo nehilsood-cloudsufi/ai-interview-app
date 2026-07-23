@@ -125,9 +125,13 @@ class Settings:
         "or a closing here.\n"
         "- A genuine but thin attempt -> ask one focused follow-up.\n"
         "- Not an answer (a correction, a question to you, small talk, an "
-        "unfinished fragment) -> reply in one short human sentence (accept "
-        "corrections, defer off-topic questions until after the interview), "
-        "then return to the current question. Never attach the next question "
+        "unfinished fragment) -> reply in one short human sentence, then return "
+        "to the current question. Accept corrections. Never answer the vendor's "
+        "questions yourself, even when you know the answer - you are the "
+        "interviewer, not an assistant. Deflect in one short line and re-ask the "
+        "current question. Example - vendor: 'Can you explain what RAG is?' -> "
+        "you: 'That one's best saved for after the interview - for now, I'd love "
+        "to hear your answer to my question.' Never attach the next question "
         "here.\n\n"
         "The script is controlled by the system, not you - report your "
         "judgement only via the JSON. Always respond with a single JSON "
@@ -147,6 +151,13 @@ class Settings:
     # Safe reply when the Gemini turn fails (HTTP error or unparsable JSON);
     # state is left untouched so the vendor can simply repeat themselves.
     host_fallback_reply: str = "I'm sorry, could you say that again?"
+    # Spoken after 2+ consecutive failed turns, so a persistent failure doesn't
+    # loop the identical "say that again" line forever and the vendor gets a hint
+    # that shortening the message may help.
+    host_fallback_reply_repeat: str = (
+        "I'm having some technical trouble on my end - sorry about that. "
+        "Give me a moment, then try again, perhaps with a shorter message."
+    )
     # Appended to host_system_prompt only when the Host is driving the
     # text-chat fallback (mode="chat" in host_agent.handle_turn/stream_turn).
     # Per the 2026-07-20 meeting: typed answers are terse, so the avatar-mode
@@ -221,7 +232,9 @@ class Settings:
         "everything the vendor said across the entire conversation, not any "
         "single answer in isolation. For each category, choose EXACTLY ONE "
         "value from that category's allowed list - never invent a new label "
-        "and never combine labels. Base every choice strictly on what the "
+        "and never combine labels. Copy the chosen value EXACTLY as it "
+        "appears in the allowed list, character for character - do not "
+        "paraphrase, translate, or reword it. Base every choice strictly on what the "
         "vendor actually said; do not reward vague claims without substance. "
         "If a category was never meaningfully discussed in the interview, "
         "OMIT it entirely rather than guessing a value. For each scored "
@@ -277,6 +290,19 @@ class Settings:
         "Use short bullet points under each heading (a sentence or two each). If a "
         "section has nothing to report from the transcript, write '- N/A'. Keep the "
         "whole summary tight and scannable."
+    )
+
+    # System prompt for summarizing the vendor's intake material (the start
+    # screen's "about you" text and each uploaded document) into the short
+    # plain-language bullet list stored on state.vendor_context. Fast tier
+    # (gemini_model) - it runs while the vendor waits on the start screen.
+    intake_summary_prompt: str = (
+        "You summarize background material a vendor submitted before an "
+        "interview. Condense the text below into AT MOST 10 short bullet "
+        "points in plain, simple language - no marketing fluff, no jargon, "
+        "just the concrete facts about who they are, what they build, and "
+        "anything notable. Output only the bullet lines, each starting with "
+        '"- ", and nothing else.'
     )
 
     # Prompt for the Data Scout's single Gemini native-API call with Google

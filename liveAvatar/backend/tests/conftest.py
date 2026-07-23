@@ -83,9 +83,9 @@ async def async_client():
 
 @pytest.fixture(autouse=True)
 def reset_session_counter():
-    session_state.active_sessions._count = 0
+    session_state.active_sessions._deadlines.clear()
     yield
-    session_state.active_sessions._count = 0
+    session_state.active_sessions._deadlines.clear()
 
 
 @pytest.fixture(autouse=True)

@@ -213,6 +213,83 @@ def test_create_session_gateway_mode_happy_path(client, patch_settings):
 
 
 @respx.mock
+def test_create_session_dev_tier_expires_from_count_after_ttl(client, patch_settings, monkeypatch):
+    patch_settings(
+        liveavatar_api_key="live-key", liveavatar_base_url=BASE_URL, public_base_url=PUBLIC_URL
+    )
+    state = _seed_interview()
+    respx.post(f"{BASE_URL}/secrets").mock(
+        return_value=httpx.Response(200, json={"data": {"id": "sec-1"}})
+    )
+    respx.post(f"{BASE_URL}/llm-configurations").mock(
+        return_value=httpx.Response(200, json={"data": {"id": "llm-1"}})
+    )
+    respx.post(f"{BASE_URL}/contexts").mock(
+        return_value=httpx.Response(200, json={"data": {"id": "ctx-1"}})
+    )
+    respx.post(f"{BASE_URL}/sessions/token").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"session_token": "tok", "session_id": "sid"}}
+        )
+    )
+
+    fake_now = [1_000.0]
+    monkeypatch.setattr(active_sessions, "_now_fn", lambda: fake_now[0])
+
+    response = client.post("/api/session", json={"interview_id": state.interview_id})
+
+    assert response.status_code == 200
+    assert active_sessions.count == 1
+
+    fake_now[0] += 179  # just under the 180s dev-tier TTL
+    assert active_sessions.count == 1
+
+    fake_now[0] += 2  # now past it - falls out on its own, no explicit stop needed
+    assert active_sessions.count == 0
+
+
+@respx.mock
+def test_create_session_prod_tier_ttl_is_duration_plus_30(client, patch_settings, monkeypatch):
+    patch_settings(
+        liveavatar_api_key="live-key",
+        liveavatar_base_url=BASE_URL,
+        public_base_url=PUBLIC_URL,
+        prod_avatar_id="avatar-june",
+        prod_voice_id="voice-amy",
+        prod_max_session_seconds=600,
+    )
+    state = _seed_interview(tier="prod")
+    state.max_session_seconds = 300  # + default 60s grace = 360s max_session_duration
+    respx.post(f"{BASE_URL}/secrets").mock(
+        return_value=httpx.Response(200, json={"data": {"id": "sec-1"}})
+    )
+    respx.post(f"{BASE_URL}/llm-configurations").mock(
+        return_value=httpx.Response(200, json={"data": {"id": "llm-1"}})
+    )
+    respx.post(f"{BASE_URL}/contexts").mock(
+        return_value=httpx.Response(200, json={"data": {"id": "ctx-1"}})
+    )
+    respx.post(f"{BASE_URL}/sessions/token").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"session_token": "tok", "session_id": "sid"}}
+        )
+    )
+
+    fake_now = [1_000.0]
+    monkeypatch.setattr(active_sessions, "_now_fn", lambda: fake_now[0])
+
+    response = client.post("/api/session", json={"interview_id": state.interview_id})
+    assert response.status_code == 200
+
+    # TTL = max_session_duration (360, already grace-inclusive) + 30 = 390s.
+    fake_now[0] += 389
+    assert active_sessions.count == 1
+
+    fake_now[0] += 2
+    assert active_sessions.count == 0
+
+
+@respx.mock
 def test_create_session_gateway_mode_unknown_interview_404(client, patch_settings):
     patch_settings(
         liveavatar_api_key="live-key", liveavatar_base_url=BASE_URL, public_base_url=PUBLIC_URL
@@ -268,7 +345,7 @@ def test_stop_session_missing_token_ignored_even_without_api_key(client, patch_s
 @respx.mock
 def test_stop_session_happy_path_decrements_counter(client, patch_settings):
     patch_settings(liveavatar_api_key="live-key", liveavatar_base_url=BASE_URL)
-    active_sessions.increment()
+    active_sessions.track("tok", ttl_seconds=60)
     respx.post(f"{BASE_URL}/sessions/stop").mock(return_value=httpx.Response(200))
 
     response = client.post("/api/session/stop", json={"session_token": "tok"})
@@ -277,6 +354,20 @@ def test_stop_session_happy_path_decrements_counter(client, patch_settings):
     body = response.json()
     assert body["status"] == "stopped"
     assert body["api_status"] == 200
+    assert active_sessions.count == 0
+
+
+@respx.mock
+def test_stop_session_twice_stays_zero_and_both_200(client, patch_settings):
+    patch_settings(liveavatar_api_key="live-key", liveavatar_base_url=BASE_URL)
+    active_sessions.track("tok", ttl_seconds=60)
+    respx.post(f"{BASE_URL}/sessions/stop").mock(return_value=httpx.Response(200))
+
+    first = client.post("/api/session/stop", json={"session_token": "tok"})
+    second = client.post("/api/session/stop", json={"session_token": "tok"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
     assert active_sessions.count == 0
 
 

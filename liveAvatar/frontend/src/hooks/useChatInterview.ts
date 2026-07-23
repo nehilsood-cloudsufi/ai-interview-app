@@ -5,10 +5,12 @@ import type { ChatResponse, TranscriptTurn } from '../types';
 // Local, frontend-only opening bubble mirroring the avatar's spoken opener
 // (see backend _gateway_opening_text). The backend's authoritative transcript
 // is unaffected — this is purely so the chat column isn't empty on entry.
+// No introduction request: the profile comes from the start screen's intake
+// form, and Noor's first real reply greets by name and asks question one.
 const GREETING =
   "Hello, and welcome! I'm Noor, and I'll be running today's vendor " +
-  'evaluation. To get us started, could you introduce yourself — your ' +
-  'name, your role, and the company you represent?';
+  "evaluation. Whenever you're ready, just say hello and we'll dive into " +
+  'the first question.';
 
 interface UseChatInterviewOptions {
   interviewId: string | null;

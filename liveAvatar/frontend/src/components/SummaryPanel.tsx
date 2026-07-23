@@ -22,6 +22,10 @@ interface SummaryPanelProps {
   // (utils/downloadTranscript.ts). Do not "fix" this by rendering them here.
   insights?: ScoutFinding[] | null;
   recommendation?: FollowupRecommendation | null;
+  // True once the pipeline reports its Evaluator call itself failed (e.g. a
+  // too-short transcript) - drives the amber note shown in place of the
+  // scorecard so the vendor isn't left staring at nothing unexplained.
+  evaluationFailed?: boolean;
   onDismiss: () => void;
 }
 
@@ -113,6 +117,7 @@ export function SummaryPanel({
   scorecard,
   insights,
   recommendation,
+  evaluationFailed,
   onDismiss,
 }: SummaryPanelProps) {
   if (!visible) return null;
@@ -181,6 +186,17 @@ export function SummaryPanel({
 
           {/* Post-interview pipeline progress (gateway mode only) */}
           {!isGenerating && pipelineStatus && <PipelineStrip status={pipelineStatus} />}
+
+          {/* Scoring genuinely failed (e.g. a too-short transcript) - explain
+              the missing scorecard instead of silently rendering nothing. */}
+          {!isGenerating && pipelineStatus === 'ready' && !scorecard && evaluationFailed && (
+            <div className="flex items-start gap-2 text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+              <span className="text-sm">
+                Scoring was unavailable for this interview — the transcript and summary were still saved.
+              </span>
+            </div>
+          )}
 
           {/* Final scorecard from the holistic end-of-interview scoring pass */}
           {!isGenerating && <ScorecardPanel scorecard={scorecard} />}

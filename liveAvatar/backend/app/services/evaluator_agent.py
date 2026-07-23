@@ -11,12 +11,15 @@ per category, e.g. "Strategic"/"Exploring"/"Casual") with supporting
 evidence quotes.
 
 The LLM only proposes - all post-processing is done here in code: each
-chosen label is resolved (case-insensitively) against the category's
-`value_options` to its points, category ids outside the rubric are dropped,
-categories the LLM omitted (or whose label didn't resolve) stay
+chosen label is resolved (case-insensitively, with an optional per-option
+`aliases` fallback for paraphrase-prone categories - see
+`interview_config.ValueOption`) against the category's `value_options` to
+its points, category ids outside the rubric are dropped, categories the LLM
+omitted (or whose label didn't resolve - logged at WARNING) stay
 `value=None`/`points=None`, and the overall is a weighted mean of points over
 only the categories with data, with their rubric weights renormalized to sum
-to 1.0.
+to 1.0. If every category ends up unscored, `score_interview` raises rather
+than returning an empty scorecard shell.
 
 Mirroring `summary_service`'s philosophy, it raises on every failure path;
 the finalize router soft-fails so a scoring hiccup never loses the
@@ -124,12 +127,23 @@ def _render_findings(scout_findings: list[ScoutFinding]) -> str:
 
 def _resolve_value(category: RubricCategory, raw_value: str) -> tuple[str, float] | None:
     """Case-insensitive match of the LLM's chosen label against the
-    category's value_options. Returns None (soft-fail) if nothing matches -
-    treated exactly like an omitted category, since there's no sensible
-    "nearest" fallback for a categorical value."""
+    category's value_options, falling back to each option's `aliases` (also
+    matched exactly, case-insensitively - never as a substring/fuzzy match)
+    when the label itself doesn't match. Returns None (soft-fail) if nothing
+    matches - treated exactly like an omitted category, since there's no
+    sensible "nearest" fallback for a categorical value."""
     needle = raw_value.strip().lower()
     for option in category.value_options:
         if option.label.strip().lower() == needle:
+            return option.label, option.points
+    for option in category.value_options:
+        if any(alias.strip().lower() == needle for alias in option.aliases):
+            logger.info(
+                "Evaluator label %r resolved via alias to category %s value %r.",
+                raw_value,
+                category.id,
+                option.label,
+            )
             return option.label, option.points
     return None
 
@@ -138,18 +152,29 @@ async def score_interview(
     turns: list[TranscriptTurn],
     rubric: dict[str, RubricCategory],
     scout_findings: list[ScoutFinding],
+    vendor_context: str = "",
 ) -> Scorecard:
     """Score the whole interview with a single pro-model Gemini call and
-    return the final Scorecard. Raises on any HTTP/parse failure - the
-    finalize router decides how to soft-fail."""
+    return the final Scorecard. `vendor_context` is the bullet summary of the
+    intake material the vendor submitted up front (about-text/documents),
+    included as clearly self-reported background. Raises on any HTTP/parse
+    failure - the finalize router decides how to soft-fail."""
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured; cannot score the interview.")
 
     transcript_text = render_transcript(turns)
     if not transcript_text:
         raise ValueError("Transcript is empty; nothing to score.")
+    candidate_turns = sum(1 for turn in turns if turn.role == "candidate")
+    if candidate_turns < 2:
+        raise ValueError("Transcript too short to score (fewer than 2 vendor answers).")
 
     user_content = f"Interview transcript:\n{transcript_text}"
+    if vendor_context:
+        user_content = (
+            f"{user_content}\n\nVendor-provided background (self-reported by the vendor "
+            f"before the interview, not independently verified):\n{vendor_context}"
+        )
     if scout_findings:
         user_content = f"{user_content}\n\n{_render_findings(scout_findings)}"
 
@@ -182,6 +207,14 @@ async def score_interview(
             if resolved is not None:
                 value, points = resolved
                 evidence = [str(quote) for quote in (entry.get("evidence") or []) if str(quote).strip()]
+            else:
+                logger.warning(
+                    "Evaluator label %r for category %s did not resolve; allowed: %s. "
+                    "Treating as unscored.",
+                    entry["value"],
+                    category.id,
+                    [o.label for o in category.value_options],
+                )
         categories.append(
             CategoryScore(
                 id=category.id,
@@ -194,12 +227,15 @@ async def score_interview(
         )
 
     with_data = [c for c in categories if c.points is not None]
-    overall = None
-    status = None
-    if with_data:
-        # Renormalize the weights of the categories that have data to 1.0.
-        total_weight = sum(c.weight for c in with_data)
-        overall = round(sum(c.points * (c.weight / total_weight) for c in with_data), 1)
-        status = "APPROVED" if overall >= STATUS_THRESHOLD else "REJECTED"
+    if not with_data:
+        # Every category ended up unscored (omitted or unresolved) - refuse
+        # to ship a scorecard shell with overall=None; this flows into the
+        # pipeline's existing evaluator-failure handling instead.
+        raise ValueError("Evaluator resolved zero rubric categories; refusing to emit an empty scorecard.")
+
+    # Renormalize the weights of the categories that have data to 1.0.
+    total_weight = sum(c.weight for c in with_data)
+    overall = round(sum(c.points * (c.weight / total_weight) for c in with_data), 1)
+    status = "APPROVED" if overall >= STATUS_THRESHOLD else "REJECTED"
 
     return Scorecard(categories=categories, overall=overall, status=status)

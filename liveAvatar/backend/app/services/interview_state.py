@@ -37,13 +37,13 @@ PipelineStatus = Literal["interviewed", "scouting", "evaluating", "ready", "fail
 
 @dataclass
 class VendorProfile:
-    """The vendor's identity details, captured conversationally by the Host
-    during onboarding (there is no intake form) and later correctable by the
-    vendor via PATCH /api/interview/{id}/profile. All fields default to empty
-    so `create` can construct one with no arguments before anything is known."""
+    """The vendor's identity details, entered on the start screen's intake
+    form at interview creation (name/company required there, role optional)
+    and later correctable by the vendor via PATCH /api/interview/{id}/profile
+    or a spoken correction (the Host reports `profile_updates` on every turn).
+    All fields default to empty so `create` can construct one with no
+    arguments when an API caller provides nothing."""
 
-    # Filled in by conversation (Host agent), not at interview creation -
-    # interview_state.create(VendorProfile()) must work with no args.
     company_name: str = ""
     contact_name: str = ""
     contact_role: str | None = None
@@ -102,7 +102,24 @@ class InterviewState:
     # Set by create() from the questionnaire's first node; the empty default
     # only exists so tests can construct states directly with explicit ids.
     current_node_id: str = ""
+    # Ordered node ids THIS interview will ask (a subset of the domain's
+    # questionnaire when a prod-tier duration only fits the top-K questions;
+    # see interview_config.build_question_plan). host_agent advances along
+    # this plan instead of the nodes' own `next` pointers; an empty list
+    # (states built directly in tests) falls back to `next`.
+    question_plan: list[str] = field(default_factory=list)
+    # Plain-language bullet summary of the intake material the vendor
+    # submitted up front (the "about you" text and any uploaded documents),
+    # produced by a Gemini flash call at creation/upload time. Given to the
+    # Host (to phrase questions naturally) and the Evaluator (as background);
+    # empty when the vendor submitted nothing.
+    vendor_context: str = ""
     followup_count: int = 0
+    # Consecutive host_agent turns that soft-failed (HTTP error or unparsable
+    # JSON) in a row, reset to 0 on the next successful turn. Never gates or
+    # mutates script state - it only picks which fallback reply/log level a
+    # failing turn gets (see host_agent._handle_turn / _stream_turn).
+    consecutive_soft_fails: int = 0
     turns: list[TranscriptTurn] = field(default_factory=list)
     scout_findings: list[ScoutFinding] = field(default_factory=list)
     # Profile fields the vendor manually corrected via PATCH
@@ -117,6 +134,11 @@ class InterviewState:
     pipeline_status: PipelineStatus | None = None
     scorecard: "Scorecard | None" = None
     recommendation: "FollowupRecommendation | None" = None
+    # Set by pipeline when the Evaluator call raises (e.g. a too-short
+    # transcript) - scorecard/recommendation stay None as before, but this
+    # flag lets the frontend tell the vendor scoring genuinely failed rather
+    # than silently showing nothing where the scorecard would be.
+    evaluation_failed: bool = False
     # Serializes host_agent.handle_turn/stream_turn per interview. HeyGen's
     # VAD can fire several gateway calls near-simultaneously when it splits
     # one flowing answer into fragments (seen live 2026-07-22: two turns
@@ -139,15 +161,17 @@ def create(
     domain: str,
     tier: Literal["dev", "prod"] = "dev",
     max_session_seconds: int | None = None,
+    question_plan: list[str] | None = None,
 ) -> InterviewState:
     """Register a fresh interview and return its `InterviewState`.
 
     Mints the `interview_id` and the `gateway_token` HeyGen will present on
-    its Custom LLM callbacks, seeds `current_node_id` from the domain
-    questionnaire's start node, and stores the state in `_interviews`. Prunes
-    stale interviews first (see `prune_older_than`) so the registry stays
-    bounded. The `interview_config` import is deferred to call time to avoid an
-    import cycle."""
+    its Custom LLM callbacks, seeds `current_node_id` from the question plan's
+    first node (falling back to the domain questionnaire's start node when no
+    plan is given), and stores the state in `_interviews`. Prunes stale
+    interviews first (see `prune_older_than`) so the registry stays bounded.
+    The `interview_config` import is deferred to call time to avoid an import
+    cycle."""
     from app.services.interview_config import get_start_node_id
 
     prune_older_than()
@@ -158,7 +182,8 @@ def create(
         domain=domain,
         tier=tier,
         max_session_seconds=max_session_seconds,
-        current_node_id=get_start_node_id(domain),
+        question_plan=question_plan or [],
+        current_node_id=question_plan[0] if question_plan else get_start_node_id(domain),
     )
     _interviews[state.interview_id] = state
     return state

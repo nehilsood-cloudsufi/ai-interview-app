@@ -60,6 +60,12 @@ export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: Use
   // switch to text chat, where finalize must NOT run — the chat continues).
   const suppressSessionEndRef = useRef(false);
 
+  // Guards against double-posting /api/session/stop for the same token: the
+  // SDK can emit SESSION_DISCONNECTED during a user-initiated stopSession
+  // (which already posts stop itself), and this ref stops the disconnect
+  // handler from posting a second time for that same session.
+  const stopPostedForTokenRef = useRef<string | null>(null);
+
   // Shared body for every /api/session/stop call site. The interview id is also
   // persisted to localStorage alongside the session token so orphaned-session
   // cleanup (after a crash/reload) can still tear down gateway resources.
@@ -186,7 +192,21 @@ export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: Use
         }
       });
 
-      newSession.on(SessionEvent.SESSION_DISCONNECTED, () => cleanupSession(newSession));
+      newSession.on(SessionEvent.SESSION_DISCONNECTED, () => {
+        // Server-ended sessions (e.g. the dev tier's ~1-min sandbox cap) never
+        // go through stopSession, so post the stop here too - this both drops
+        // the concurrency badge immediately (rather than waiting on the
+        // backend TTL) and tears down the leaked per-interview HeyGen
+        // llm-config/secret/context. Guarded by the ref so a
+        // SESSION_DISCONNECTED fired during a user-initiated stopSession
+        // (which already posted) doesn't double-post for the same token.
+        const activeToken = localStorage.getItem('liveavatar_session_token');
+        if (activeToken && stopPostedForTokenRef.current !== activeToken) {
+          stopPostedForTokenRef.current = activeToken;
+          postStopSession(activeToken).catch(console.error);
+        }
+        cleanupSession(newSession);
+      });
 
       newSession.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, () => setSpeakingState('avatar_speaking'));
       newSession.on(AgentEventsEnum.AVATAR_SPEAK_ENDED, () => setSpeakingState('idle'));
@@ -219,7 +239,7 @@ export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: Use
   const stopSession = async (options: StopOptions = {}) => {
     if (session) {
       suppressSessionEndRef.current = options.suppressSessionEnd === true;
-      // Tear down the backend side (concurrency counter + per-interview LLM
+      // Tear down the backend side (session tracker + per-interview LLM
       // config/secret/context) BEFORE cleanupSession wipes the stored token.
       // Without this, an explicit End click never reached /api/session/stop
       // at all: cleanupSession removes the token synchronously, so the
@@ -227,6 +247,7 @@ export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: Use
       // resources leaked on every normally-ended session.
       const activeToken = localStorage.getItem('liveavatar_session_token');
       if (activeToken) {
+        stopPostedForTokenRef.current = activeToken;
         postStopSession(activeToken).catch(console.error);
       }
       try { await session.stop(); } catch (e) { console.error("Error stopping session:", e); }

@@ -10,7 +10,6 @@ const POLL_INTERVAL_MS = 5000;
 
 interface VendorProfileState {
   profile: VendorProfile | null;
-  isOnboarding: boolean;
   // True once the interview script has reached END - App uses this to
   // auto-stop a still-connected avatar session after the closing line.
   interviewDone: boolean;
@@ -20,23 +19,20 @@ interface VendorProfileState {
 /**
  * Polls GET /api/interview/{id}/state for the WHOLE interview (both avatar
  * and chat modes), so a ProfileCard can show - and let the vendor edit via
- * PATCH /api/interview/{id}/profile - the profile Noor has captured, not
- * just during onboarding.
+ * PATCH /api/interview/{id}/profile - the vendor's profile (entered on the
+ * start screen's intake form, correctable throughout).
  *
- * Returns `{ profile, isOnboarding, saveProfile }`: the captured profile (null
- * until the first response), whether onboarding is still in progress
- * (current_topic === 'onboarding', so the card's heading can change once it
- * wraps up), and saveProfile — a PATCH of the changed fields that applies the
- * server's echoed profile immediately.
+ * Returns `{ profile, interviewDone, saveProfile }`: the profile (null until
+ * the first response), whether the script has reached END, and saveProfile —
+ * a PATCH of the changed fields that applies the server's echoed profile
+ * immediately.
  *
  * Lifecycle: polls every 5s while `active` and an interviewId is set. Stops on
  * a 404 or after a few consecutive failures (giving up quietly); unmount or
- * `active` turning false tears the poll down too. Unlike the old
- * onboarding-only hook, the poll keeps running past onboarding.
+ * `active` turning false tears the poll down too.
  */
 export function useVendorProfile(interviewId: string | null, active: boolean): VendorProfileState {
   const [profile, setProfile] = useState<VendorProfile | null>(null);
-  const [isOnboarding, setIsOnboarding] = useState(false);
   const [interviewDone, setInterviewDone] = useState(false);
 
   // The hook's own stop conditions (a 404, or MAX_CONSECUTIVE_FAILURES in a
@@ -75,7 +71,6 @@ export function useVendorProfile(interviewId: string | null, active: boolean): V
       if (signal.cancelled) return;
 
       setProfile(data.vendor_profile);
-      setIsOnboarding(data.current_topic === 'onboarding');
       setInterviewDone(data.done === true);
     } catch {
       if (signal.cancelled) return;
@@ -111,5 +106,5 @@ export function useVendorProfile(interviewId: string | null, active: boolean): V
     [interviewId],
   );
 
-  return { profile, isOnboarding, interviewDone, saveProfile };
+  return { profile, interviewDone, saveProfile };
 }

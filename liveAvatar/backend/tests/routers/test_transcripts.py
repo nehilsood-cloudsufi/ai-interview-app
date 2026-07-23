@@ -81,6 +81,36 @@ def test_finalize_summary_failure_still_saves(client, patch_settings, tmp_transc
 
 
 @respx.mock
+def test_finalize_empty_summary_sets_summary_ok_false(client, patch_settings, tmp_transcripts_dir):
+    # Gemini returning a 200 with an empty completion must be treated as a
+    # summary failure (summary_service now raises on this), not a silently
+    # "successful" blank summary - but the transcript must still be saved.
+    patch_settings(
+        gemini_api_key="gem-key",
+        gemini_base_url=GEMINI_BASE_URL,
+        transcripts_local_dir=str(tmp_transcripts_dir),
+        gcs_bucket=None,
+    )
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})
+    )
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={"session_id": "empty-summary", "turns": [{"role": "candidate", "text": "hello"}]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary_ok"] is False
+    assert body["summary"] == ""
+
+    saved = client.get("/api/transcript/empty-summary").json()
+    assert saved["summary_ok"] is False
+    assert saved["session_id"] == "empty-summary"
+
+
+@respx.mock
 def test_finalize_happy_path_with_summary(client, patch_settings, tmp_transcripts_dir):
     patch_settings(
         gemini_api_key="gem-key",
@@ -184,6 +214,7 @@ def test_finalize_with_interview_returns_fast_and_enqueues_pipeline(
     )
     calls = _stub_enqueue(monkeypatch)
     state = _seed_interview()
+    state.vendor_context = "- Builds AI tooling for banks"
 
     response = client.post(
         "/api/transcript/finalize",
@@ -220,6 +251,8 @@ def test_finalize_with_interview_returns_fast_and_enqueues_pipeline(
         "contact_role": "CTO",
     }
     assert saved["domain"] == "ai_ml"
+    # The intake material's bullet summary rides along on the record.
+    assert saved["vendor_context"] == "- Builds AI tooling for banks"
     assert saved["pipeline_status"] == "interviewed"
     assert saved["summary"] == "Nice summary"
     assert saved["summary_ok"] is True
@@ -321,12 +354,14 @@ def test_finalize_double_finalize_short_circuits_and_returns_saved_summary(
     assert len(save_calls) == 1
 
 
-def test_finalize_double_finalize_short_circuit_without_saved_record_falls_back_to_empty(
+def test_short_circuit_unreadable_record_reports_summary_not_ok(
     client, patch_settings, tmp_transcripts_dir, monkeypatch
 ):
     # If, for whatever reason, no record was ever persisted (or the lookup
-    # itself fails), the short-circuit response falls back to the legacy
-    # empty-summary shape rather than raising.
+    # itself fails), the short-circuit response must NOT claim summary_ok:
+    # True for an empty summary it never actually generated - that reads as
+    # fake-healthy to the frontend. It reports summary_ok: False instead, so
+    # the client renders the existing "summary could not be generated" note.
     patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
 
     state = _seed_interview()
@@ -344,7 +379,7 @@ def test_finalize_double_finalize_short_circuit_without_saved_record_falls_back_
     assert response.status_code == 200
     assert response.json() == {
         "summary": "",
-        "summary_ok": True,
+        "summary_ok": False,
         "pipeline_status": "scouting",
         "scorecard": None,
         "insights": None,
@@ -444,3 +479,77 @@ def test_get_transcript_found(client, tmp_transcripts_dir, patch_settings):
 
     assert response.status_code == 200
     assert response.json()["session_id"] == "s3"
+
+
+@respx.mock
+def test_chat_interview_finalize_produces_summary(client, patch_settings, tmp_transcripts_dir, monkeypatch):
+    # Regression test for chat-mode finalize: the happy path must produce a
+    # non-empty summary, set summary_ok True, mark pipeline_status as
+    # "interviewed", and persist the transcript with interview_id and domain.
+    patch_settings(
+        gemini_api_key="gem-key",
+        gemini_base_url=GEMINI_BASE_URL,
+        transcripts_local_dir=str(tmp_transcripts_dir),
+        gcs_bucket=None,
+    )
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(
+            200, json={"choices": [{"message": {"content": "Interview Summary: Promising candidate"}}]}
+        )
+    )
+    _stub_enqueue(monkeypatch)
+
+    # Create interview via POST /api/interview (no about_text, so no intake-time Gemini call)
+    interview_response = client.post("/api/interview", json={"domain": "ai_ml"})
+    assert interview_response.status_code == 200
+    interview_id = interview_response.json()["interview_id"]
+
+    # Multi-turn chat-style transcript (interviewer greeting + candidate answers + follow-ups)
+    chat_turns = [
+        {"role": "interviewer", "text": "Hello, tell us about your company.", "timestamp": 1.0},
+        {"role": "candidate", "text": "We build AI infrastructure for enterprise.", "timestamp": 2.0},
+        {
+            "role": "interviewer",
+            "text": "Interesting. What's your go-to-market strategy?",
+            "timestamp": 3.0,
+        },
+        {
+            "role": "candidate",
+            "text": "We focus on large financial institutions with high compliance needs.",
+            "timestamp": 4.0,
+        },
+        {
+            "role": "interviewer",
+            "text": "How are you differentiated from competitors?",
+            "timestamp": 5.0,
+        },
+        {
+            "role": "candidate",
+            "text": "Our API integrates with existing workflows without retraining.",
+            "timestamp": 6.0,
+        },
+    ]
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={
+            "session_id": "chat-s1",
+            "interview_id": interview_id,
+            "turns": chat_turns,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"] == "Interview Summary: Promising candidate"
+    assert body["summary_ok"] is True
+    assert body["pipeline_status"] == "interviewed"
+
+    # Transcript was saved with interview context
+    saved = client.get("/api/transcript/chat-s1").json()
+    assert saved["session_id"] == "chat-s1"
+    assert saved["summary"] == "Interview Summary: Promising candidate"
+    assert saved["summary_ok"] is True
+    assert saved["domain"] == "ai_ml"
+    assert saved["pipeline_status"] == "interviewed"
+    assert len(saved["turns"]) == 6

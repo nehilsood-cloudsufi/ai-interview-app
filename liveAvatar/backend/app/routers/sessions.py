@@ -27,6 +27,7 @@ from app.config import settings
 from app.dependencies import resolve_api_key
 from app.models import CreateSessionRequest, StopSessionRequest
 from app.services import interview_state
+from app.services.interview_state import InterviewState
 from app.services.liveavatar_client import (
     create_context,
     create_llm_configuration,
@@ -51,18 +52,27 @@ GATEWAY_CONTEXT_PROMPT = (
     "Follow the conversation naturally."
 )
 
+# Dev tier has no max_session_duration to derive a TTL from (the sandbox
+# avatar's own ~1-min cap ends it instead), so this is a flat generous slack:
+# long enough that a slow session start never expires a session that's still
+# genuinely live, short enough that a session HeyGen ended without a matching
+# stop still falls out of the concurrency count in reasonable time.
+DEV_SESSION_TTL_SECONDS = 180
 
-def _gateway_opening_text() -> str:
+
+def _gateway_opening_text(state: InterviewState) -> str:
     """Spoken by the avatar the moment the session connects, before any
-    gateway call. The intake form is gone, so the vendor profile is empty at
-    this point - onboarding happens conversationally via the `intro`
-    questionnaire node - so this is a generic opener rather than a by-name
-    greeting. Content is aligned with `intro`'s ask: name, role, and
-    company."""
+    gateway call. The vendor's profile comes from the start screen's intake
+    form, so the opener greets them by name (falling back to a generic
+    welcome if the API caller provided no name) and invites them to start
+    talking - there are no onboarding questions to ask. The Host's own
+    first-turn reply then transitions into the first scripted question."""
+    profile = state.vendor_profile
+    who = f", {profile.contact_name.strip()}" if profile.contact_name.strip() else ""
     return (
-        "Hello, and welcome! I'm Noor, and I'll be running today's vendor "
-        "evaluation. To get us started, could you introduce yourself - your "
-        "name, your role, and the company you represent?"
+        f"Hello{who}, and welcome! I'm Noor, and I'll be running today's "
+        "vendor evaluation. Whenever you're ready, just say hello and we'll "
+        "dive into the first question."
     )
 
 
@@ -96,16 +106,22 @@ async def _create_gateway_session(body: CreateSessionRequest) -> dict:
             max_session_duration = (
                 state.max_session_seconds or settings.prod_max_session_seconds
             ) + settings.prod_session_grace_seconds
+            # The concurrency-count TTL rides on top of the grace already
+            # baked into max_session_duration, plus another 30s so a session
+            # that's still tearing down at the HeyGen-side cut doesn't
+            # briefly vanish from the badge before its own stop call lands.
+            session_ttl_seconds = max_session_duration + 30
         else:
             avatar_id = settings.avatar_id
             is_sandbox = True
             voice_id = None
             max_session_duration = None
+            session_ttl_seconds = DEV_SESSION_TTL_SECONDS
 
         secret_id = await create_llm_secret(liveavatar_key, state.gateway_token)
         gateway_base_url = f"{settings.public_base_url.rstrip('/')}/llm/{body.interview_id}/v1"
         llm_config_id = await create_llm_configuration(liveavatar_key, secret_id, gateway_base_url)
-        context_id = await create_context(liveavatar_key, GATEWAY_CONTEXT_PROMPT, _gateway_opening_text())
+        context_id = await create_context(liveavatar_key, GATEWAY_CONTEXT_PROMPT, _gateway_opening_text(state))
 
         token_data = await create_session_token(
             liveavatar_key,
@@ -123,7 +139,7 @@ async def _create_gateway_session(body: CreateSessionRequest) -> dict:
         state.context_id = context_id
         state.status = "active"
 
-        active_sessions.increment()
+        active_sessions.track(token_data["session_token"], session_ttl_seconds)
 
         return {
             "session_token": token_data["session_token"],
@@ -179,16 +195,16 @@ async def stop_session_route(body: StopSessionRequest):
     per-interview LLM configuration, secret, and context provisioned at
     creation can be cleaned up. If no `session_token` is provided this is a
     no-op that responds `{"status": "ignored"}`. Otherwise it asks
-    LiveAvatar to stop the stream, decrements the active-session counter,
-    best-effort deletes the associated LiveAvatar resources (each failure is
-    logged, never surfaced), marks the interview state "finished", and
-    responds `{"status": "stopped", "api_status": <upstream status code>}`.
-    Returns 500 only if stopping the session itself raises.
+    LiveAvatar to stop the stream, releases the session from the active-
+    session tracker, best-effort deletes the associated LiveAvatar resources
+    (each failure is logged, never surfaced), marks the interview state
+    "finished", and responds `{"status": "stopped", "api_status": <upstream
+    status code>}`. Returns 500 only if stopping the session itself raises.
 
-    Note this is the only path that decrements the concurrency counter -
-    sessions HeyGen ends on its own (hitting the duration cap) never call
-    here, so the counter can drift (see the module note in
-    app.services.session_state).
+    This is the fast path off the concurrency count. A session HeyGen ends
+    on its own (hitting the duration cap) without ever reaching this route
+    still falls out of the count on its own once its tracked TTL elapses -
+    see app.services.session_state.
     """
     try:
         if not body.session_token:
@@ -198,7 +214,7 @@ async def stop_session_route(body: StopSessionRequest):
 
         res = await stop_session(body.session_token)
 
-        active_sessions.decrement()
+        active_sessions.release(body.session_token)
 
         # Clean up the dynamically created context if one was used
         if body.context_id:
