@@ -115,6 +115,11 @@ class InterviewState:
     # empty when the vendor submitted nothing.
     vendor_context: str = ""
     followup_count: int = 0
+    # Consecutive host_agent turns that soft-failed (HTTP error or unparsable
+    # JSON) in a row, reset to 0 on the next successful turn. Never gates or
+    # mutates script state - it only picks which fallback reply/log level a
+    # failing turn gets (see host_agent._handle_turn / _stream_turn).
+    consecutive_soft_fails: int = 0
     turns: list[TranscriptTurn] = field(default_factory=list)
     scout_findings: list[ScoutFinding] = field(default_factory=list)
     # Profile fields the vendor manually corrected via PATCH

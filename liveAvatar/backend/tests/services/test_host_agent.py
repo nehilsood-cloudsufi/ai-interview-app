@@ -715,6 +715,8 @@ async def test_handle_turn_avatar_mode_appends_avatar_prompt(patch_settings):
 
     system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
     assert settings.host_avatar_mode_prompt in system_content
+    # Off-topic deflection (T3-B1/T4-B1) must reach the LLM in every mode.
+    assert "Never answer the vendor's questions" in system_content
 
 
 @respx.mock
@@ -842,6 +844,8 @@ async def test_handle_turn_chat_mode_appends_chat_prompt(patch_settings):
 
     system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
     assert settings.host_chat_mode_prompt in system_content
+    # Off-topic deflection (T3-B1/T4-B1) must reach the LLM in every mode.
+    assert "Never answer the vendor's questions" in system_content
 
 
 @respx.mock
@@ -1091,3 +1095,163 @@ async def test_no_context_or_greeting_sections_mid_interview(patch_settings):
     system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
     assert "Vendor-provided background" not in system_content
     assert "opening exchange" not in system_content
+
+
+# --- Bug 2 (T3-B1/T4-B1): off-topic deflection ------------------------------
+
+
+def test_system_prompt_forbids_answering_vendor_questions():
+    # Buried-parenthetical deflection was too weak (a live test showed the
+    # Host answering "what is RAG?" instead of deferring it) - the prompt
+    # must now explicitly forbid answering and give a concrete example.
+    assert "Never answer the vendor's questions" in settings.host_system_prompt
+    assert "Can you explain what RAG is?" in settings.host_system_prompt
+
+
+# --- Bug 1 (T3-B2, critical): chat-mode limits, retry, escape hatch ---------
+
+
+@respx.mock
+async def test_chat_mode_payload_uses_chat_token_cap(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric(), mode="chat")
+
+    body = json.loads(route.calls[0].request.content)
+    assert body["max_tokens"] == 4000
+
+
+async def test_chat_mode_uses_generous_timeout(patch_settings, monkeypatch):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    captured = {}
+
+    async def fake_chat_completion(payload, *, timeout, fallback_model=None):
+        captured["timeout"] = timeout
+        content = json.dumps({"reply": "Thanks!", "answer_complete": True})
+        return {"choices": [{"message": {"content": content}}]}
+
+    monkeypatch.setattr(host_agent.gemini_client, "chat_completion", fake_chat_completion)
+    state = make_state()
+
+    await handle_turn(state, "A very long detailed answer.", make_questionnaire(), make_rubric(), mode="chat")
+
+    assert captured["timeout"] == 60.0
+
+
+async def test_avatar_mode_timeout_unchanged(patch_settings, monkeypatch):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    captured = {}
+
+    async def fake_chat_completion(payload, *, timeout, fallback_model=None):
+        captured["timeout"] = timeout
+        content = json.dumps({"reply": "Thanks!", "answer_complete": True})
+        return {"choices": [{"message": {"content": content}}]}
+
+    monkeypatch.setattr(host_agent.gemini_client, "chat_completion", fake_chat_completion)
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    assert captured["timeout"] == 8.0
+
+
+@respx.mock
+async def test_read_timeout_soft_fails_and_preserves_state(patch_settings):
+    # Chat mode's generous timeout still has to fail eventually if Gemini
+    # never answers - the soft-fail contract must hold identically to HTTP
+    # errors (this was the critical wedge: a detailed typed answer hitting
+    # the avatar-sized 8s/800-token limits, forever).
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(side_effect=httpx.ReadTimeout("timed out"))
+    state = make_state()
+    original_profile = dataclasses.replace(state.vendor_profile)
+
+    result = await handle_turn(
+        state, "A very long, detailed typed answer.", make_questionnaire(), make_rubric(), mode="chat"
+    )
+
+    assert result.reply == settings.host_fallback_reply
+    assert state.turns == []
+    assert state.current_node_id == "company_overview"
+    assert state.vendor_profile == original_profile
+
+
+@respx.mock
+async def test_parse_retry_doubles_max_tokens(patch_settings):
+    # Token truncation is the dominant parse-failure cause, so the retry
+    # resends with a doubled cap instead of an identical "fresh sample".
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(200, json={"choices": [{"message": {"content": "not json at all"}}]}),
+            httpx.Response(200, json={"choices": [{"message": {"content": "still not json"}}]}),
+        ]
+    )
+    state = make_state()
+
+    result = await handle_turn(state, "Hello?", make_questionnaire(), make_rubric())
+
+    assert route.call_count == 2
+    first_body = json.loads(route.calls[0].request.content)
+    second_body = json.loads(route.calls[1].request.content)
+    assert first_body["max_tokens"] == 800
+    assert second_body["max_tokens"] == 1600
+    # Both attempts exhausted -> handle_turn-level soft-fail, state untouched.
+    assert result.reply == settings.host_fallback_reply
+    assert state.turns == []
+
+
+@respx.mock
+async def test_truncated_json_soft_fails(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    truncated = '{"reply": "We are almost done here, just a bit mo'
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": truncated}}]})
+    )
+    state = make_state()
+
+    result = await handle_turn(state, "Tell me more.", make_questionnaire(), make_rubric(), mode="chat")
+
+    assert result.reply == settings.host_fallback_reply
+    assert state.turns == []
+    assert state.current_node_id == "company_overview"
+
+
+@respx.mock
+async def test_consecutive_soft_fails_switch_fallback_reply(patch_settings):
+    # A persistent failure must not loop the identical "say that again" line
+    # forever - after 2+ consecutive failures the vendor hears a different
+    # line hinting that a shorter message may help. A later success resets
+    # the counter so a single subsequent failure gets the plain fallback again.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(500),
+            httpx.Response(500),
+            gemini_response(reply="Great, thanks!"),
+            httpx.Response(500),
+        ]
+    )
+    state = make_state()
+    questionnaire = make_questionnaire()
+
+    first = await handle_turn(state, "Hello?", questionnaire, make_rubric())
+    assert first.reply == settings.host_fallback_reply
+    assert state.consecutive_soft_fails == 1
+
+    second = await handle_turn(state, "Hello?", questionnaire, make_rubric())
+    assert second.reply == settings.host_fallback_reply_repeat
+    assert state.consecutive_soft_fails == 2
+
+    third = await handle_turn(state, "We build ML pipelines.", questionnaire, make_rubric())
+    assert third.reply == "Great, thanks!"
+    assert state.consecutive_soft_fails == 0
+    assert third.answer_complete is True
+
+    fourth = await handle_turn(state, "Hello?", questionnaire, make_rubric())
+    assert fourth.reply == settings.host_fallback_reply
+    assert state.consecutive_soft_fails == 1
+
+    assert route.call_count == 4

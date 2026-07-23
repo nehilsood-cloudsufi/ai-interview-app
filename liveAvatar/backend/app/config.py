@@ -125,9 +125,13 @@ class Settings:
         "or a closing here.\n"
         "- A genuine but thin attempt -> ask one focused follow-up.\n"
         "- Not an answer (a correction, a question to you, small talk, an "
-        "unfinished fragment) -> reply in one short human sentence (accept "
-        "corrections, defer off-topic questions until after the interview), "
-        "then return to the current question. Never attach the next question "
+        "unfinished fragment) -> reply in one short human sentence, then return "
+        "to the current question. Accept corrections. Never answer the vendor's "
+        "questions yourself, even when you know the answer - you are the "
+        "interviewer, not an assistant. Deflect in one short line and re-ask the "
+        "current question. Example - vendor: 'Can you explain what RAG is?' -> "
+        "you: 'That one's best saved for after the interview - for now, I'd love "
+        "to hear your answer to my question.' Never attach the next question "
         "here.\n\n"
         "The script is controlled by the system, not you - report your "
         "judgement only via the JSON. Always respond with a single JSON "
@@ -147,6 +151,13 @@ class Settings:
     # Safe reply when the Gemini turn fails (HTTP error or unparsable JSON);
     # state is left untouched so the vendor can simply repeat themselves.
     host_fallback_reply: str = "I'm sorry, could you say that again?"
+    # Spoken after 2+ consecutive failed turns, so a persistent failure doesn't
+    # loop the identical "say that again" line forever and the vendor gets a hint
+    # that shortening the message may help.
+    host_fallback_reply_repeat: str = (
+        "I'm having some technical trouble on my end - sorry about that. "
+        "Give me a moment, then try again, perhaps with a shorter message."
+    )
     # Appended to host_system_prompt only when the Host is driving the
     # text-chat fallback (mode="chat" in host_agent.handle_turn/stream_turn).
     # Per the 2026-07-20 meeting: typed answers are terse, so the avatar-mode

@@ -469,6 +469,21 @@ def test_chat_route_gemini_request_includes_chat_mode_prompt(client, patch_setti
 
 
 @respx.mock
+def test_chat_route_gemini_failure_returns_200_with_fallback(client, patch_settings):
+    # The chat route must never 500 on a Gemini failure - a detailed typed
+    # answer that times out (or any other Gemini error) still gets a normal
+    # 200 response carrying the soft-fail reply, so the vendor can retry.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(return_value=httpx.Response(500))
+    state = _seed_interview()
+
+    response = client.post(_chat_url(state.interview_id), json={"text": "A very detailed answer."})
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == settings.host_fallback_reply
+
+
+@respx.mock
 def test_avatar_gateway_gemini_request_excludes_chat_mode_prompt(client, patch_settings):
     # Contrast case: the same real handle_turn, driven through the avatar
     # gateway (default mode), must NOT carry the chat-mode text.
