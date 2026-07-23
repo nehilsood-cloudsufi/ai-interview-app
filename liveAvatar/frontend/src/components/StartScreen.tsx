@@ -96,7 +96,11 @@ export function StartScreen({ onStart }: StartScreenProps) {
 
   const addFiles = (picked: FileList | null) => {
     if (!picked) return;
-    setFiles((prev) => [...prev, ...Array.from(picked)].slice(0, MAX_DOCUMENTS));
+    // Materialize NOW: FileList is live, and the caller clears the input
+    // right after this call - by the time React runs the state updater the
+    // list would already be empty.
+    const additions = Array.from(picked);
+    setFiles((prev) => [...prev, ...additions].slice(0, MAX_DOCUMENTS));
   };
 
   const removeFile = (index: number) => {

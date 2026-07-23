@@ -27,6 +27,7 @@ from app.config import settings
 from app.dependencies import resolve_api_key
 from app.models import CreateSessionRequest, StopSessionRequest
 from app.services import interview_state
+from app.services.interview_state import InterviewState
 from app.services.liveavatar_client import (
     create_context,
     create_llm_configuration,
@@ -52,17 +53,19 @@ GATEWAY_CONTEXT_PROMPT = (
 )
 
 
-def _gateway_opening_text() -> str:
+def _gateway_opening_text(state: InterviewState) -> str:
     """Spoken by the avatar the moment the session connects, before any
-    gateway call. The intake form is gone, so the vendor profile is empty at
-    this point - onboarding happens conversationally via the `intro`
-    questionnaire node - so this is a generic opener rather than a by-name
-    greeting. Content is aligned with `intro`'s ask: name, role, and
-    company."""
+    gateway call. The vendor's profile comes from the start screen's intake
+    form, so the opener greets them by name (falling back to a generic
+    welcome if the API caller provided no name) and invites them to start
+    talking - there are no onboarding questions to ask. The Host's own
+    first-turn reply then transitions into the first scripted question."""
+    profile = state.vendor_profile
+    who = f", {profile.contact_name.strip()}" if profile.contact_name.strip() else ""
     return (
-        "Hello, and welcome! I'm Noor, and I'll be running today's vendor "
-        "evaluation. To get us started, could you introduce yourself - your "
-        "name, your role, and the company you represent?"
+        f"Hello{who}, and welcome! I'm Noor, and I'll be running today's "
+        "vendor evaluation. Whenever you're ready, just say hello and we'll "
+        "dive into the first question."
     )
 
 
@@ -105,7 +108,7 @@ async def _create_gateway_session(body: CreateSessionRequest) -> dict:
         secret_id = await create_llm_secret(liveavatar_key, state.gateway_token)
         gateway_base_url = f"{settings.public_base_url.rstrip('/')}/llm/{body.interview_id}/v1"
         llm_config_id = await create_llm_configuration(liveavatar_key, secret_id, gateway_base_url)
-        context_id = await create_context(liveavatar_key, GATEWAY_CONTEXT_PROMPT, _gateway_opening_text())
+        context_id = await create_context(liveavatar_key, GATEWAY_CONTEXT_PROMPT, _gateway_opening_text(state))
 
         token_data = await create_session_token(
             liveavatar_key,
