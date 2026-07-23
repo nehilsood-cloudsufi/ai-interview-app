@@ -1,9 +1,6 @@
 import asyncio
 import json
 
-import httpx
-import respx
-
 from app.config import settings
 from app.routers import llm_gateway
 from app.services import evaluator_agent, gemini_client, host_agent, interview_state
@@ -19,7 +16,6 @@ def _seed_interview():
     return interview_state.create(
         VendorProfile(
             company_name="Acme Corp",
-            website="https://acme.example",
             contact_name="Jane Doe",
             contact_role="CTO",
         ),
@@ -52,11 +48,19 @@ def _openai_body(user_text: str | None = "We build ML pipelines.", stream: bool 
     return {"model": "resonance-host", "stream": stream, "messages": messages}
 
 
-def _fake_handle_turn(monkeypatch, result: TurnResult):
+def _fake_handle_turn(monkeypatch, result: TurnResult | None):
     calls = []
 
-    async def fake(state, user_text, questionnaire, rubric):
-        calls.append({"state": state, "user_text": user_text, "questionnaire": questionnaire, "rubric": rubric})
+    async def fake(state, user_text, questionnaire, rubric, is_cancelled=None):
+        calls.append(
+            {
+                "state": state,
+                "user_text": user_text,
+                "questionnaire": questionnaire,
+                "rubric": rubric,
+                "is_cancelled": is_cancelled,
+            }
+        )
         return result
 
     monkeypatch.setattr(host_agent, "handle_turn", fake)
@@ -75,8 +79,8 @@ def _turn_result(reply="Great, tell me more.", answer_complete=False, completed_
 def _fake_stream_turn(monkeypatch, deltas, result=None):
     calls = []
 
-    async def fake(state, user_text, questionnaire, rubric, outcome):
-        calls.append({"state": state, "user_text": user_text})
+    async def fake(state, user_text, questionnaire, rubric, outcome, is_cancelled=None):
+        calls.append({"state": state, "user_text": user_text, "is_cancelled": is_cancelled})
         for delta in deltas:
             yield delta
         outcome.result = result if result is not None else _turn_result()
@@ -151,6 +155,93 @@ def test_non_stream_happy_path(client, monkeypatch):
     assert calls[0]["user_text"] == "We build ML pipelines."
     assert "company_overview" in calls[0]["questionnaire"]
     assert calls[0]["rubric"]
+
+
+def test_last_user_text_merges_trailing_fragment_run():
+    # Observed live 2026-07-22 (tunnel inspector): HeyGen cancels the
+    # completion for each superseded VAD fragment, so the cancelled reply
+    # never enters its history and fragments arrive as consecutive trailing
+    # user messages. The run must be joined into the full utterance.
+    body = {
+        "messages": [
+            {"role": "system", "content": "context"},
+            {"role": "assistant", "content": "please introduce yourself"},
+            {"role": "user", "content": "Yeah, actually, let me tell you about myself. I am Nehil."},
+            {"role": "user", "content": "I"},
+            {"role": "user", "content": "work as an engineer at CloudSufi."},
+            {"role": "user", "content": "And I'm working there for about 6 months."},
+        ]
+    }
+    assert llm_gateway._last_user_text(body) == (
+        "Yeah, actually, let me tell you about myself. I am Nehil. I "
+        "work as an engineer at CloudSufi. And I'm working there for about 6 months."
+    )
+
+
+def test_last_user_text_assistant_reply_ends_the_run():
+    # A delivered assistant reply separates utterances - only the trailing
+    # run after it belongs to the newest utterance.
+    body = {
+        "messages": [
+            {"role": "user", "content": "an earlier answer"},
+            {"role": "assistant", "content": "next question"},
+            {"role": "user", "content": "the new answer"},
+        ]
+    }
+    assert llm_gateway._last_user_text(body) == "the new answer"
+
+
+def test_last_user_text_no_user_messages_returns_none():
+    body = {"messages": [{"role": "system", "content": "context"}, {"role": "assistant", "content": "hi"}]}
+    assert llm_gateway._last_user_text(body) is None
+
+
+def test_supersede_callback_reflects_request_seq(client, monkeypatch):
+    # The is_cancelled callback handed to handle_turn is the gateway's own
+    # sequence bookkeeping: it flips to True the moment a newer utterance
+    # request bumps the interview's request_seq (request.is_disconnected
+    # proved unreliable through the tunnel stack, 2026-07-22).
+    state = _seed_interview()
+    observed = {}
+
+    async def fake(s, user_text, questionnaire, rubric, is_cancelled=None):
+        observed["before"] = await is_cancelled()
+        s.request_seq += 1  # a newer speech fragment arrives mid-turn
+        observed["after"] = await is_cancelled()
+        return None  # superseded turns report None
+
+    monkeypatch.setattr(host_agent, "handle_turn", fake)
+
+    response = client.post(_url(state.interview_id), json=_openai_body(stream=False), headers=_auth(state))
+
+    assert observed == {"before": False, "after": True}
+    assert response.json()["choices"][0]["message"]["content"] == ""
+
+
+def test_greeting_probe_does_not_bump_request_seq(client, monkeypatch):
+    # Pre-utterance greeting probes are not utterances; they must not
+    # supersede a real in-flight turn.
+    state = _seed_interview()
+    _fake_handle_turn(monkeypatch, _turn_result())
+
+    client.post(_url(state.interview_id), json=_openai_body(user_text=None, stream=False), headers=_auth(state))
+
+    assert state.request_seq == 0
+
+
+def test_superseded_turn_returns_stub_without_state_claims(client, monkeypatch):
+    # handle_turn returns None when the request was cancelled by a newer
+    # speech fragment (skip/discard path). The gateway answers with an empty
+    # stub - HeyGen is no longer reading - and passes is_cancelled through.
+    state = _seed_interview()
+    calls = _fake_handle_turn(monkeypatch, None)
+
+    response = client.post(_url(state.interview_id), json=_openai_body(stream=False), headers=_auth(state))
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == ""
+    assert len(calls) == 1
+    assert calls[0]["is_cancelled"] is not None  # request.is_disconnected was wired in
 
 
 def test_stream_happy_path(client, monkeypatch):

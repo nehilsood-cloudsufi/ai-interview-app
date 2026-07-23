@@ -1,23 +1,22 @@
+"""Interview summary generation: one Gemini call over the finished transcript.
+
+`generate_summary` renders the transcript and asks the pro-tier model
+(`settings.gemini_pro_model`, through the shared `gemini_client` helper - this
+runs after the interview ends so latency doesn't matter and the better
+judgment is free) for the Markdown summary defined by
+`settings.interview_summary_prompt`. It deliberately raises on every failure
+path; the transcripts router is responsible for soft-failing so a summary
+failure never loses the saved transcript.
+"""
+
 import logging
 
 from app.config import settings
 from app.models import TranscriptTurn
 from app.services import gemini_client
+from app.services.transcript_render import render_transcript
 
 logger = logging.getLogger(__name__)
-
-_ROLE_LABELS = {"interviewer": "Interviewer", "candidate": "Candidate"}
-
-
-def _render_transcript(turns: list[TranscriptTurn]) -> str:
-    lines = []
-    for turn in turns:
-        label = _ROLE_LABELS.get(turn.role, turn.role.title())
-        text = turn.text.strip()
-        if text:
-            lines.append(f"{label}: {text}")
-    return "\n".join(lines)
-
 
 async def generate_summary(turns: list[TranscriptTurn]) -> str:
     """Generate an interview-focused summary from transcript turns via Gemini's
@@ -28,7 +27,7 @@ async def generate_summary(turns: list[TranscriptTurn]) -> str:
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured; cannot generate summary.")
 
-    transcript_text = _render_transcript(turns)
+    transcript_text = render_transcript(turns)
     if not transcript_text:
         raise ValueError("Transcript is empty; nothing to summarize.")
 
@@ -43,4 +42,7 @@ async def generate_summary(turns: list[TranscriptTurn]) -> str:
     data = await gemini_client.chat_completion(
         payload, timeout=60.0, fallback_model=settings.gemini_pro_model_fallback
     )
-    return data["choices"][0]["message"]["content"].strip()
+    content = (data["choices"][0]["message"]["content"] or "").strip()
+    if not content:
+        raise ValueError("Summary generation returned an empty completion.")
+    return content

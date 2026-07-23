@@ -10,7 +10,7 @@ interface ScorecardPanelProps {
 }
 
 function CategoryRow({ category }: { category: CategoryScoreData }) {
-  const unscored = category.score === null;
+  const unscored = category.value === null;
 
   return (
     <div className="space-y-1">
@@ -25,17 +25,17 @@ function CategoryRow({ category }: { category: CategoryScoreData }) {
           {!unscored && (
             <div
               className="h-full rounded-full bg-emerald-500"
-              style={{ width: `${(category.score! / 5) * 100}%` }}
+              style={{ width: `${category.points}%` }}
             />
           )}
         </div>
-        <span
-          className={`text-xs font-mono w-20 text-right ${
-            unscored ? 'text-slate-600 italic' : 'text-slate-200'
-          }`}
-        >
-          {unscored ? 'not covered' : category.score!.toFixed(1)}
-        </span>
+        {unscored ? (
+          <span className="text-xs text-slate-600 italic w-20 text-right">not covered</span>
+        ) : (
+          <span className="text-xs font-medium px-2 py-0.5 bg-emerald-500/15 border border-emerald-500/25 rounded-full text-emerald-200 w-20 text-center">
+            {category.value}
+          </span>
+        )}
       </div>
       {category.evidence.length > 0 && (
         <details>
@@ -55,6 +55,14 @@ function CategoryRow({ category }: { category: CategoryScoreData }) {
   );
 }
 
+/**
+ * The Signal Matrix scorecard block inside SummaryPanel (which mounts it once
+ * the pipeline's scorecard has been polled in). Shows the overall 0-100 score
+ * with an APPROVED/REJECTED badge, then one weighted progress bar per rubric
+ * category - categories the Evaluator couldn't judge show as "not covered" -
+ * each with an expandable list of evidence quotes. Renders nothing when
+ * `scorecard` is null (still scoring, or scoring soft-failed).
+ */
 export function ScorecardPanel({ scorecard }: ScorecardPanelProps) {
   if (!scorecard) return null;
 
@@ -68,10 +76,23 @@ export function ScorecardPanel({ scorecard }: ScorecardPanelProps) {
       <div className="p-4 space-y-4">
         {/* Overall headline */}
         {scorecard.overall !== null ? (
-          <span className="text-3xl font-bold text-emerald-400">
-            {scorecard.overall.toFixed(1)}
-            <span className="text-base font-semibold text-slate-400"> / 5</span>
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-3xl font-bold text-emerald-400">
+              {scorecard.overall}
+              <span className="text-base font-semibold text-slate-400"> / 100</span>
+            </span>
+            {scorecard.status && (
+              <span
+                className={`text-xs font-semibold px-2 py-1 rounded-full ${
+                  scorecard.status === 'APPROVED'
+                    ? 'bg-emerald-500/15 border border-emerald-500/25 text-emerald-200'
+                    : 'bg-rose-500/15 border border-rose-500/25 text-rose-200'
+                }`}
+              >
+                {scorecard.status}
+              </span>
+            )}
+          </div>
         ) : (
           <p className="text-sm text-slate-500 italic">No categories could be scored from this interview.</p>
         )}

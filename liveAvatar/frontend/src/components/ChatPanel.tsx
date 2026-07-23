@@ -10,8 +10,17 @@ interface ChatPanelProps {
   onEnd: () => void;
 }
 
-// claude.ai-style text-chat column: scrolling message bubbles, a composer with
-// Enter-to-send / Shift+Enter-for-newline, and an End interview button.
+/**
+ * claude.ai-style text-chat column: scrolling message bubbles, a composer with
+ * Enter-to-send / Shift+Enter-for-newline, and an End interview button.
+ *
+ * The low-bandwidth alternative to the avatar. App mounts it (in place of the
+ * video area) whenever mode is 'chat' - either chosen on the StartScreen or
+ * after the one-way switch from a weak avatar session. `turns` are the Host
+ * conversation so far, `onSend` posts the vendor's next reply, `isSending`
+ * drives Noor's typing indicator, and once `done` the composer locks and
+ * `onEnd` finalizes the interview.
+ */
 export function ChatPanel({ turns, isSending, done, onSend, onEnd }: ChatPanelProps) {
   const [draft, setDraft] = useState('');
   const listRef = useRef<HTMLDivElement>(null);

@@ -1,5 +1,11 @@
 import { Users } from 'lucide-react';
 
+/**
+ * Small pill showing how many interview sessions are live right now (a people
+ * icon + the number). Mounted by InterviewHeader on the right of the top bar,
+ * in both avatar and chat modes; the count comes from App's useConcurrencyPoll.
+ * Renders nothing until a count is known (count === null).
+ */
 export function ConcurrencyBadge({ count }: { count: number | null }) {
   if (count === null) return null;
   return (

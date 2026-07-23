@@ -4,7 +4,6 @@ import type { VendorProfile } from '../types';
 
 interface ProfileCardProps {
   profile: VendorProfile;
-  isOnboarding: boolean;
   onSave: (changes: Partial<VendorProfile>) => Promise<boolean>;
 }
 
@@ -23,15 +22,17 @@ const FIELDS: FieldConfig[] = [
   { key: 'contact_name', label: 'Name' },
   { key: 'contact_role', label: 'Role' },
   { key: 'company_name', label: 'Company' },
-  { key: 'website', label: 'Website' },
 ];
 
-// Shows the profile Noor has captured, for the whole interview (both avatar
-// and chat modes) - "here's what I captured" while onboarding is still in
-// progress, "Your details" afterward. The vendor can correct any field at
-// any time via Edit; a save PATCHes only the changed fields, which the
-// backend then locks against the Host's own profile_updates going forward.
-export function ProfileCard({ profile, isOnboarding, onSave }: ProfileCardProps) {
+/**
+ * Shows the vendor's profile (entered on the start screen's intake form) for
+ * the whole interview, in both avatar and chat modes. The vendor can correct
+ * any field at any time via Edit; `onSave` PATCHes only the changed fields,
+ * which the backend then locks against the Host's own profile_updates going
+ * forward. App mounts it above the transcript (avatar) or atop the chat column
+ * (chat) for as long as useVendorProfile has a profile to show.
+ */
+export function ProfileCard({ profile, onSave }: ProfileCardProps) {
   const [editing, setEditing] = useState(false);
   // Seeded from `profile` the moment Edit is clicked, then fully local - a
   // poll tick landing mid-edit must not clobber what the vendor is typing.
@@ -85,7 +86,7 @@ export function ProfileCard({ profile, isOnboarding, onSave }: ProfileCardProps)
         <div className="flex items-center gap-2 min-w-0">
           <UserRound className="w-4 h-4 text-slate-400 shrink-0" />
           <span className="text-xs font-semibold uppercase tracking-wider text-slate-300 truncate">
-            {isOnboarding ? "Here's what I captured" : 'Your details'}
+            Your details
           </span>
         </div>
         {!editing && (

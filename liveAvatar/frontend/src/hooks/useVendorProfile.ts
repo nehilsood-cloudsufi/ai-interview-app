@@ -1,76 +1,82 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_URL } from '../config';
 import type { InterviewStateResponse, UpdateProfileResponse, VendorProfile } from '../types';
+import { useIntervalPoll } from './useIntervalPoll';
 
 // Consecutive poll failures (network error, non-ok, 404) before giving up
-// quietly. Mirrors useConcurrencyPoll's setInterval + cleanup pattern.
+// quietly.
 const MAX_CONSECUTIVE_FAILURES = 3;
 const POLL_INTERVAL_MS = 5000;
 
 interface VendorProfileState {
   profile: VendorProfile | null;
-  isOnboarding: boolean;
+  // True once the interview script has reached END - App uses this to
+  // auto-stop a still-connected avatar session after the closing line.
+  interviewDone: boolean;
   saveProfile: (changes: Partial<VendorProfile>) => Promise<boolean>;
 }
 
-// Polls GET /api/interview/{id}/state for the WHOLE interview (both avatar
-// and chat modes), so a ProfileCard can show - and let the vendor edit via
-// PATCH /api/interview/{id}/profile - the profile Noor has captured, not
-// just during onboarding. Stops only on a 404 or after a few consecutive
-// failures; unmount / active=false tears the poll down too. isOnboarding
-// still reflects current_topic === 'onboarding' so the card's heading can
-// change once onboarding wraps up, but (unlike the old onboarding-only hook)
-// the poll itself keeps running past that point.
+/**
+ * Polls GET /api/interview/{id}/state for the WHOLE interview (both avatar
+ * and chat modes), so a ProfileCard can show - and let the vendor edit via
+ * PATCH /api/interview/{id}/profile - the vendor's profile (entered on the
+ * start screen's intake form, correctable throughout).
+ *
+ * Returns `{ profile, interviewDone, saveProfile }`: the profile (null until
+ * the first response), whether the script has reached END, and saveProfile —
+ * a PATCH of the changed fields that applies the server's echoed profile
+ * immediately.
+ *
+ * Lifecycle: polls every 5s while `active` and an interviewId is set. Stops on
+ * a 404 or after a few consecutive failures (giving up quietly); unmount or
+ * `active` turning false tears the poll down too.
+ */
 export function useVendorProfile(interviewId: string | null, active: boolean): VendorProfileState {
   const [profile, setProfile] = useState<VendorProfile | null>(null);
-  const [isOnboarding, setIsOnboarding] = useState(false);
+  const [interviewDone, setInterviewDone] = useState(false);
 
+  // The hook's own stop conditions (a 404, or MAX_CONSECUTIVE_FAILURES in a
+  // row) flip `gaveUp`, which deactivates the shared poll below. A new
+  // interview id (or re-activation) resets both the flag and the counter.
+  const [gaveUp, setGaveUp] = useState(false);
+  const failuresRef = useRef(0);
   useEffect(() => {
-    if (!active || !interviewId) return;
+    setGaveUp(false);
+    setInterviewDone(false);
+    failuresRef.current = 0;
+  }, [interviewId, active]);
 
-    let cancelled = false;
-    let failures = 0;
+  const recordFailure = () => {
+    failuresRef.current += 1;
+    if (failuresRef.current >= MAX_CONSECUTIVE_FAILURES) setGaveUp(true);
+  };
 
-    const poll = async () => {
-      try {
-        const res = await fetch(`${API_URL}/api/interview/${interviewId}/state`);
-        if (cancelled) return;
+  useIntervalPoll(async (signal) => {
+    if (!interviewId) return;
+    try {
+      const res = await fetch(`${API_URL}/api/interview/${interviewId}/state`);
+      if (signal.cancelled) return;
 
-        if (!res.ok) {
-          if (res.status === 404) {
-            stop();
-            return;
-          }
-          failures += 1;
-          if (failures >= MAX_CONSECUTIVE_FAILURES) stop();
+      if (!res.ok) {
+        if (res.status === 404) {
+          setGaveUp(true);
           return;
         }
-
-        failures = 0;
-        const data: InterviewStateResponse = await res.json();
-        if (cancelled) return;
-
-        setProfile(data.vendor_profile);
-        setIsOnboarding(data.current_topic === 'onboarding');
-      } catch {
-        if (cancelled) return;
-        failures += 1;
-        if (failures >= MAX_CONSECUTIVE_FAILURES) stop();
+        recordFailure();
+        return;
       }
-    };
 
-    const stop = () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
+      failuresRef.current = 0;
+      const data: InterviewStateResponse = await res.json();
+      if (signal.cancelled) return;
 
-    poll();
-    const interval = setInterval(poll, POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [interviewId, active]);
+      setProfile(data.vendor_profile);
+      setInterviewDone(data.done === true);
+    } catch {
+      if (signal.cancelled) return;
+      recordFailure();
+    }
+  }, POLL_INTERVAL_MS, active && !!interviewId && !gaveUp);
 
   // Vendor-initiated manual correction, available for the whole interview.
   // Applies the response's vendor_profile on success so the card reflects
@@ -100,5 +106,5 @@ export function useVendorProfile(interviewId: string | null, active: boolean): V
     [interviewId],
   );
 
-  return { profile, isOnboarding, saveProfile };
+  return { profile, interviewDone, saveProfile };
 }

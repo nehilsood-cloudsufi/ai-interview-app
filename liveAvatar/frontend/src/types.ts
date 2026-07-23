@@ -1,3 +1,9 @@
+/**
+ * Shared TypeScript types for the frontend: session/UI enums plus the
+ * request/response shapes for the backend interview, chat, profile, and
+ * transcript endpoints (mirroring the backend Pydantic models).
+ */
+
 export type SessionStatus = 'disconnected' | 'connecting' | 'connected';
 export type SpeakingState = 'idle' | 'user_speaking' | 'avatar_speaking' | 'processing';
 export type NetworkQuality = 'excellent' | 'good' | 'poor' | 'unknown';
@@ -18,6 +24,15 @@ export interface CreateInterviewResponse {
   interview_id: string;
 }
 
+// POST /api/interview/{id}/document response (backend UploadDocumentResponse).
+// Oversize documents are trimmed to the intake word limit, never rejected —
+// `truncated` drives the StartScreen's short trim notice.
+export interface UploadDocumentResponse {
+  filename: string;
+  word_count: number;
+  truncated: boolean;
+}
+
 // GET /api/domains -> DomainsResponse. Dev stand-in for the admin-assigned
 // domain: the vendor picks one on the start screen.
 export interface DomainInfo {
@@ -27,13 +42,15 @@ export interface DomainInfo {
 
 export interface DomainsResponse {
   domains: DomainInfo[];
+  // The server's default domain id (settings.default_domain) — the picker
+  // preselects it rather than the first list entry.
+  default: string;
 }
 
 // Vendor profile as returned inside GET /api/interview/{id}/state
 // (backend VendorProfileModel — snake_case, doc_text excluded).
 export interface VendorProfile {
   company_name: string;
-  website: string | null;
   contact_name: string;
   contact_role: string | null;
 }
@@ -48,18 +65,21 @@ export type PipelineStatus =
   | 'failed';
 
 // Final scorecard from the holistic end-of-interview scoring pass; arrives via
-// polling the state endpoint (never during the interview). Scores are 0-5.
+// polling the state endpoint (never during the interview). Categories have a text
+// value (e.g. "Strategic") plus resolved 0-100 points; overall is 0-100 with status.
 export interface CategoryScoreData {
   id: string;
   name: string;
   weight: number;
-  score: number | null;
+  value: string | null;   // e.g. "Strategic", null if not covered
+  points: number | null;  // resolved points (0-100) for this value
   evidence: string[];
 }
 
 export interface ScorecardData {
   categories: CategoryScoreData[];
-  overall: number | null;
+  overall: number | null;                    // 0-100
+  status: 'APPROVED' | 'REJECTED' | null;    // approval status
 }
 
 // Scout research insights; arrive via the state payload.
@@ -91,11 +111,19 @@ export interface FinalizeTranscriptResponse {
 export interface InterviewStateResponse {
   status: 'created' | 'active' | 'finished';
   current_topic: string | null;
+  // True once the script reached END (closing spoken/being spoken). The
+  // avatar view auto-stops the session shortly after this flips.
+  done: boolean;
   insights: ScoutFinding[];
   updated_at: string;
   pipeline_status: PipelineStatus | null;
   scorecard: ScorecardData | null;
   recommendation: FollowupRecommendation | null;
+  // True when the pipeline's Evaluator call itself raised (e.g. a too-short
+  // transcript) - scorecard stays null in that case too, but this flag lets
+  // the UI tell the vendor scoring genuinely failed rather than silently
+  // rendering nothing where the scorecard would be.
+  evaluation_failed?: boolean;
   vendor_profile: VendorProfile;
 }
 
@@ -106,9 +134,9 @@ export interface ChatResponse {
 }
 
 // PATCH /api/interview/{id}/profile response (backend UpdateProfileResponse).
-// manually_edited_fields is the full set of fields ever manually corrected -
-// unused by the frontend today, but kept for shape fidelity with the backend.
+// The wire response also carries manually_edited_fields (the full set of
+// fields ever manually corrected), but nothing in the frontend reads it, so
+// it's intentionally not typed here.
 export interface UpdateProfileResponse {
   vendor_profile: VendorProfile;
-  manually_edited_fields: string[];
 }

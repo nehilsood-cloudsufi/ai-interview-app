@@ -1,30 +1,79 @@
-# Resonance vendor-evaluation rubric. Weights must sum to 1.0 (+/- 0.01);
-# categories are scored 0-5 by app/services/appraiser_agent.py.
+# Resonance vendor-evaluation "Signal Matrix" rubric. Weights must sum to
+# 1.0 (+/- 0.01); each category is scored against a closed set of
+# categorical `value_options` (not a free numeric range) by
+# app/services/evaluator_agent.py, each label mapped to points 0-100.
 categories:
-  - id: experience
-    name: Experience & Track Record
-    weight: 0.3
+  - id: interest
+    name: Theme Interest
+    weight: 0.20
     description: >
-      Depth and relevance of the vendor's operating history, past
-      engagements, and reference outcomes.
+      Why the vendor is focused on this technology theme, and how
+      strategic that focus is to their business.
+    value_options:
+      - {label: "Strategic", points: 100}
+      - {label: "Exploring", points: 60}
+      - {label: "Casual", points: 20}
 
-  - id: capability
-    name: Technical Capability
-    weight: 0.3
+  - id: offerings
+    name: Existing Offerings
+    weight: 0.20
     description: >
-      Depth of technical/AI-ML expertise and how well the proposed
-      services fit the engagement's needs.
+      The depth of the vendor's current product/technology portfolio
+      that already aligns with this theme.
+    value_options:
+      - {label: "Multiple Products", points: 100}
+      - {label: "Single Product", points: 70}
+      - {label: "In Development", points: 40}
+      - {label: "None", points: 0}
 
-  - id: delivery
-    name: Delivery & Team
-    weight: 0.2
+  - id: maturity
+    name: Tech Maturity
+    weight: 0.15
     description: >
-      Strength and structure of the team and delivery approach proposed
-      for this engagement.
+      Whether the offering is still early R&D/Alpha or already
+      Commercial/GA, inferred from deployment scale and production
+      usage (never asked about directly).
+    value_options:
+      - {label: "Commercial", points: 100}
+      - {label: "Alpha", points: 40}
 
-  - id: credibility
-    name: Credibility & Security
-    weight: 0.2
+  - id: connectivity
+    name: Connectivity
+    weight: 0.15
     description: >
-      Trustworthiness signals: security posture, compliance, and quality
-      of references.
+      Whether the offering can run disconnected/on-premise/at the
+      edge, or strictly requires a live cloud connection.
+    value_options:
+      - {label: "Edge", points: 100}
+      - {label: "Cloud", points: 50}
+
+  - id: architecture
+    name: Architecture
+    weight: 0.10
+    description: >
+      Whether the core technology is proprietary/Native, or a Wrapper
+      dependent on another vendor's API.
+    value_options:
+      - {label: "Native", points: 100, aliases: ["Proprietary", "In-house", "Built in-house", "Native/proprietary"]}
+      - {label: "Wrapper", points: 40, aliases: ["Third-party", "Wrapper/third-party"]}
+
+  - id: team
+    name: Team Focus
+    weight: 0.10
+    description: >
+      Whether the team behind the offering is weighted toward
+      R&D/engineering or toward Sales/go-to-market.
+    value_options:
+      - {label: "R&D", points: 100}
+      - {label: "Sales", points: 50}
+
+  - id: engagement
+    name: Partnership Model
+    weight: 0.10
+    description: >
+      The vendor's preferred engagement model with us: deeper
+      co-innovation/joint-IP (Co-Dev), or a straightforward
+      License/SaaS arrangement.
+    value_options:
+      - {label: "Co-Dev", points: 100}
+      - {label: "License", points: 50}

@@ -1,3 +1,8 @@
+/**
+ * Builds and downloads the human-readable interview record as Markdown. This
+ * is the only place Scout research insights surface to a reviewer (the
+ * SummaryPanel UI deliberately omits them — see useInterviewSummary).
+ */
 import type { FollowupRecommendation, ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
 
 const ROLE_LABELS: Record<TranscriptTurn['role'], string> = {
@@ -11,6 +16,11 @@ export interface TranscriptExtras {
   recommendation?: FollowupRecommendation | null;
 }
 
+/**
+ * Assembles the full Markdown record: summary, then (when present) scorecard,
+ * research insights, and recommendation sections, then the full transcript.
+ * Missing/unscored pieces render as explicit placeholders. Returns the string.
+ */
 export function buildTranscriptMarkdown(
   summary: string,
   turns: TranscriptTurn[],
@@ -28,12 +38,13 @@ export function buildTranscriptMarkdown(
   if (scorecard) {
     parts.push('\n## Scorecard\n');
     for (const category of scorecard.categories) {
-      const score = category.score !== null ? `${category.score}/5` : 'not scored';
-      parts.push(`- **${category.name}:** ${score} (weight ${Math.round(category.weight * 100)}%)`);
+      const value = category.value !== null ? category.value : 'not covered';
+      parts.push(`- **${category.name}:** ${value} (weight ${Math.round(category.weight * 100)}%)`);
     }
+    const statusStr = scorecard.status ?? 'unscored';
     parts.push(
       scorecard.overall !== null
-        ? `\n**Overall:** ${scorecard.overall}/5`
+        ? `\n**Overall:** ${scorecard.overall}/100 (**${statusStr}**)`
         : '\n**Overall:** not scored',
     );
   }
@@ -73,6 +84,11 @@ export function buildTranscriptMarkdown(
   return parts.join('\n');
 }
 
+/**
+ * Renders the record via buildTranscriptMarkdown and triggers a browser
+ * download of `interview-{sessionId}.md` (a temporary object URL + anchor
+ * click, cleaned up afterward).
+ */
 export function downloadTranscript(
   summary: string,
   turns: TranscriptTurn[],

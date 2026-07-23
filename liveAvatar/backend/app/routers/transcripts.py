@@ -1,3 +1,20 @@
+"""Transcript finalize + read-back endpoints.
+
+Finalize is what the frontend calls once a session ends (whether the vendor
+stopped it or HeyGen ended it on its own): it takes the captured turns,
+generates a Markdown summary, and persists the record via
+`app.services.transcript_store` (GCS when GCS_BUCKET is set, local JSON
+otherwise). When the finalize request carries a live `interview_id`, it also
+hands the interview to the background post-interview pipeline
+(`app.services.pipeline`: Scout -> Evaluator -> Coordinator) - the scorecard,
+insights, and recommendation are NOT in the finalize response; the frontend
+polls GET /api/interview/{id}/state for those as the pipeline runs. The
+summary is generated defensively so a summary failure never loses the
+transcript, but a persistence failure does fail the request. The GET route
+reads a saved record back for the transcript-download / review UI.
+Same-origin UI endpoints - no auth.
+"""
+
 import logging
 from datetime import datetime, timezone
 
@@ -13,6 +30,29 @@ router = APIRouter()
 
 @router.post("/api/transcript/finalize", response_model=FinalizeTranscriptResponse)
 async def finalize_transcript(body: FinalizeTranscriptRequest):
+    """Persist a finished interview transcript and kick off scoring.
+
+    The request body (`FinalizeTranscriptRequest`) carries the `session_id`
+    to store the record under, the list of `turns`, and optionally an
+    `interview_id`. When `interview_id` resolves to an interview still live
+    in memory, the saved record is enriched with the vendor profile and
+    domain, and the interview is handed to the background pipeline. Responds
+    with a `FinalizeTranscriptResponse`: `summary` (Markdown, or "" if
+    generation failed), `summary_ok` (False in that failure case, though the
+    transcript is still saved), and `pipeline_status` ("interviewed" once the
+    pipeline is enqueued, or None for the legacy no-interview_id path). The
+    `scorecard`, `insights`, and `recommendation` fields are always null in
+    this response - they arrive later via GET /api/interview/{id}/state
+    polling, since the pipeline runs in the background after this returns.
+
+    Fails with 400 if `turns` is empty, and 500 if the transcript cannot be
+    persisted. The route is idempotent: a repeated finalize for an interview
+    already handed to the pipeline short-circuits and returns the
+    already-saved summary rather than re-enqueuing or re-saving. If the
+    record can't be read back at that point (not yet saved, or the lookup
+    itself failed), the short-circuit reports `summary_ok: False` rather than
+    claiming a fake-healthy empty summary.
+    """
     if not body.turns:
         raise HTTPException(status_code=400, detail="Transcript has no turns to finalize")
 
@@ -30,8 +70,13 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
         except Exception as e:
             logger.warning("Best-effort transcript lookup failed for session %s: %s", body.session_id, e)
             saved = None
+        # When the record could not be read back (not yet saved, or the
+        # lookup itself failed), summary_ok is False - an empty summary here
+        # was never actually generated, so it must not be reported as
+        # fake-healthy. A record that WAS found keeps its own stored
+        # summary/summary_ok unchanged.
         summary = saved.get("summary", "") if saved else ""
-        summary_ok = saved.get("summary_ok", True) if saved else True
+        summary_ok = saved.get("summary_ok", True) if saved else False
         return {
             "summary": summary,
             "summary_ok": summary_ok,
@@ -74,13 +119,15 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
             profile = state.vendor_profile
             payload["domain"] = state.domain
             payload["vendor_profile"] = {
-                # Serializes the profile's four fields (company_name, website,
+                # Serializes the profile's three fields (company_name,
                 # contact_name, contact_role); doc_text does not exist here.
                 "company_name": profile.company_name,
-                "website": profile.website,
                 "contact_name": profile.contact_name,
                 "contact_role": profile.contact_role,
             }
+            # Bullet summary of the intake material (about-text/documents)
+            # the vendor submitted up front; "" when nothing was provided.
+            payload["vendor_context"] = state.vendor_context
             pipeline_status = "interviewed"
             payload["pipeline_status"] = pipeline_status
 
@@ -112,6 +159,13 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
 
 @router.get("/api/transcript/{session_id}")
 async def get_transcript(session_id: str):
+    """Read back a previously finalized transcript by its `session_id` path
+    parameter. Responds with the stored record as saved by finalize (a JSON
+    object with `session_id`, `created_at`, `turns`, `summary`,
+    `summary_ok`, and, for gateway-mode interviews, `domain`,
+    `vendor_profile`, and pipeline fields) - it is returned as-is, not
+    reshaped through a response model. Fails with 404 if no record exists
+    for that session id."""
     record = await transcript_store.get(session_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Transcript not found")
