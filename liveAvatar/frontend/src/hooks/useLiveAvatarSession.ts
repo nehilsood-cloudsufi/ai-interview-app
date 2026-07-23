@@ -239,7 +239,7 @@ export function useLiveAvatarSession({ interviewId, onError, onSessionEnd }: Use
   const stopSession = async (options: StopOptions = {}) => {
     if (session) {
       suppressSessionEndRef.current = options.suppressSessionEnd === true;
-      // Tear down the backend side (concurrency counter + per-interview LLM
+      // Tear down the backend side (session tracker + per-interview LLM
       // config/secret/context) BEFORE cleanupSession wipes the stored token.
       // Without this, an explicit End click never reached /api/session/stop
       // at all: cleanupSession removes the token synchronously, so the

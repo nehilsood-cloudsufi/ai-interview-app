@@ -146,13 +146,16 @@ no router prefix.)
    ready` (or `failed`).
 
 **Mind the in-memory state.** `interview_state` (the interview registry) and
-`session_state` (the active-session counter) both live in process memory. A
+`session_state` (the active-session tracker) both live in process memory. A
 backend restart **forgets all active interviews** — an in-flight interview
-starts over. And the concurrency counter only decrements on an explicit
-`/api/session/stop`; when HeyGen ends a session on its own (e.g. the sandbox
-~1-minute cap), the counter isn't decremented, so it **drifts upward** over
-repeated sessions until the next backend restart. Both are known, accepted POC
-behavior (see §7 and `CLAUDE.md`).
+starts over. The session tracker is TTL-based: each tracked session expires
+on its own (dev ~180s, prod `max_session_duration + 30`s) even without an
+explicit release, and the frontend's `SESSION_DISCONNECTED` handler also
+POSTs `/api/session/stop` when HeyGen ends a session server-side, so the
+count drops immediately in the common case and the TTL bounds any remaining
+drift rather than letting it accumulate until restart. The in-memory
+interview registry is still known, accepted POC behavior (see §7 and
+`CLAUDE.md`).
 
 ---
 
@@ -398,11 +401,13 @@ top level.
   whole-utterance processing — docs.liveavatar.com/docs/full-mode/push-to-talk);
   the deeper option is LITE mode with our own STT/TTS pipeline and semantic
   end-of-turn detection. Both are documented escapes, not built.
-- **Concurrency counter drift.** The active-session counter only decrements on an
-  explicit `/api/session/stop`. When HeyGen ends a session server-side (sandbox
-  ~1-min cap, or a prod `max_session_duration`), the frontend resets its UI but
-  never calls `/api/session/stop`, so the counter creeps up. A backend restart
-  resets it. Known, original behavior — not a regression.
+- **Concurrency counter drift (bounded).** The active-session count is now a
+  TTL-tracked `SessionTracker` (dev ~180s, prod `max_session_duration + 30`s):
+  when HeyGen ends a session server-side (sandbox ~1-min cap, or a prod
+  `max_session_duration`), the frontend's `SESSION_DISCONNECTED` handler POSTs
+  `/api/session/stop` itself, and even on the rare miss the tracked entry
+  still expires on its own once its TTL elapses. Drift no longer accumulates
+  until a backend restart.
 - **Leaked HeyGen resources.** Those same server-ended sessions never trigger our
   cleanup, so per-interview LLM configs / gateway secrets / contexts accumulate on
   the HeyGen account. Purge them with

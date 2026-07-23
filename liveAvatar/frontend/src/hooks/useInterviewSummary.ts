@@ -154,6 +154,10 @@ export function useInterviewSummary(interviewId: string | null = null) {
       }
     } catch (err) {
       console.error('Transcript finalize failed:', err);
+      // The server never processed the request on this fetch-reject path, so
+      // this ref must only dedupe successful/in-flight-completed finalizes -
+      // clear it so a retry for the same session isn't silently no-op'd.
+      finalizedSessionRef.current = null;
       setState(prev => ({
         ...prev,
         isGenerating: false,

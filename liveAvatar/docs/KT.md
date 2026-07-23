@@ -55,7 +55,7 @@ In rough priority order:
 1. **Deployment (E2, Nehil).** Gateway mode currently runs locally through a tunnel. To deploy: make the Docker image include the questionnaire/rubric YAML files, set `PUBLIC_BASE_URL` to the Cloud Run URL, and verify orphan cleanup also removes per-interview LLM configs/secrets on HeyGen's side. Docs update (this file) is part of it.
 2. **Demo hardening (E3, Nehil).** Three full rehearsals with deliberately different vendor personalities (terse / rambling / off-topic) to tune prompts and follow-up limits; failure drills (kill the Gemini key mid-session — avatar must keep talking; state endpoint down — UI must cope); final latency check.
 3. **Optional latency polish.** If the demo still feels slow, stream the Host's reply token-by-token so the avatar starts speaking sooner. Deferred deliberately — the timing logs we added will tell us if it's needed.
-4. **Post-POC (first items of a next phase, not this one).** Interview state is in-memory today — a server restart loses an in-flight interview. Accepted for the POC; a database is the first follow-up. Same for a small known session-counter drift (see `session_state.py` in `CLAUDE.md`).
+4. **Post-POC (first items of a next phase, not this one).** Interview state is in-memory today — a server restart loses an in-flight interview. Accepted for the POC; a database is the first follow-up. The session counter is now TTL-tracked and self-corrects (the frontend POSTs `/api/session/stop` on server-side disconnect, and any tracked session still expires on its own once its TTL elapses — see `session_state.py` in `CLAUDE.md`), so it no longer needs a restart to reset.
 
 ## 1.6 Known limitations (worth stating upfront)
 
