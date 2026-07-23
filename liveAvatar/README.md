@@ -4,7 +4,7 @@ This directory contains a Proof of Concept for **Resonance**: an AI-driven vendo
 
 ## Architecture
 
-- **Backend (`/backend`)**: A Python FastAPI server managed with `uv`. It hosts the four-agent architecture — the **Host** (drives the live interview through a fixed linear question script and captures the vendor's profile conversationally; there is no intake form or document upload), the **Data Scout** (post-interview company research via Gemini + Google Search grounding), the **Evaluator** (one holistic pro-model scoring pass over transcript + scout findings), and the **Coordinator** (pure threshold rule → recommendation). `pipeline.py` sequences the last three as an in-process background task after finalize, tracking a `pipeline_status` the UI polls. Transcripts + summaries persist to Google Cloud Storage (or local JSON when no bucket is configured). Ships with a pytest suite (`tests/`) covering every module.
+- **Backend (`/backend`)**: A Python FastAPI server managed with `uv`. It hosts the four-agent architecture — the **Host** (drives the live interview through a fixed linear question script, over the vendor profile and context captured up front by the start screen's intake form), the **Data Scout** (post-interview company research via Gemini + Google Search grounding), the **Evaluator** (one holistic pro-model scoring pass over transcript + scout findings), and the **Coordinator** (pure threshold rule → recommendation). `pipeline.py` sequences the last three as an in-process background task after finalize, tracking a `pipeline_status` the UI polls. Transcripts + summaries persist to Google Cloud Storage (or local JSON when no bucket is configured). Ships with a pytest suite (`tests/`) covering every module.
 - **Frontend (`/frontend`)**: A React 19 + Vite + Tailwind app using `@heygen/liveavatar-web-sdk`. A minimal start screen offers two modes: the avatar video interview, or a low-bandwidth **text-chat fallback** driving the exact same Host agent (also reachable one-way mid-session when network quality degrades). The end-of-interview summary view fills in progressively (Scouting → Evaluating → Ready) as the backend pipeline completes.
 
 ## Getting Started
@@ -32,7 +32,7 @@ The application is configured for a Single Unified Cloud Run Service deployment.
 
 ## Features
 
-- **Conversational onboarding:** No forms — the avatar greets the vendor and captures name, role, and company from a natural self-introduction, then reads the details back for confirmation.
+- **Pre-interview intake:** A short form on the start screen captures name and company (required), role and a free-text "about you" note (optional), and up to 3 context documents (.pdf/.docx/.txt/.md, trimmed to 3,000 words with a notice, summarized into the vendor context) — the avatar greets the vendor by name and goes straight into question one, with no conversational onboarding step.
 - **Fixed, unbiased interview script:** A linear per-domain questionnaire (`backend/data/questionnaires/{domain}.yaml`); every vendor in a domain gets the same questions, and scout research never reaches the interviewer.
 - **Text-chat fallback:** A claude.ai-style chat UI for low-bandwidth situations — selectable up front, or suggested automatically when network quality drops mid-call (one-way avatar → chat switch that carries the transcript over).
 - **Live transcript:** Interviewer/candidate turns captured in real time from the SDK's transcription events, in an internally-scrolling panel.

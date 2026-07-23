@@ -15,13 +15,16 @@ the code wins — please fix the doc.
 ## §1 What is Resonance?
 
 Resonance is a proof-of-concept for an **AI-driven vendor-evaluation
-interview**. A vendor representative opens a web page, and instead of a human
-interviewer they talk to an AI avatar (we call her **Noor**). Noor greets them,
-captures their basic details conversationally (no intake form), and walks them
-through a fixed, per-domain question script — the same questions for every
-vendor in that domain, so the evaluation stays fair and unbiased. When the
-interview ends, a small team of background AI agents researches the company,
-scores the transcript against a rubric, and recommends a next step for a human
+interview**. A vendor representative opens a web page, fills in a short
+pre-interview intake form (name and company required, role and a free-text
+note optional, plus up to 3 context documents), and then talks to an AI avatar
+(we call her **Noor**). Noor already knows who she's talking to from the
+intake form, so she greets the vendor by name and goes straight into question
+one — there's no conversational onboarding step. She walks them through a
+fixed, per-domain question script — the same questions for every vendor in
+that domain, so the evaluation stays fair and unbiased. When the interview
+ends, a small team of background AI agents researches the company, scores the
+transcript against a rubric, and recommends a next step for a human
 evaluator.
 
 The one big architectural idea worth internalizing early: **our backend is the
@@ -116,13 +119,20 @@ A few pointers so you don't have to open every file:
 Here's the request sequence end-to-end. (Endpoints are the exact paths — there's
 no router prefix.)
 
-1. **`POST /api/interview`** — mints an `interview_id` and creates an in-memory
-   `InterviewState`. Optional body `{domain, tier, passcode, duration_minutes}`;
-   `domain` defaults to `frontier_tech`, `tier` to `"dev"`. This happens *before*
-   any UI is shown — there's no intake form.
-2. **StartScreen** — the vendor picks **avatar** (video interview) or **text
-   chat**, and (in dev, as a stand-in for the admin-assigned domain) an interview
-   domain.
+1. **StartScreen** — the vendor fills in the pre-interview intake form (name and
+   company required, role and a free-text note optional, up to 3 context
+   documents), picks **avatar** (video interview) or **text chat**, and (in dev,
+   as a stand-in for the admin-assigned domain) an interview domain.
+2. **`POST /api/interview`** — mints an `interview_id` and creates an in-memory
+   `InterviewState` pre-filled from the intake fields and locked into
+   `manually_edited_fields`. Body carries `{domain, tier, passcode,
+   duration_minutes, contact_name, company_name, contact_role, about_text}`
+   (only `contact_name`/`company_name` are required); `domain` defaults to
+   `frontier_tech`, `tier` to `"dev"`. Any staged documents are then uploaded one
+   at a time via **`POST /api/interview/{id}/document`**, each parsed, trimmed to
+   3,000 words if longer, summarized, and folded into the interview's vendor
+   context — a slow or failed upload is skipped with a notice rather than
+   blocking the interview.
 3a. **Avatar path** — **`POST /api/session`** provisions the per-interview HeyGen
     resources: a secret (the `gateway_token`), a Custom LLM config pointing back
     at our `/llm/{id}/v1` gateway, and a minimal context — then returns a session
@@ -408,9 +418,12 @@ top level.
   `/api/session/stop` itself, and even on the rare miss the tracked entry
   still expires on its own once its TTL elapses. Drift no longer accumulates
   until a backend restart.
-- **Leaked HeyGen resources.** Those same server-ended sessions never trigger our
-  cleanup, so per-interview LLM configs / gateway secrets / contexts accumulate on
-  the HeyGen account. Purge them with
+- **Leaked HeyGen resources.** Since the `SESSION_DISCONNECTED` handler now
+  POSTs `/api/session/stop` itself, a server-ended session **does** trigger our
+  cleanup (per-interview LLM config / gateway secret / context) as long as the
+  vendor's tab is still open — that's the same teardown a manual End click gets.
+  What still leaks: a closed/crashed tab (no client left to fire the POST) and
+  any historical leaks from before this fix. Purge those with
   `uv run python scripts/cleanup_orphaned_resources.py` (it deletes only the
   auto-generated `Resonance Host …` / `Resonance Gateway …` / `AI Interviewer w/
   Context …` resources; dashboard-created ones are left untouched).
@@ -437,8 +450,11 @@ you're building another one:
 - **Interactive API reference:** run the backend and open **`/docs`** (Swagger UI)
   or fetch **`/openapi.json`**. That's the authoritative, always-current contract.
 - **Minimal client lifecycle** (same as §3, from an API consumer's view):
-  1. `POST /api/interview` → get `{interview_id}` (optionally send
-     `{domain, tier, passcode, duration_minutes}`).
+  1. `POST /api/interview` → get `{interview_id}` (send the intake fields —
+     `contact_name`/`company_name` required, `contact_role`/`about_text`
+     optional — plus optionally `{domain, tier, passcode, duration_minutes}`).
+     Optionally follow with `POST /api/interview/{id}/document` (multipart
+     `file`) up to 3 times to attach context documents.
   2. For an **avatar** client: `POST /api/session` with the `interview_id` → get a
      session token, hand it to the LiveAvatar SDK; HeyGen then drives the
      conversation by calling `POST /llm/{id}/v1/chat/completions` itself.

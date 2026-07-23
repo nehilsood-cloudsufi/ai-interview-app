@@ -6,12 +6,15 @@
 
 ## What you are testing
 
-Resonance is an AI-run **vendor evaluation interview**. An avatar named **Noor**
-interviews a vendor for ~5 minutes: she captures who you are conversationally
-(no forms), walks through 7 fixed evaluation topics, and when the interview
-ends the system produces a summary, a 7-category scorecard, and an
-advance/clarify recommendation. There is also a text-chat fallback mode that
-runs the same interview without video.
+Resonance is an AI-run **vendor evaluation interview**. Before it starts, you
+fill in a short intake form (name and company required; role and a free-text
+"about you" note optional, plus up to 3 context documents). Then an avatar
+named **Noor** interviews you for ~5 minutes: she greets you by name and goes
+straight into question one (no conversational onboarding — she already knows
+who you are from the form), walks through 7 fixed evaluation topics, and when
+the interview ends the system produces a summary, a 7-category scorecard, and
+an advance/clarify recommendation. There is also a text-chat fallback mode
+that runs the same interview without video.
 
 Your job: play the vendor, deliberately try the tricky moves listed below, and
 record what actually happened.
@@ -47,25 +50,33 @@ Two tiers, same app:
 
 ## Test 1 — Smoke check (free tier, ~5 min total)
 
-1. Open the free-tier URL. **Expect:** a start screen titled "Resonance" with a
-   domain dropdown (default "Frontier Technology"), a Start Interview button,
-   and a "Use text chat instead" button.
-2. Click **Start Interview**, allow mic/camera. **Expect:** avatar video
-   appears and Noor greets you within a few seconds; Active Sessions badge
-   goes to 1.
-3. Introduce yourself (name, role, company). **Expect:** the "Here's what I
-   captured" card fills in with your details, and Noor reads them back for
-   confirmation.
-4. Let the ~1-minute sandbox cutoff happen (this is normal). **Expect:** the
+1. Open the free-tier URL. **Expect:** a start screen titled "Resonance" with
+   an intake form (full name and company required, role and an "about you"
+   note optional, an optional document attachment up to 3 files), a domain
+   dropdown (default "Frontier Technology"), a Start Interview button, and a
+   "Use text chat instead" button. The Start/chat buttons are disabled until
+   name and company are filled in.
+2. Fill in your name and company, then click **Start Interview**, allow
+   mic/camera. **Expect:** avatar video appears and Noor greets you **by
+   name** within a few seconds and goes straight into her first question (no
+   "tell me about yourself" step); Active Sessions badge goes to 1; the
+   "Your details" card already shows the name/company/role you typed.
+3. Let the ~1-minute sandbox cutoff happen (this is normal). **Expect:** the
    session ends cleanly, a summary panel appears, and within ~30 s a scorecard
    and recommendation fill in below it.
 
 ## Test 2 — End button + session counter (free tier, ~2 min)
 
 1. Start another free session.
-2. After Noor's greeting, click **End interview** yourself.
-3. **Expect:** session stops immediately and the Active Sessions badge drops
-   back to **0**. If it stays at 1, that's a bug — note it.
+2. After Noor's greeting, click **End interview** yourself. **Expect:**
+   session stops immediately and the Active Sessions badge drops back to
+   **0** right away.
+3. Start a third session and this time let the **~1-minute sandbox cutoff**
+   end it instead of clicking End. **Expect:** the badge also drops to **0**
+   — normally immediately (the tab posts a stop the moment HeyGen ends the
+   session), and within ~3 minutes worst case even if that post is missed
+   (the session's tracked TTL expires on its own). If the badge is still
+   showing a stale count after 3 minutes, that's a bug — note it.
 
 ## Test 3 — Text-chat mode, full interview (free tier, ~10 min, no mic needed)
 
@@ -77,19 +88,26 @@ Two tiers, same app:
    interview, even if you later type something different.
 4. Also mid-interview, ask her something off-topic ("what does RAG mean?").
    **Expect:** a one-line polite deferral, then she returns to her question —
-   the interview does NOT advance to the next topic.
+   the interview does NOT advance to the next topic. This deflection is
+   expected behavior, not a bug.
 5. Click **End interview** after several topics. **Expect:** summary →
    scorecard → recommendation appear progressively; a **Download** button
    produces a Markdown file with the full transcript.
+6. Separately, try ending an interview after answering **fewer than 2**
+   questions. **Expect:** an amber "Scoring was unavailable for this
+   interview" note in place of a scorecard, not a blank/broken panel — the
+   transcript and summary are still saved.
 
 ## Test 4 — The main event: scripted voice run (production tier, 5 min)
 
-Enter the passcode at `/prod`, pick **5 minutes**, start, and follow this
-script word-for-word. Each beat targets a specific past bug.
+On the intake form, enter **[a wrong version of your name]** as your name and
+"CloudSufi" as your company, enter the passcode at `/prod`, pick
+**5 minutes**, start, and follow this script word-for-word. Each beat targets
+a specific past bug.
 
 | Beat | You say | Pass criteria |
 |---|---|---|
-| 1 | "Hi Noor. My name is **[a wrong version of your name]**, an engineer at CloudSufi." → when she confirms: "Actually, it's **[your real name]** — then spell it out letter by letter." | Accepts the correction in one sentence, stays on topic, card shows the corrected name, never re-asks it |
+| 1 | Noor greets you by the wrong name from the form. Reply: "Actually, it's **[your real name]** — then spell it out letter by letter." | Accepts the correction in one sentence, stays on topic, "Your details" card updates to the corrected name, never re-asks it |
 | 2 | "It's a strategic priority for us… *(pause 2 s mid-thought)* …because our clients keep asking for frontier-tech solutions." | She waits through your pause; ONE reply to the whole thought; no question gets skipped |
 | 3 | "We've built some AI things for clients." → after her probe: "We've shipped document-intelligence pipelines for Google and Swarovski, and we're building an agentic support system for Aramco." | She digs deeper on the thin answer instead of moving on; her follow-up relates to what she just asked |
 | 4 | "Quick question — what does RAG actually mean?" | One-liner/deferral, then back to HER question; script does not advance |

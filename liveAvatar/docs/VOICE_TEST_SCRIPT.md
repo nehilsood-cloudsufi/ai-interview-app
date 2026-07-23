@@ -4,11 +4,12 @@ A word-for-word script for a **5-minute `/prod` run** that exercises every
 conversational failure mode fixed on 2026-07-22/23 (VAD fragmentation,
 corrections, off-topic questions, pacing, stall recovery, clean ending).
 Noor phrases questions differently each run — answer to the *topic*.
-Keep the Active Sessions badge visible.
+Keep the Active Sessions badge visible. On the intake form, enter **Neil**
+as your name and CloudSufi as your company before starting.
 
 | Beat | You say | Tests | Pass criteria |
 |---|---|---|---|
-| 1 | "Hi Noor. My name is **Neil**, an engineer at CloudSufi." → when she confirms: "Actually, it's **Nehil** — N-E-H-I-L." | correction handling | Accepts in one sentence, stays on topic, card shows the corrected name, never re-asks |
+| 1 | Noor greets you as "Neil" from the intake form. Reply: "Actually, it's **Nehil** — N-E-H-I-L." | correction handling | Accepts in one sentence, stays on topic, "Your details" card shows the corrected name, never re-asks |
 | 2 | "It's a strategic priority for us… *(pause 2 s mid-thought)* …because our clients keep asking for frontier-tech solutions." | fragment survival | Waits through the pause; ONE reply to the whole thought; no skipped question |
 | 3 | "We've built some AI things for clients." → after her probe: "We've shipped document-intelligence pipelines for Google and Swarovski, and we're building an agentic support system for Aramco." | time-generous follow-up | She digs deeper on the thin answer instead of moving on |
 | 4 | "Quick question — what does RAG actually mean?" | off-topic deflection | One-liner/deferral, then back to HER question; script does not advance |
