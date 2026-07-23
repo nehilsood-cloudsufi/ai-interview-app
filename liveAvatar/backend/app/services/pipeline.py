@@ -50,6 +50,8 @@ async def run(state: InterviewState, session_id: str, payload: dict) -> None:
             )
         except Exception as e:
             logger.warning("Holistic scoring failed for session %s: %s", session_id, e)
+            state.evaluation_failed = True
+            payload["evaluation_failed"] = True
 
         rec = None
         if scorecard is not None and scorecard.overall is not None:

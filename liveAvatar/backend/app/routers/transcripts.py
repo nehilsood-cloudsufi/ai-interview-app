@@ -48,7 +48,10 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
     Fails with 400 if `turns` is empty, and 500 if the transcript cannot be
     persisted. The route is idempotent: a repeated finalize for an interview
     already handed to the pipeline short-circuits and returns the
-    already-saved summary rather than re-enqueuing or re-saving.
+    already-saved summary rather than re-enqueuing or re-saving. If the
+    record can't be read back at that point (not yet saved, or the lookup
+    itself failed), the short-circuit reports `summary_ok: False` rather than
+    claiming a fake-healthy empty summary.
     """
     if not body.turns:
         raise HTTPException(status_code=400, detail="Transcript has no turns to finalize")
@@ -67,8 +70,13 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
         except Exception as e:
             logger.warning("Best-effort transcript lookup failed for session %s: %s", body.session_id, e)
             saved = None
+        # When the record could not be read back (not yet saved, or the
+        # lookup itself failed), summary_ok is False - an empty summary here
+        # was never actually generated, so it must not be reported as
+        # fake-healthy. A record that WAS found keeps its own stored
+        # summary/summary_ok unchanged.
         summary = saved.get("summary", "") if saved else ""
-        summary_ok = saved.get("summary_ok", True) if saved else True
+        summary_ok = saved.get("summary_ok", True) if saved else False
         return {
             "summary": summary,
             "summary_ok": summary_ok,

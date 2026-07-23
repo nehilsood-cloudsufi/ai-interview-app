@@ -81,6 +81,36 @@ def test_finalize_summary_failure_still_saves(client, patch_settings, tmp_transc
 
 
 @respx.mock
+def test_finalize_empty_summary_sets_summary_ok_false(client, patch_settings, tmp_transcripts_dir):
+    # Gemini returning a 200 with an empty completion must be treated as a
+    # summary failure (summary_service now raises on this), not a silently
+    # "successful" blank summary - but the transcript must still be saved.
+    patch_settings(
+        gemini_api_key="gem-key",
+        gemini_base_url=GEMINI_BASE_URL,
+        transcripts_local_dir=str(tmp_transcripts_dir),
+        gcs_bucket=None,
+    )
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})
+    )
+
+    response = client.post(
+        "/api/transcript/finalize",
+        json={"session_id": "empty-summary", "turns": [{"role": "candidate", "text": "hello"}]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary_ok"] is False
+    assert body["summary"] == ""
+
+    saved = client.get("/api/transcript/empty-summary").json()
+    assert saved["summary_ok"] is False
+    assert saved["session_id"] == "empty-summary"
+
+
+@respx.mock
 def test_finalize_happy_path_with_summary(client, patch_settings, tmp_transcripts_dir):
     patch_settings(
         gemini_api_key="gem-key",
@@ -324,12 +354,14 @@ def test_finalize_double_finalize_short_circuits_and_returns_saved_summary(
     assert len(save_calls) == 1
 
 
-def test_finalize_double_finalize_short_circuit_without_saved_record_falls_back_to_empty(
+def test_short_circuit_unreadable_record_reports_summary_not_ok(
     client, patch_settings, tmp_transcripts_dir, monkeypatch
 ):
     # If, for whatever reason, no record was ever persisted (or the lookup
-    # itself fails), the short-circuit response falls back to the legacy
-    # empty-summary shape rather than raising.
+    # itself fails), the short-circuit response must NOT claim summary_ok:
+    # True for an empty summary it never actually generated - that reads as
+    # fake-healthy to the frontend. It reports summary_ok: False instead, so
+    # the client renders the existing "summary could not be generated" note.
     patch_settings(gemini_api_key=None, transcripts_local_dir=str(tmp_transcripts_dir), gcs_bucket=None)
 
     state = _seed_interview()
@@ -347,7 +379,7 @@ def test_finalize_double_finalize_short_circuit_without_saved_record_falls_back_
     assert response.status_code == 200
     assert response.json() == {
         "summary": "",
-        "summary_ok": True,
+        "summary_ok": False,
         "pipeline_status": "scouting",
         "scorecard": None,
         "insights": None,

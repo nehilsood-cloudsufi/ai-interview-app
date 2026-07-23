@@ -134,6 +134,11 @@ class InterviewState:
     pipeline_status: PipelineStatus | None = None
     scorecard: "Scorecard | None" = None
     recommendation: "FollowupRecommendation | None" = None
+    # Set by pipeline when the Evaluator call raises (e.g. a too-short
+    # transcript) - scorecard/recommendation stay None as before, but this
+    # flag lets the frontend tell the vendor scoring genuinely failed rather
+    # than silently showing nothing where the scorecard would be.
+    evaluation_failed: bool = False
     # Serializes host_agent.handle_turn/stream_turn per interview. HeyGen's
     # VAD can fire several gateway calls near-simultaneously when it splits
     # one flowing answer into fragments (seen live 2026-07-22: two turns

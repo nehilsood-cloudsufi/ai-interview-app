@@ -119,6 +119,11 @@ export interface InterviewStateResponse {
   pipeline_status: PipelineStatus | null;
   scorecard: ScorecardData | null;
   recommendation: FollowupRecommendation | null;
+  // True when the pipeline's Evaluator call itself raised (e.g. a too-short
+  // transcript) - scorecard stays null in that case too, but this flag lets
+  // the UI tell the vendor scoring genuinely failed rather than silently
+  // rendering nothing where the scorecard would be.
+  evaluation_failed?: boolean;
   vendor_profile: VendorProfile;
 }
 

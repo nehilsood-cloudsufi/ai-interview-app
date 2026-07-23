@@ -42,4 +42,7 @@ async def generate_summary(turns: list[TranscriptTurn]) -> str:
     data = await gemini_client.chat_completion(
         payload, timeout=60.0, fallback_model=settings.gemini_pro_model_fallback
     )
-    return data["choices"][0]["message"]["content"].strip()
+    content = (data["choices"][0]["message"]["content"] or "").strip()
+    if not content:
+        raise ValueError("Summary generation returned an empty completion.")
+    return content

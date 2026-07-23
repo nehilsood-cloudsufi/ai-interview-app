@@ -291,7 +291,10 @@ async def get_interview_state(interview_id: str):
     findings gathered so far), an `updated_at` timestamp, the current
     `vendor_profile`, and the post-interview pipeline fields
     (`pipeline_status`, `scorecard`, `recommendation`) which stay null until
-    finalize hands the interview to `app.services.pipeline`. The frontend
+    finalize hands the interview to `app.services.pipeline`, plus
+    `evaluation_failed` (False by default, True if the Evaluator call itself
+    raised - e.g. a too-short transcript - so the frontend can tell scoring
+    genuinely failed instead of silently showing nothing). The frontend
     polls this both during the interview (for profile/topic) and after
     finalize (to learn when the scorecard is `ready`). Fails with 404 if the
     interview id is unknown."""
@@ -311,6 +314,7 @@ async def get_interview_state(interview_id: str):
         "pipeline_status": state.pipeline_status,
         "scorecard": dataclasses.asdict(state.scorecard) if state.scorecard is not None else None,
         "recommendation": dataclasses.asdict(state.recommendation) if state.recommendation is not None else None,
+        "evaluation_failed": state.evaluation_failed,
         "vendor_profile": {
             # Serializes the profile's three fields (company_name,
             # contact_name, contact_role); matches the finalize route's

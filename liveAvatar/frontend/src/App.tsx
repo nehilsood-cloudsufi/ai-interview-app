@@ -260,6 +260,7 @@ function App() {
         scorecard={summary.scorecard}
         insights={summary.insights}
         recommendation={summary.recommendation}
+        evaluationFailed={summary.evaluationFailed}
         onDismiss={summary.dismiss}
       />
     </div>

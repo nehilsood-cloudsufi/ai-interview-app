@@ -249,6 +249,7 @@ def test_fresh_interview_state(client):
     assert body["pipeline_status"] is None
     assert body["scorecard"] is None
     assert body["recommendation"] is None
+    assert body["evaluation_failed"] is False
 
     assert body["insights"] == []
 
@@ -335,6 +336,21 @@ def test_state_reflects_pipeline_progress(client):
     assert body["pipeline_status"] == "ready"
     assert body["scorecard"] == dataclasses.asdict(scorecard)
     assert body["recommendation"] == dataclasses.asdict(state.recommendation)
+
+
+def test_state_reports_evaluation_failed_after_pipeline_failure(client):
+    state = _seed_interview()
+    state.status = "finished"
+    state.pipeline_status = "ready"
+    state.evaluation_failed = True
+
+    response = client.get(_url(state.interview_id))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pipeline_status"] == "ready"
+    assert body["scorecard"] is None
+    assert body["evaluation_failed"] is True
 
 
 def test_end_node_has_null_topic(client):

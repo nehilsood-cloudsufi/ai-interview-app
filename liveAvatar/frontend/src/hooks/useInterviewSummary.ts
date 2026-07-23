@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { API_URL } from '../config';
 import { useIntervalPoll } from './useIntervalPoll';
 import type {
@@ -34,6 +34,10 @@ interface SummaryState {
   // record (utils/downloadTranscript.ts). Kept here purely to feed that export.
   insights: ScoutFinding[] | null;
   recommendation: FollowupRecommendation | null;
+  // True once the pipeline reports its Evaluator call itself failed (e.g. a
+  // too-short transcript) - scorecard stays null in that case too, but this
+  // tells SummaryPanel to explain why rather than showing nothing.
+  evaluationFailed: boolean;
 }
 
 const INITIAL: SummaryState = {
@@ -47,6 +51,7 @@ const INITIAL: SummaryState = {
   scorecard: null,
   insights: null,
   recommendation: null,
+  evaluationFailed: false,
 };
 
 const isTerminal = (status: PipelineStatus | null) => status === 'ready' || status === 'failed';
@@ -76,6 +81,14 @@ export function useInterviewSummary(interviewId: string | null = null) {
   // (unmount cleanup is owned by useIntervalPoll).
   const [pollingId, setPollingId] = useState<string | null>(null);
 
+  // The sessionId finalize has already been called for. A duplicate
+  // finalize trigger for the SAME session (e.g. a network-quality switch
+  // racing the normal session-end path) must not re-POST: it would reset
+  // state back to INITIAL mid-flight and race the server-side idempotency
+  // short-circuit. dismiss() deliberately does NOT clear this - dismissing
+  // and re-finalizing the same session would still be a duplicate.
+  const finalizedSessionRef = useRef<string | null>(null);
+
   // Poll GET /api/interview/{id}/state until the pipeline reaches a terminal
   // status, merging scorecard/insights/recommendation as they arrive.
   useIntervalPoll(async (signal) => {
@@ -91,6 +104,7 @@ export function useInterviewSummary(interviewId: string | null = null) {
         scorecard: data.scorecard ?? prev.scorecard,
         insights: data.insights ?? prev.insights,
         recommendation: data.recommendation ?? prev.recommendation,
+        evaluationFailed: data.evaluation_failed ?? prev.evaluationFailed,
       }));
       if (isTerminal(data.pipeline_status)) setPollingId(null);
     } catch (err) {
@@ -100,6 +114,8 @@ export function useInterviewSummary(interviewId: string | null = null) {
 
   const finalize = useCallback(async (turns: TranscriptTurn[], sessionId: string | null) => {
     if (turns.length === 0) return;
+    if (sessionId !== null && finalizedSessionRef.current === sessionId) return;
+    finalizedSessionRef.current = sessionId;
 
     setState({
       ...INITIAL,

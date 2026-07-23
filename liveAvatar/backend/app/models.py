@@ -243,6 +243,11 @@ class InterviewStateResponse(BaseModel):
     pipeline_status: str | None = None
     scorecard: ScorecardModel | None = None
     recommendation: FollowupRecommendationModel | None = None
+    # True when the pipeline's Evaluator call raised (e.g. a too-short
+    # transcript) - scorecard stays null in that case too, but this flag lets
+    # the frontend tell the vendor scoring genuinely failed rather than
+    # silently rendering nothing.
+    evaluation_failed: bool = False
     vendor_profile: VendorProfileModel
 
 

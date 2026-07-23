@@ -156,6 +156,41 @@ async def test_evaluator_raises_leaves_scorecard_and_recommendation_null_but_sti
     assert save_calls[0]["recommendation"] is None
 
 
+async def test_evaluator_failure_sets_evaluation_failed_and_still_reaches_ready(monkeypatch):
+    # The evaluator failing (e.g. a too-short transcript) must not be
+    # silently swallowed - state.evaluation_failed and the saved payload both
+    # carry the flag so the frontend can tell the vendor scoring didn't run,
+    # instead of just showing an empty scorecard with no explanation.
+    async def fake_scout_run(state):
+        return []
+
+    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
+        raise ValueError("Transcript too short to score (fewer than 2 vendor answers).")
+
+    save_calls: list[dict] = []
+
+    async def fake_save(session_id, payload):
+        save_calls.append(dict(payload))
+
+    monkeypatch.setattr(scout_agent, "run", fake_scout_run)
+    monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
+    monkeypatch.setattr(transcript_store, "save", fake_save)
+
+    state = make_state()
+    assert state.evaluation_failed is False
+
+    await pipeline.run(state, "sid", make_payload())
+
+    assert state.pipeline_status == "ready"
+    assert state.evaluation_failed is True
+    assert state.scorecard is None
+
+    assert len(save_calls) == 1
+    assert save_calls[0]["pipeline_status"] == "ready"
+    assert save_calls[0]["scorecard"] is None
+    assert save_calls[0]["evaluation_failed"] is True
+
+
 async def test_final_save_failure_marks_failed_and_attempts_resave(monkeypatch):
     async def fake_scout_run(state):
         return []

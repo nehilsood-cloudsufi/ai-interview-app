@@ -255,6 +255,38 @@ async def test_empty_transcript_raises(patch_settings):
         assert len(respx.calls) == 0
 
 
+async def test_too_short_transcript_raises(patch_settings):
+    # Fewer than 2 candidate turns is too thin to score meaningfully (e.g. a
+    # greeting-only session) - raise a clear error instead of letting an
+    # opaque model-side failure surface later.
+    patch_settings(gemini_api_key="gem-key")
+    turns = [
+        TranscriptTurn(role="interviewer", text="Tell me about your company."),
+        TranscriptTurn(role="candidate", text="We shipped ML pipelines for three banks."),
+    ]
+    with respx.mock:
+        with pytest.raises(ValueError, match="Transcript too short"):
+            await score_interview(turns, make_rubric(), [])
+        assert len(respx.calls) == 0
+
+
+@respx.mock
+async def test_exactly_two_candidate_turns_proceeds_to_call(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    turns = [
+        TranscriptTurn(role="interviewer", text="Tell me about your company."),
+        TranscriptTurn(role="candidate", text="We shipped ML pipelines for three banks."),
+        TranscriptTurn(role="interviewer", text="How do you deliver?"),
+        TranscriptTurn(role="candidate", text="Two-week sprints with a dedicated PM."),
+    ]
+
+    scorecard = await score_interview(turns, make_rubric(), [])
+
+    assert route.call_count == 1
+    assert scorecard.overall is not None
+
+
 # --- status thresholding ---
 
 

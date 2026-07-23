@@ -151,6 +151,9 @@ async def score_interview(
     transcript_text = render_transcript(turns)
     if not transcript_text:
         raise ValueError("Transcript is empty; nothing to score.")
+    candidate_turns = sum(1 for turn in turns if turn.role == "candidate")
+    if candidate_turns < 2:
+        raise ValueError("Transcript too short to score (fewer than 2 vendor answers).")
 
     user_content = f"Interview transcript:\n{transcript_text}"
     if vendor_context:
