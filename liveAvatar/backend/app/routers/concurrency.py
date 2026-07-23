@@ -1,12 +1,14 @@
-"""Read-only endpoint exposing the in-memory active-session counter.
+"""Read-only endpoint exposing the active-session count.
 
 The frontend polls this (via `useConcurrencyPoll`) to show how many avatar
 sessions are currently live, so a second vendor can be warned before they
 try to start one and hit LiveAvatar's account-wide concurrency limit. The
-counter lives in `app.services.session_state` and is process-local: it only
-decrements on an explicit `/api/session/stop`, so when LiveAvatar ends a
-session on its own the count can drift upward until the backend restarts
-(see the session_state note in CLAUDE.md). Same-origin UI endpoint - no auth.
+count comes from the TTL-tracked registry in `app.services.session_state`:
+it drops immediately on an explicit `/api/session/stop`, and a session
+HeyGen ends on its own still falls out of the count once its tracked TTL
+elapses, so it can no longer drift upward indefinitely. It is still
+process-local and resets to zero on a backend restart. Same-origin UI
+endpoint - no auth.
 """
 
 from fastapi import APIRouter
