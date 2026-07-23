@@ -138,6 +138,22 @@ def _wrapup_turn(state: InterviewState, user_text: str) -> TurnResult:
     )
 
 
+def _next_node_id(state: InterviewState, node: QuestionNode) -> str:
+    """The node the interview moves to once `node` is answered: the next
+    entry of `state.question_plan` (which may skip questionnaire nodes when a
+    short prod session only fits the top-K questions), or END after the
+    plan's last entry. States without a plan (built directly in tests) fall
+    back to the questionnaire's own `next` pointer, as does a current node
+    that somehow isn't in the plan."""
+    if not state.question_plan:
+        return node.next
+    try:
+        index = state.question_plan.index(node.id)
+    except ValueError:
+        return node.next
+    return state.question_plan[index + 1] if index + 1 < len(state.question_plan) else END_NODE_ID
+
+
 _NOT_CAPTURED = "(not captured yet)"
 
 
@@ -181,7 +197,33 @@ def _render_system_content(
         "report them in profile_updates; otherwise return null for all three fields.",
     ]
 
-    next_node = questionnaire.get(node.next)  # None only for the literal END
+    # Intake material the vendor submitted before the interview (the "about
+    # you" text / uploaded documents, already summarized to bullets). It
+    # colors HOW questions are asked, never WHETHER they are asked - the
+    # unbiased fixed script stays intact.
+    if state.vendor_context:
+        lines += [
+            "",
+            "Vendor-provided background (submitted by the vendor before the interview):",
+            state.vendor_context,
+            "Use this background only to phrase your questions naturally and "
+            "acknowledge specifics the vendor already shared. Never skip or "
+            "shorten a question because of it, never treat it as the vendor's "
+            "answer, and never recite it back to them.",
+        ]
+
+    # Onboarding questions are gone (the profile arrives via the intake
+    # form), so the very first exchange carries the greeting instead.
+    if not state.turns:
+        lines += [
+            "",
+            "This is the interview's opening exchange: begin your reply with a "
+            "one-sentence warm greeting using the vendor's name and company "
+            "from the profile above (skip whatever isn't captured), then ask "
+            "the current question in the same reply.",
+        ]
+
+    next_node = questionnaire.get(_next_node_id(state, node))  # None only for the literal END
     if next_node is None:
         next_line = "- no further questions - thank them and close the interview."
     else:
@@ -481,7 +523,7 @@ def _apply_outcome(
             answer_text="",
         )
 
-    state.current_node_id = node.next
+    state.current_node_id = _next_node_id(state, node)
     state.followup_count = 0
     return TurnResult(
         reply=reply,

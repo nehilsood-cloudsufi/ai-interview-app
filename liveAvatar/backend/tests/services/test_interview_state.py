@@ -24,7 +24,7 @@ def test_create_returns_state_with_defaults():
     assert state.gateway_token
     assert state.domain == DOMAIN
     assert state.status == "created"
-    assert state.current_node_id == "intro"  # first node of the shipped questionnaire
+    assert state.current_node_id == "company_overview"  # first node of the shipped questionnaire
     assert state.followup_count == 0
     assert state.turns == []
     assert state.scout_findings == []

@@ -279,6 +279,19 @@ class Settings:
         "whole summary tight and scannable."
     )
 
+    # System prompt for summarizing the vendor's intake material (the start
+    # screen's "about you" text and each uploaded document) into the short
+    # plain-language bullet list stored on state.vendor_context. Fast tier
+    # (gemini_model) - it runs while the vendor waits on the start screen.
+    intake_summary_prompt: str = (
+        "You summarize background material a vendor submitted before an "
+        "interview. Condense the text below into AT MOST 10 short bullet "
+        "points in plain, simple language - no marketing fluff, no jargon, "
+        "just the concrete facts about who they are, what they build, and "
+        "anything notable. Output only the bullet lines, each starting with "
+        '"- ", and nothing else.'
+    )
+
     # Prompt for the Data Scout's single Gemini native-API call with Google
     # Search grounding enabled. Structured output can't be combined with the
     # google_search tool, so the JSON contract is asked for in-prompt and

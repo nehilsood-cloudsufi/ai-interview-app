@@ -1018,3 +1018,76 @@ async def test_chat_mode_ignores_session_clock(patch_settings):
 
     assert route.called
     assert result.reply != settings.host_timeup_reply
+
+
+# --- Question-plan advancement + intake context (pre-interview intake) ---
+
+
+@respx.mock
+async def test_advances_along_question_plan_skipping_nodes(patch_settings):
+    # A short prod session's plan may omit questionnaire nodes; completing a
+    # question must advance to the PLAN's next node (and the prompt must
+    # announce that node's ask), not the questionnaire's own `next` pointer.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL, gemini_model="gemini-3.5-flash")
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+    state.question_plan = ["company_overview", "closing"]  # skips ai_ml_depth
+    questionnaire = make_questionnaire()
+
+    result = await handle_turn(state, "We build ML pipelines for banks.", questionnaire, make_rubric())
+
+    assert result.answer_complete is True
+    assert state.current_node_id == "closing"
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert "Thank the vendor and wrap up." in system_content
+    assert "Ask about their AI/ML capabilities." not in system_content
+
+
+@respx.mock
+async def test_plan_end_advances_to_end_node(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL, gemini_model="gemini-3.5-flash")
+    respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state(node_id="ai_ml_depth")
+    state.question_plan = ["company_overview", "ai_ml_depth"]
+
+    await handle_turn(state, "We fine-tune our own models.", make_questionnaire(), make_rubric())
+
+    assert state.current_node_id == host_agent.END_NODE_ID
+
+
+@respx.mock
+async def test_vendor_context_and_greeting_in_first_turn_prompt(patch_settings):
+    # First exchange of an interview with intake material: the system prompt
+    # carries the vendor-provided background bullets (phrasing-only, with the
+    # never-skip rule) and the one-sentence greeting instruction.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL, gemini_model="gemini-3.5-flash")
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response(answer_complete=False))
+    state = make_state()
+    state.vendor_context = "- Builds document-intelligence pipelines for banks"
+
+    await handle_turn(state, "Hi there!", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert "Vendor-provided background" in system_content
+    assert "- Builds document-intelligence pipelines for banks" in system_content
+    assert "Never skip or shorten a question because of it" in system_content
+    assert "opening exchange" in system_content
+
+
+@respx.mock
+async def test_no_context_or_greeting_sections_mid_interview(patch_settings):
+    # Past the first exchange with no intake material, neither section renders.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL, gemini_model="gemini-3.5-flash")
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state(
+        turns=[
+            TranscriptTurn(role="candidate", text="Hello!"),
+            TranscriptTurn(role="interviewer", text="Welcome - tell me about your company."),
+        ]
+    )
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert "Vendor-provided background" not in system_content
+    assert "opening exchange" not in system_content

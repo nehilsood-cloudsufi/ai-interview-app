@@ -160,6 +160,17 @@ class CreateInterviewRequest(BaseModel):
     # 1..(PROD_MAX_SESSION_SECONDS/60). Ignored on the dev tier (HeyGen's
     # ~1-min sandbox cap applies regardless).
     duration_minutes: int | None = None
+    # Start-screen intake: the vendor's identity, entered up front instead of
+    # being asked conversationally (the onboarding questionnaire nodes are
+    # gone). The frontend requires name and company; the API keeps all three
+    # optional for backward compatibility. Provided fields pre-fill the
+    # vendor profile and lock against the Host's LLM-reported updates.
+    contact_name: str | None = None
+    contact_role: str | None = None
+    company_name: str | None = None
+    # Optional free-text "about you / your company" from the intake form,
+    # summarized into state.vendor_context at creation.
+    about_text: str | None = None
 
 
 class CreateInterviewResponse(BaseModel):
@@ -167,6 +178,18 @@ class CreateInterviewResponse(BaseModel):
     interview, needed for every subsequent call (session, chat, state, etc.)."""
 
     interview_id: str
+
+
+class UploadDocumentResponse(BaseModel):
+    """Response for POST /api/interview/{id}/document: the stored context
+    document's `filename`, its original `word_count`, and whether it was
+    `truncated` to the intake word limit before summarization (oversize
+    documents are trimmed, never rejected - the frontend shows a short
+    notice when this flag is set)."""
+
+    filename: str
+    word_count: int
+    truncated: bool
 
 
 class DomainInfo(BaseModel):

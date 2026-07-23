@@ -117,6 +117,9 @@ async def finalize_transcript(body: FinalizeTranscriptRequest):
                 "contact_name": profile.contact_name,
                 "contact_role": profile.contact_role,
             }
+            # Bullet summary of the intake material (about-text/documents)
+            # the vendor submitted up front; "" when nothing was provided.
+            payload["vendor_context"] = state.vendor_context
             pipeline_status = "interviewed"
             payload["pipeline_status"] = pipeline_status
 

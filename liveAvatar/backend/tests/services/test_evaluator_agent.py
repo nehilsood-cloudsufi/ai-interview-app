@@ -360,3 +360,29 @@ async def test_scout_findings_do_not_change_scoring_behavior(patch_settings):
 def test_evaluator_agent_settings_are_patchable(patch_settings):
     patched = patch_settings(gemini_api_key="sentinel-key")
     assert evaluator_agent.settings is patched
+
+
+@respx.mock
+async def test_vendor_context_included_as_self_reported_background(patch_settings):
+    patch_settings(gemini_api_key="gem-key")
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+
+    await score_interview(
+        make_turns(), make_rubric(), [], vendor_context="- Builds reusable rockets"
+    )
+
+    user_content = json.loads(route.calls[0].request.content)["messages"][1]["content"]
+    assert "- Builds reusable rockets" in user_content
+    # Framed as unverified self-reporting so the Evaluator weighs it properly.
+    assert "self-reported" in user_content
+
+
+@respx.mock
+async def test_no_vendor_context_block_when_empty(patch_settings):
+    patch_settings(gemini_api_key="gem-key")
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+
+    await score_interview(make_turns(), make_rubric(), [])
+
+    user_content = json.loads(route.calls[0].request.content)["messages"][1]["content"]
+    assert "self-reported" not in user_content

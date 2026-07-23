@@ -246,6 +246,47 @@ def list_domains() -> list[tuple[str, str]]:
     return sorted(domains, key=lambda pair: pair[0])
 
 
+# Rough seconds one substantive question costs (ask + answer + ack) and the
+# time held back for the closing, used by build_question_plan to size a
+# clocked interview's script. Plain constants, not env knobs.
+QUESTION_SECONDS_BUDGET = 40
+CLOSING_RESERVE_SECONDS = 30
+
+
+def build_question_plan(domain: str, max_session_seconds: int | None = None) -> list[str]:
+    """The ordered node ids one interview will actually ask.
+
+    Without a clock (`max_session_seconds` None - dev tier, chat mode) the
+    plan is simply every node in script order. With a clock (prod tier), only
+    the top-K substantive questions fit: K = max(1, round((seconds -
+    CLOSING_RESERVE_SECONDS) / QUESTION_SECONDS_BUDGET)), chosen by rubric
+    weight (a node's weight is the max weight of its `rubric_categories`;
+    ties and the final ordering keep script order) - so a short session asks
+    the highest-signal questions and skipped categories simply go unscored
+    (the Evaluator's renormalization already handles that). The closing node
+    (the one pointing at END) is always kept and never counts against K."""
+    nodes = list(get_questionnaire(domain).values())
+    substantive = [node for node in nodes if node.next != "END"]
+    closing = [node for node in nodes if node.next == "END"]
+
+    if max_session_seconds is not None:
+        k = max(1, round((max_session_seconds - CLOSING_RESERVE_SECONDS) / QUESTION_SECONDS_BUDGET))
+        if k < len(substantive):
+            rubric = get_rubric()
+
+            def weight(node: QuestionNode) -> float:
+                return max(
+                    (rubric[c].weight for c in node.rubric_categories if c in rubric),
+                    default=0.0,
+                )
+
+            indexed = sorted(enumerate(substantive), key=lambda pair: (-weight(pair[1]), pair[0]))
+            kept = sorted(index for index, _ in indexed[:k])
+            substantive = [substantive[index] for index in kept]
+
+    return [node.id for node in substantive + closing]
+
+
 @lru_cache(maxsize=1)
 def get_rubric() -> dict[str, RubricCategory]:
     """Return the global Signal Matrix rubric keyed by category id, loaded from

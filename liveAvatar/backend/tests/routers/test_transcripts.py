@@ -184,6 +184,7 @@ def test_finalize_with_interview_returns_fast_and_enqueues_pipeline(
     )
     calls = _stub_enqueue(monkeypatch)
     state = _seed_interview()
+    state.vendor_context = "- Builds AI tooling for banks"
 
     response = client.post(
         "/api/transcript/finalize",
@@ -220,6 +221,8 @@ def test_finalize_with_interview_returns_fast_and_enqueues_pipeline(
         "contact_role": "CTO",
     }
     assert saved["domain"] == "ai_ml"
+    # The intake material's bullet summary rides along on the record.
+    assert saved["vendor_context"] == "- Builds AI tooling for banks"
     assert saved["pipeline_status"] == "interviewed"
     assert saved["summary"] == "Nice summary"
     assert saved["summary_ok"] is True

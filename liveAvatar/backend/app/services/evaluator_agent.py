@@ -138,10 +138,13 @@ async def score_interview(
     turns: list[TranscriptTurn],
     rubric: dict[str, RubricCategory],
     scout_findings: list[ScoutFinding],
+    vendor_context: str = "",
 ) -> Scorecard:
     """Score the whole interview with a single pro-model Gemini call and
-    return the final Scorecard. Raises on any HTTP/parse failure - the
-    finalize router decides how to soft-fail."""
+    return the final Scorecard. `vendor_context` is the bullet summary of the
+    intake material the vendor submitted up front (about-text/documents),
+    included as clearly self-reported background. Raises on any HTTP/parse
+    failure - the finalize router decides how to soft-fail."""
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured; cannot score the interview.")
 
@@ -150,6 +153,11 @@ async def score_interview(
         raise ValueError("Transcript is empty; nothing to score.")
 
     user_content = f"Interview transcript:\n{transcript_text}"
+    if vendor_context:
+        user_content = (
+            f"{user_content}\n\nVendor-provided background (self-reported by the vendor "
+            f"before the interview, not independently verified):\n{vendor_context}"
+        )
     if scout_findings:
         user_content = f"{user_content}\n\n{_render_findings(scout_findings)}"
 

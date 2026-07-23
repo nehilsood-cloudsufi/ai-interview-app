@@ -5,6 +5,7 @@ import yaml
 
 from app.config import settings
 from app.services.interview_config import (
+    build_question_plan,
     get_questionnaire,
     get_start_node_id,
     list_domains,
@@ -303,9 +304,40 @@ def test_all_shipped_questionnaires_load_and_validate():
         questionnaire = load_questionnaire(path)
         assert questionnaire.domain == path.stem
         assert questionnaire.title
-        assert next(iter(questionnaire.nodes)) == "intro"
+        # Onboarding nodes are gone (profile comes from the intake form) -
+        # every script must open straight on a substantive question.
+        assert "intro" not in questionnaire.nodes
+        assert "confirm_profile" not in questionnaire.nodes
         for node in questionnaire.nodes.values():
             for category_id in node.rubric_categories:
                 assert category_id in rubric, (
                     f"{path.name} question '{node.id}' references unknown rubric category '{category_id}'"
                 )
+
+
+# --- build_question_plan (top-K question sizing for clocked interviews) ---
+
+
+def test_build_question_plan_unclocked_is_full_script():
+    # No clock (dev tier, chat mode) -> every node in script order.
+    plan = build_question_plan("frontier_tech")
+    assert plan == list(get_questionnaire("frontier_tech"))
+
+
+def test_build_question_plan_long_session_keeps_everything():
+    # 600s fits far more than 7 questions - identical to the unclocked plan.
+    assert build_question_plan("frontier_tech", 600) == build_question_plan("frontier_tech")
+
+
+def test_build_question_plan_short_session_keeps_top_weights_in_script_order():
+    # 180s: K = round((180 - 30) / 40) = 4 -> the four heaviest rubric
+    # categories (interest .20, offerings .20, maturity .15, connectivity
+    # .15), kept in script order, plus the always-included closing.
+    plan = build_question_plan("frontier_tech", 180)
+    assert plan == ["theme_interest", "existing_offerings", "tech_maturity", "connectivity", "closing"]
+
+
+def test_build_question_plan_minimum_one_question():
+    # 60s: round((60 - 30) / 40) rounds to 1 -> the single heaviest question
+    # (interest and offerings tie at .20; script order breaks the tie).
+    assert build_question_plan("frontier_tech", 60) == ["theme_interest", "closing"]
