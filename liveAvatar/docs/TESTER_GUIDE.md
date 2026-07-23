@@ -89,7 +89,7 @@ script word-for-word. Each beat targets a specific past bug.
 
 | Beat | You say | Pass criteria |
 |---|---|---|
-| 1 | "Hi Noor. My name is **Neil**, an engineer at CloudSufi." → when she confirms: "Actually, it's **Nehil** — N-E-H-I-L." | Accepts the correction in one sentence, stays on topic, card shows the corrected name, never re-asks it |
+| 1 | "Hi Noor. My name is **[a wrong version of your name]**, an engineer at CloudSufi." → when she confirms: "Actually, it's **[your real name]** — then spell it out letter by letter." | Accepts the correction in one sentence, stays on topic, card shows the corrected name, never re-asks it |
 | 2 | "It's a strategic priority for us… *(pause 2 s mid-thought)* …because our clients keep asking for frontier-tech solutions." | She waits through your pause; ONE reply to the whole thought; no question gets skipped |
 | 3 | "We've built some AI things for clients." → after her probe: "We've shipped document-intelligence pipelines for Google and Swarovski, and we're building an agentic support system for Aramco." | She digs deeper on the thin answer instead of moving on; her follow-up relates to what she just asked |
 | 4 | "Quick question — what does RAG actually mean?" | One-liner/deferral, then back to HER question; script does not advance |
