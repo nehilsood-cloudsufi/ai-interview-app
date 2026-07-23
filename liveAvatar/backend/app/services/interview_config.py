@@ -51,10 +51,16 @@ class QuestionNode:
 @dataclass(frozen=True)
 class ValueOption:
     """One categorical choice within a rubric category: a human `label` the
-    Evaluator picks (e.g. "Strategic") and the `points` it resolves to."""
+    Evaluator picks (e.g. "Strategic") and the `points` it resolves to.
+    `aliases` are alternate phrasings the Evaluator LLM sometimes uses
+    instead of the canonical label (e.g. "Proprietary" for "Native") -
+    matched exactly (case-insensitively) in `evaluator_agent._resolve_value`,
+    never as a substring/fuzzy match. Optional and empty by default so
+    rubric YAML without aliases still loads unchanged."""
 
     label: str
     points: float
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -141,6 +147,24 @@ def _validate_questionnaire(nodes: dict[str, QuestionNode]) -> None:
         raise ValueError(f"questionnaire has unreachable question(s): {sorted(orphans)}")
 
 
+def _parse_aliases(raw_aliases: object, category_id: str, label: str) -> tuple[str, ...]:
+    """Validate and normalize a value_option's optional `aliases:` list: must
+    be a list of non-empty strings if present at all; absent (None) becomes
+    an empty tuple so existing rubric YAML without aliases is unaffected.
+    Raises `ValueError` (naming the offending category/label) on any other
+    shape."""
+    if raw_aliases is None:
+        return ()
+    if not isinstance(raw_aliases, list) or not all(
+        isinstance(alias, str) and alias.strip() for alias in raw_aliases
+    ):
+        raise ValueError(
+            f"rubric category '{category_id}' value_option '{label}' aliases must be "
+            "a list of non-empty strings"
+        )
+    return tuple(raw_aliases)
+
+
 def load_rubric(path: Path) -> dict[str, RubricCategory]:
     """Parse and validate the Signal Matrix rubric YAML into `RubricCategory`
     objects keyed by id. Runs `_validate_rubric` on the result, so it raises
@@ -154,7 +178,11 @@ def load_rubric(path: Path) -> dict[str, RubricCategory]:
             weight=entry["weight"],
             description=entry["description"].strip(),
             value_options=[
-                ValueOption(label=option["label"], points=option["points"])
+                ValueOption(
+                    label=option["label"],
+                    points=option["points"],
+                    aliases=_parse_aliases(option.get("aliases"), entry["id"], option["label"]),
+                )
                 for option in entry["value_options"]
             ],
         )

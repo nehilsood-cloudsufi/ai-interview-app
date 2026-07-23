@@ -218,6 +218,48 @@ def test_load_rubric_value_option_points_out_of_range_raises(tmp_path, bad_point
         load_rubric(path)
 
 
+# --- value_option aliases (paraphrase-tolerant Evaluator label matching) ---
+
+
+def test_load_rubric_value_option_aliases_parsed(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"][0]["aliases"] = ["Profound", "In-depth"]
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    categories = load_rubric(path)
+
+    assert categories["experience"].value_options[0].aliases == ("Profound", "In-depth")
+
+
+def test_load_rubric_value_option_aliases_default_empty(tmp_path):
+    # No `aliases:` key at all -> defaults to an empty tuple so existing
+    # rubric YAML (without aliases) loads unchanged.
+    path = _write_yaml(tmp_path / "r.yaml", _valid_rubric_data())
+
+    categories = load_rubric(path)
+
+    assert categories["experience"].value_options[0].aliases == ()
+    assert categories["capability"].value_options[0].aliases == ()
+
+
+def test_load_rubric_value_option_aliases_not_a_list_raises(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"][0]["aliases"] = "not-a-list"
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(ValueError, match="alias"):
+        load_rubric(path)
+
+
+def test_load_rubric_value_option_aliases_empty_string_raises(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"][0]["aliases"] = ["ok", ""]
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(ValueError, match="alias"):
+        load_rubric(path)
+
+
 def test_shipped_rubric_loads_and_weights_sum_to_one():
     categories = load_rubric(Path(settings.rubric_path))
     assert abs(sum(c.weight for c in categories.values()) - 1.0) < 0.01

@@ -77,6 +77,15 @@ def test_settings_prompt_content():
     assert "Topics Covered" in settings.interview_summary_prompt
 
 
+def test_evaluator_system_prompt_requires_verbatim_labels():
+    # Guards against paraphrased labels (e.g. "Proprietary" instead of
+    # "Native") slipping past _resolve_value's exact match.
+    assert (
+        "Copy the chosen value EXACTLY as it appears in the allowed list, "
+        "character for character - do not paraphrase, translate, or reword it."
+    ) in settings.evaluator_system_prompt
+
+
 def test_host_chat_mode_prompt_default():
     fresh = Settings(liveavatar_api_key=None, gemini_api_key=None, gcs_bucket=None)
     assert "typing in a text chat" in fresh.host_chat_mode_prompt

@@ -54,8 +54,8 @@ categories:
       Whether the core technology is proprietary/Native, or a Wrapper
       dependent on another vendor's API.
     value_options:
-      - {label: "Native", points: 100}
-      - {label: "Wrapper", points: 40}
+      - {label: "Native", points: 100, aliases: ["Proprietary", "In-house", "Built in-house", "Native/proprietary"]}
+      - {label: "Wrapper", points: 40, aliases: ["Third-party", "Wrapper/third-party"]}
 
   - id: team
     name: Team Focus

@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 import pytest
@@ -113,6 +114,45 @@ async def test_unparsable_text_returns_empty(patch_settings):
     findings = await run(state)
 
     assert findings == []
+
+
+@respx.mock
+async def test_malformed_json_then_valid_retries_once_and_returns_findings(patch_settings, caplog):
+    patch_settings(gemini_api_key="gem-key", gemini_native_base_url=NATIVE_BASE_URL)
+    route = respx.post(model_url("gemini-flash-latest")).mock(
+        side_effect=[
+            httpx.Response(
+                200, json={"candidates": [{"content": {"parts": [{"text": "not json at all"}]}}]}
+            ),
+            gemini_response(None),
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.services.scout_agent"):
+        state = make_state()
+        findings = await run(state)
+
+    assert route.call_count == 2
+    assert len(findings) == 2
+    assert "retrying once" in caplog.text
+
+
+@respx.mock
+async def test_malformed_json_twice_soft_fails_with_warning(patch_settings, caplog):
+    patch_settings(gemini_api_key="gem-key", gemini_native_base_url=NATIVE_BASE_URL)
+    route = respx.post(model_url("gemini-flash-latest")).mock(
+        return_value=httpx.Response(
+            200, json={"candidates": [{"content": {"parts": [{"text": "not json at all"}]}}]}
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.services.scout_agent"):
+        state = make_state()
+        findings = await run(state)
+
+    assert route.call_count == 2
+    assert findings == []
+    assert "retrying once" in caplog.text
 
 
 @respx.mock
