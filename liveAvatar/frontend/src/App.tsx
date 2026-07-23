@@ -163,7 +163,6 @@ function App() {
               <div className="w-full max-w-2xl mx-auto shrink-0">
                 <ProfileCard
                   profile={vendorProfile.profile!}
-                  isOnboarding={vendorProfile.isOnboarding}
                   onSave={vendorProfile.saveProfile}
                 />
               </div>
@@ -199,7 +198,6 @@ function App() {
                       <div className="row-start-1">
                         <ProfileCard
                           profile={vendorProfile.profile!}
-                          isOnboarding={vendorProfile.isOnboarding}
                           onSave={vendorProfile.saveProfile}
                         />
                       </div>

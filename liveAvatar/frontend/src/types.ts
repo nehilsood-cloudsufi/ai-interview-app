@@ -24,6 +24,15 @@ export interface CreateInterviewResponse {
   interview_id: string;
 }
 
+// POST /api/interview/{id}/document response (backend UploadDocumentResponse).
+// Oversize documents are trimmed to the intake word limit, never rejected —
+// `truncated` drives the StartScreen's short trim notice.
+export interface UploadDocumentResponse {
+  filename: string;
+  word_count: number;
+  truncated: boolean;
+}
+
 // GET /api/domains -> DomainsResponse. Dev stand-in for the admin-assigned
 // domain: the vendor picks one on the start screen.
 export interface DomainInfo {
