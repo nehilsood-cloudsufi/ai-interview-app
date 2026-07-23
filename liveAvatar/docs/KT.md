@@ -163,24 +163,26 @@ Branches: `main` = stable/released, `dev` = integration. Both tiers exist in eve
 
 ### Production deploy recipe
 
-One-time setup: `./deploy_setup.sh` (creates the `LIVEAVATAR_API_KEY` secret in Secret Manager and binds IAM). Then, from the repo root on `main`:
+One-time setup: `./deploy_setup.sh` (creates the `LIVEAVATAR_API_KEY` secret in Secret Manager and binds IAM); create `GEMINI_API_KEY` and `DEMO_PASSCODE` secrets the same way (all keys travel via Secret Manager, not plain env vars), and a transcripts bucket with `roles/storage.objectAdmin` for the Cloud Run runtime SA. Then, from the repo root on the branch being released (the live 2026-07-23 deployment: service `liveavatar-demo`, project `dc-un-499210`, region `us-central1`, branch `dev`):
 
 ```bash
-gcloud run deploy resonance \
+gcloud run deploy <service> \
   --source liveAvatar \
   --region <region> \
   --allow-unauthenticated \
   --no-cpu-throttling \
-  --update-secrets LIVEAVATAR_API_KEY=LIVEAVATAR_API_KEY:latest \
-  --set-env-vars "PROD_AVATAR_ID=<public-avatar-id>,DEMO_PASSCODE=<passcode>,GEMINI_API_KEY=<key>,GCS_BUCKET=<bucket>"
+  --update-secrets "LIVEAVATAR_API_KEY=LIVEAVATAR_API_KEY:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,DEMO_PASSCODE=DEMO_PASSCODE:latest" \
+  --update-env-vars "PROD_AVATAR_ID=<public-avatar-id>,PROD_VOICE_ID=<voice-id>,DEFAULT_DOMAIN=frontier_tech,GCS_BUCKET=<bucket>,HOST_STREAMING_ENABLED=true"
 ```
 
-`PUBLIC_BASE_URL` is a chicken-and-egg: HeyGen needs the service URL, which doesn't exist until the first deploy. So deploy once without it (session creation 503s until it's set), grab the URL from the deploy output, then:
+`PUBLIC_BASE_URL` is a chicken-and-egg on the FIRST deploy only: HeyGen needs the service URL, which doesn't exist until the first deploy. So deploy once without it (session creation 503s until it's set), grab the URL from the deploy output, then:
 
 ```bash
-gcloud run services update resonance --region <region> \
-  --set-env-vars PUBLIC_BASE_URL=<service-url>
+gcloud run services update <service> --region <region> \
+  --update-env-vars PUBLIC_BASE_URL=<service-url>
 ```
+
+On later deploys the URL already exists — include `PUBLIC_BASE_URL=<service-url>` in the deploy's `--update-env-vars` directly.
 
 Then `https://<service-url>/` is the free dev-tier experience and `https://<service-url>/prod` is the credit-burning demo tier (needs the passcode).
 

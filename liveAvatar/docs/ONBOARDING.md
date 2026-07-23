@@ -293,19 +293,27 @@ compiled static files directly (on port 8080) — no CORS, one service.
 **One-time:** `./deploy_setup.sh` (from `liveAvatar/`) provisions the
 `LIVEAVATAR_API_KEY` secret in Google Cloud Secret Manager and binds the IAM so
 Cloud Run can read it. It reads the key from `$LIVEAVATAR_API_KEY` — export it
-first, it isn't hardcoded.
+first, it isn't hardcoded. Create `GEMINI_API_KEY` and `DEMO_PASSCODE` as
+secrets the same way (`printf '%s' "$KEY" | gcloud secrets create NAME
+--data-file=-` + a `roles/secretmanager.secretAccessor` binding for the Cloud
+Run runtime service account) — all three keys travel via Secret Manager, never
+as plain `--set-env-vars` values. You also need a GCS bucket for transcripts
+(`gcloud storage buckets create gs://<bucket> --location=<region>
+--uniform-bucket-level-access`, plus `roles/storage.objectAdmin` for the same
+runtime SA).
 
-**Deploy** (mirrors `docs/KT.md` §6 — read there for the full rationale). From
-the repo root:
+**Deploy** (mirrors `docs/KT.md` §6 — read there for the full rationale; this
+is the exact shape of the live 2026-07-23 deployment, service
+`liveavatar-demo` in project `dc-un-499210`). From the repo root:
 
 ```bash
-gcloud run deploy resonance \
+gcloud run deploy <service> \
   --source liveAvatar \
   --region <region> \
   --allow-unauthenticated \
   --no-cpu-throttling \
-  --update-secrets LIVEAVATAR_API_KEY=LIVEAVATAR_API_KEY:latest \
-  --set-env-vars "PROD_AVATAR_ID=<public-avatar-id>,DEMO_PASSCODE=<passcode>,GEMINI_API_KEY=<key>,GCS_BUCKET=<bucket>"
+  --update-secrets "LIVEAVATAR_API_KEY=LIVEAVATAR_API_KEY:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,DEMO_PASSCODE=DEMO_PASSCODE:latest" \
+  --update-env-vars "PROD_AVATAR_ID=<public-avatar-id>,PROD_VOICE_ID=<voice-id>,DEFAULT_DOMAIN=frontier_tech,GCS_BUCKET=<bucket>,HOST_STREAMING_ENABLED=true"
 ```
 
 `--source liveAvatar` makes `liveAvatar/` the build context, so `.dockerignore`
@@ -313,14 +321,18 @@ gcloud run deploy resonance \
 as `--build-arg VITE_SHOW_SELF_VIEW=...` / `--build-arg VITE_SESSIONS_SHEET_URL=...`
 if you need non-default values.
 
-**`PUBLIC_BASE_URL` is a chicken-and-egg:** HeyGen needs the service URL, which
-doesn't exist until the first deploy. So deploy once without it (avatar session
-creation 503s until it's set), grab the URL from the deploy output, then:
+**`PUBLIC_BASE_URL` is a chicken-and-egg on the FIRST deploy only:** HeyGen
+needs the service URL, which doesn't exist until the first deploy. So deploy
+once without it (avatar session creation 503s until it's set), grab the URL
+from the deploy output, then:
 
 ```bash
-gcloud run services update resonance --region <region> \
-  --set-env-vars PUBLIC_BASE_URL=<service-url>
+gcloud run services update <service> --region <region> \
+  --update-env-vars PUBLIC_BASE_URL=<service-url>
 ```
+
+On every later deploy the URL already exists, so just include
+`PUBLIC_BASE_URL=<service-url>` in the deploy's `--update-env-vars` directly.
 
 `https://<service-url>/` is the free dev tier; `https://<service-url>/prod` is
 the credit-burning demo tier (needs the passcode).
