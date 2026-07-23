@@ -679,6 +679,44 @@ async def test_stream_turn_truncated_trailing_json_keeps_spoken_reply(patch_sett
     assert state.turns == []
 
 
+@respx.mock
+async def test_stream_turn_consecutive_soft_fails_switch_fallback_reply(patch_settings):
+    # Streaming counterpart of test_consecutive_soft_fails_switch_fallback_reply:
+    # HOST_STREAMING_ENABLED routes every avatar turn through stream_turn, so
+    # its nothing-emitted failure branch must mirror the buffered escape
+    # hatch fully - otherwise a wedged streaming interview would loop the
+    # plain fallback line forever with only WARNINGs, the exact failure mode
+    # the escape hatch exists to surface.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(
+        side_effect=[
+            httpx.Response(500),
+            httpx.Response(500),
+            stream_response(reply="Great, thanks!"),
+        ]
+    )
+    state = make_state()
+    questionnaire = make_questionnaire()
+
+    first_deltas, first_outcome = await _collect_stream(state, "Hello?", questionnaire, make_rubric())
+    assert "".join(first_deltas) == settings.host_fallback_reply
+    assert first_outcome.result.reply == settings.host_fallback_reply
+    assert state.consecutive_soft_fails == 1
+
+    second_deltas, second_outcome = await _collect_stream(state, "Hello?", questionnaire, make_rubric())
+    assert "".join(second_deltas) == settings.host_fallback_reply_repeat
+    assert second_outcome.result.reply == settings.host_fallback_reply_repeat
+    assert state.consecutive_soft_fails == 2
+
+    third_deltas, third_outcome = await _collect_stream(
+        state, "We build ML pipelines.", questionnaire, make_rubric()
+    )
+    assert "".join(third_deltas) == "Great, thanks!"
+    assert state.consecutive_soft_fails == 0
+
+    assert route.call_count == 3
+
+
 # host_agent must be listed in conftest._SETTINGS_IMPORTERS or patch_settings
 # silently won't reach it; this guards against that regression.
 def test_host_agent_settings_are_patchable(patch_settings):

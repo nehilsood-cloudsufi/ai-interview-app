@@ -464,9 +464,10 @@ async def _handle_turn(
             )
         else:
             logger.warning(
-                "Host turn failed for interview %s at node %s; returning fallback reply.",
+                "Host turn failed for interview %s at node %s (mode=%s); returning fallback reply.",
                 state.interview_id,
                 state.current_node_id,
+                mode,
                 exc_info=True,
             )
         fallback_reply = (
@@ -665,29 +666,57 @@ async def _stream_turn(
         # Reset before any state mutation below - mirrors _handle_turn's reset.
         state.consecutive_soft_fails = 0
     except Exception:
-        logger.warning(
-            "Streaming host turn failed for interview %s at node %s.",
-            state.interview_id,
-            state.current_node_id,
-            exc_info=True,
-        )
         if not extractor.emitted:
             # Nothing was spoken - a full soft-fail, same as the buffered
-            # path, so the counter is bumped here too (kept in step with
-            # _handle_turn's escape hatch for Cloud Logging visibility). The
-            # counter never gates or mutates script state either way.
+            # path, so the counter mirrors _handle_turn's full escalation
+            # here: increment, WARNING->ERROR at 2+ consecutive failures
+            # (count + mode, so a wedged streaming interview - the default
+            # avatar path whenever HOST_STREAMING_ENABLED is set - is just as
+            # loud in Cloud Logging), and the repeat-fallback reply at 2+.
+            # The counter never gates or mutates script state either way.
             state.consecutive_soft_fails += 1
+            if state.consecutive_soft_fails >= 2:
+                logger.error(
+                    "Streaming host turn failed for interview %s at node %s (mode=%s); "
+                    "%d consecutive failures - interview may be wedged.",
+                    state.interview_id,
+                    state.current_node_id,
+                    mode,
+                    state.consecutive_soft_fails,
+                    exc_info=True,
+                )
+            else:
+                logger.warning(
+                    "Streaming host turn failed for interview %s at node %s (mode=%s).",
+                    state.interview_id,
+                    state.current_node_id,
+                    mode,
+                    exc_info=True,
+                )
+            fallback_reply = (
+                settings.host_fallback_reply_repeat
+                if state.consecutive_soft_fails >= 2
+                else settings.host_fallback_reply
+            )
             outcome.result = TurnResult(
-                reply=settings.host_fallback_reply,
+                reply=fallback_reply,
                 answer_complete=False,
                 completed_question=None,
                 answer_text="",
             )
-            yield settings.host_fallback_reply
+            yield fallback_reply
         else:
             # A partially-spoken reply keeps the existing contract: the
             # already-spoken text stands as-is, so the counter is untouched
             # here (switching the reply mid-stream is not an option).
+            logger.warning(
+                "Streaming host turn failed for interview %s at node %s (mode=%s) after a "
+                "partial reply.",
+                state.interview_id,
+                state.current_node_id,
+                mode,
+                exc_info=True,
+            )
             outcome.result = TurnResult(
                 reply=extractor.emitted,
                 answer_complete=False,
