@@ -7,7 +7,7 @@ import type {
   InterviewStateResponse,
   PipelineStatus,
   ScorecardData,
-  ScoutFinding,
+  ScoutReport,
   TranscriptTurn,
 } from '../types';
 
@@ -28,11 +28,11 @@ interface SummaryState {
   // Scorecard / research insights / follow-up recommendation. Null at finalize;
   // filled in as the background pipeline reports them via state polling.
   scorecard: ScorecardData | null;
-  // Scout research findings. Intentionally NOT rendered anywhere in the
-  // SummaryPanel UI — the interview must stay unbiased by company research, so
-  // the findings reach the human reviewer only via the downloaded Markdown
-  // record (utils/downloadTranscript.ts). Kept here purely to feed that export.
-  insights: ScoutFinding[] | null;
+  // Scout research report. The interview itself stays unbiased (Scout runs
+  // strictly after the interview ends), but the finished report is rendered
+  // in the SummaryPanel once it arrives, and included in the downloaded
+  // Markdown record (utils/downloadTranscript.ts).
+  insights: ScoutReport | null;
   recommendation: FollowupRecommendation | null;
   // True once the pipeline reports its Evaluator call itself failed (e.g. a
   // too-short transcript) - scorecard stays null in that case too, but this

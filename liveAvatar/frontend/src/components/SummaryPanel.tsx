@@ -1,5 +1,5 @@
 import { X, Download, Loader2, AlertTriangle, Check, ExternalLink } from 'lucide-react';
-import type { FollowupRecommendation, PipelineStatus, ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
+import type { FollowupRecommendation, PipelineStatus, ScorecardData, ScoutReport, TranscriptTurn } from '../types';
 import { SESSIONS_SHEET_URL } from '../config';
 import { downloadTranscript } from '../utils/downloadTranscript';
 import { FollowupPanel } from './FollowupPanel';
@@ -17,10 +17,10 @@ interface SummaryPanelProps {
   // included in the downloadable Markdown record.
   pipelineStatus?: PipelineStatus | null;
   scorecard?: ScorecardData | null;
-  // Plumbed in but DELIBERATELY not rendered in this panel - Scout findings
-  // reach the human only through the downloaded Markdown record
-  // (utils/downloadTranscript.ts). Do not "fix" this by rendering them here.
-  insights?: ScoutFinding[] | null;
+  // The Data Scout Agent's research report, once the background pipeline
+  // fills it in. Also included in the downloaded Markdown record
+  // (utils/downloadTranscript.ts).
+  insights?: ScoutReport | null;
   recommendation?: FollowupRecommendation | null;
   // True once the pipeline reports its Evaluator call itself failed (e.g. a
   // too-short transcript) - drives the amber note shown in place of the
@@ -97,14 +97,65 @@ function PipelineStrip({ status }: { status: PipelineStatus }) {
 }
 
 /**
+ * The Data Scout Agent's research report: the synthesized Markdown write-up
+ * plus any factual claims it extracted from the transcript/intake material.
+ * Renders nothing when there's no report yet (still scouting) or synthesis
+ * failed with nothing usable to show.
+ */
+function ScoutReportSection({ report }: { report: ScoutReport | null | undefined }) {
+  // Array.isArray guard: a stale backend still serving the pre-migration
+  // insights shape (a findings array) is truthy but has no .interview_claims,
+  // which would otherwise throw on the .length access below and blank the
+  // whole panel (no error boundary catches it) instead of just omitting
+  // this section.
+  if (!report || Array.isArray(report)) return null;
+  if (!report.internet_findings && report.interview_claims.length === 0) {
+    if (report.findings_ok) return null;
+    return (
+      <section>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
+          Data Scout Report
+        </h3>
+        <p className="text-sm text-slate-500 italic">Research could not be completed for this interview.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
+        Data Scout Report
+      </h3>
+      {report.interview_claims.length > 0 && (
+        <div className="mb-4">
+          <h4 className="text-xs font-semibold text-slate-400 mb-2">Claims made in the interview</h4>
+          <ul className="list-disc list-inside space-y-1 text-sm text-slate-300">
+            {report.interview_claims.map((claim, i) => (
+              <li key={i}>{claim}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {report.internet_findings ? (
+        <pre className="whitespace-pre-wrap font-sans text-sm text-slate-200 leading-relaxed">
+          {report.internet_findings}
+        </pre>
+      ) : (
+        <p className="text-sm text-slate-500 italic">Research synthesis did not complete for this interview.</p>
+      )}
+    </section>
+  );
+}
+
+/**
  * The end-of-interview results overlay (a full-screen modal). App mounts it
  * always and flips `visible` on once finalize begins. It fills in
  * progressively as the post-interview pipeline runs (polled into App by
  * useInterviewSummary): the Gemini summary, a PipelineStrip of the
  * scouting -> evaluating -> ready steps, the ScorecardPanel, an optional
- * FollowupPanel recommendation, and the full transcript. The Download button
- * writes the whole record - including the Scout findings that never render
- * here - to Markdown via downloadTranscript.
+ * FollowupPanel recommendation, the Data Scout Agent's research report, and
+ * the full transcript. The Download button writes the whole record to
+ * Markdown via downloadTranscript.
  */
 export function SummaryPanel({
   visible,
@@ -203,6 +254,9 @@ export function SummaryPanel({
 
           {/* Follow-up recommendation card (only when one was recommended) */}
           {!isGenerating && <FollowupPanel recommendation={recommendation} scorecard={scorecard} />}
+
+          {/* Data Scout Agent's research report, once the pipeline fills it in */}
+          {!isGenerating && <ScoutReportSection report={insights} />}
 
           {/* Full transcript section */}
           <section>

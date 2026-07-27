@@ -27,9 +27,17 @@ _SETTINGS_IMPORTERS = [
     "app.services.gemini_client",
     "app.services.host_agent",
     "app.services.evaluator_agent",
-    "app.services.scout_agent",
+    "app.services.pipeline",
     "app.services.transcript_store",
     "app.services.summary_service",
+    # Data Scout Agent - now also the automatic post-interview scout,
+    # sequenced from app.services.pipeline. Note: app.routers.scout itself no
+    # longer imports settings directly (no file-upload limits to check), so
+    # it's not listed here.
+    "app.services.github_client",
+    "app.services.web_search_client",
+    "app.services.data_scout_agent",
+    "app.services.scout_store",
 ]
 
 
@@ -99,6 +107,13 @@ def reset_interview_state():
 def tmp_transcripts_dir(tmp_path, patch_settings):
     directory = tmp_path / "transcripts"
     patch_settings(transcripts_local_dir=str(directory), gcs_bucket=None)
+    return directory
+
+
+@pytest.fixture
+def tmp_scout_dir(tmp_path, patch_settings):
+    directory = tmp_path / "scout_reports"
+    patch_settings(scout_local_dir=str(directory), gcs_bucket=None)
     return directory
 
 

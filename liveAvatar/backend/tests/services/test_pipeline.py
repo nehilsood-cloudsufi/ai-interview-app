@@ -1,10 +1,17 @@
 import logging
 
 from app.models import TranscriptTurn
-from app.services import coordinator_agent, evaluator_agent, interview_state, pipeline, scout_agent, transcript_store
+from app.services import (
+    coordinator_agent,
+    data_scout_agent,
+    evaluator_agent,
+    interview_state,
+    pipeline,
+    transcript_store,
+)
 from app.services.evaluator_agent import CategoryScore, Scorecard
 from app.services.interview_config import get_rubric
-from app.services.interview_state import ScoutFinding, VendorProfile
+from app.services.interview_state import VendorProfile
 
 
 def make_state() -> interview_state.InterviewState:
@@ -48,16 +55,28 @@ def make_payload(session_id: str = "sid") -> dict:
     }
 
 
+def make_scout_result(**overrides) -> dict:
+    result = {
+        "internet_findings": "No recent press.",
+        "interview_claims": [],
+        "sources": {"blind_search": []},
+        "findings_ok": True,
+        "company_website": None,
+    }
+    result.update(overrides)
+    return result
+
+
 async def test_run_happy_path_transitions_scouting_evaluating_ready(monkeypatch):
     transitions: list[tuple[str, str | None]] = []
-    findings = [ScoutFinding(topic="news", summary="No recent press.", source_url=None)]
+    scout_result = make_scout_result()
     scorecard = make_scorecard({"interest": 80.0}, overall=80.0)
 
-    async def fake_scout_run(state):
+    async def fake_run_scout(company_name, representative_name, representative_role, extra_context, documents, transcript):
         transitions.append(("scout", state.pipeline_status))
-        return findings
+        return scout_result
 
-    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
         transitions.append(("evaluator", state.pipeline_status))
         return scorecard
 
@@ -66,7 +85,7 @@ async def test_run_happy_path_transitions_scouting_evaluating_ready(monkeypatch)
     async def fake_save(session_id, payload):
         save_calls.append((session_id, dict(payload)))
 
-    monkeypatch.setattr(scout_agent, "run", fake_scout_run)
+    monkeypatch.setattr(data_scout_agent, "run_scout", fake_run_scout)
     monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
     monkeypatch.setattr(transcript_store, "save", fake_save)
 
@@ -78,6 +97,8 @@ async def test_run_happy_path_transitions_scouting_evaluating_ready(monkeypatch)
     assert transitions == [("scout", "scouting"), ("evaluator", "evaluating")]
     assert state.pipeline_status == "ready"
     assert state.scorecard == scorecard
+    assert state.scout_report is not None
+    assert state.scout_report.internet_findings == "No recent press."
     # interest 80.0 -> overall 80.0 >= advance threshold (70) -> a real
     # (unmocked) coordinator recommendation.
     assert state.recommendation is not None
@@ -87,21 +108,22 @@ async def test_run_happy_path_transitions_scouting_evaluating_ready(monkeypatch)
     saved_session_id, saved_payload = save_calls[0]
     assert saved_session_id == "sid"
     assert saved_payload["pipeline_status"] == "ready"
-    assert saved_payload["scout_findings"] == [{"topic": "news", "summary": "No recent press.", "source_url": None}]
+    assert saved_payload["scout_report"]["internet_findings"] == "No recent press."
     assert saved_payload["scorecard"]["overall"] == 80.0
     assert saved_payload["recommendation"]["kind"] == "advance"
     # Legacy fields untouched.
     assert saved_payload["summary"] == "a summary"
 
 
-async def test_scout_soft_fail_empty_findings_still_reaches_ready(monkeypatch):
+async def test_scout_disabled_skips_scout_and_still_reaches_ready(monkeypatch, patch_settings):
+    patch_settings(scout_enabled=False)
     scorecard = make_scorecard({"interest": 60.0}, overall=60.0)
 
-    async def fake_scout_run(state):
-        return []  # Scout's own soft-fail contract.
+    async def fake_run_scout(*args, **kwargs):
+        raise AssertionError("Scout must not run when scout_enabled is False")
 
-    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
-        assert scout_findings == []
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
+        assert scout_report is None
         return scorecard
 
     save_calls: list[dict] = []
@@ -109,7 +131,40 @@ async def test_scout_soft_fail_empty_findings_still_reaches_ready(monkeypatch):
     async def fake_save(session_id, payload):
         save_calls.append(dict(payload))
 
-    monkeypatch.setattr(scout_agent, "run", fake_scout_run)
+    monkeypatch.setattr(data_scout_agent, "run_scout", fake_run_scout)
+    monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
+    monkeypatch.setattr(transcript_store, "save", fake_save)
+
+    state = make_state()
+    await pipeline.run(state, "sid", make_payload())
+
+    assert state.pipeline_status == "ready"
+    assert state.scout_report is None
+    assert save_calls[0]["pipeline_status"] == "ready"
+    assert save_calls[0]["scout_report"] is None
+
+
+async def test_scout_synthesis_failure_still_reaches_ready(monkeypatch):
+    # data_scout_agent.run_scout soft-fails synthesis to findings_ok=False
+    # rather than raising - the pipeline must still proceed to evaluation
+    # with whatever report (findings_ok=False, empty internet_findings) it got.
+    scout_result = make_scout_result(internet_findings="", findings_ok=False)
+    scorecard = make_scorecard({"interest": 60.0}, overall=60.0)
+
+    async def fake_run_scout(company_name, representative_name, representative_role, extra_context, documents, transcript):
+        return scout_result
+
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
+        assert scout_report is not None
+        assert scout_report.findings_ok is False
+        return scorecard
+
+    save_calls: list[dict] = []
+
+    async def fake_save(session_id, payload):
+        save_calls.append(dict(payload))
+
+    monkeypatch.setattr(data_scout_agent, "run_scout", fake_run_scout)
     monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
     monkeypatch.setattr(transcript_store, "save", fake_save)
 
@@ -118,14 +173,14 @@ async def test_scout_soft_fail_empty_findings_still_reaches_ready(monkeypatch):
 
     assert state.pipeline_status == "ready"
     assert save_calls[0]["pipeline_status"] == "ready"
-    assert save_calls[0]["scout_findings"] == []
+    assert save_calls[0]["scout_report"]["findings_ok"] is False
 
 
 async def test_evaluator_raises_leaves_scorecard_and_recommendation_null_but_still_ready(monkeypatch, caplog):
-    async def fake_scout_run(state):
-        return []
+    async def fake_run_scout(company_name, representative_name, representative_role, extra_context, documents, transcript):
+        return make_scout_result()
 
-    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
         raise RuntimeError("scoring exploded")
 
     def _must_not_run(scorecard, rubric):
@@ -136,7 +191,7 @@ async def test_evaluator_raises_leaves_scorecard_and_recommendation_null_but_sti
     async def fake_save(session_id, payload):
         save_calls.append(dict(payload))
 
-    monkeypatch.setattr(scout_agent, "run", fake_scout_run)
+    monkeypatch.setattr(data_scout_agent, "run_scout", fake_run_scout)
     monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
     monkeypatch.setattr(coordinator_agent, "evaluate_followup", _must_not_run)
     monkeypatch.setattr(transcript_store, "save", fake_save)
@@ -161,10 +216,10 @@ async def test_evaluator_failure_sets_evaluation_failed_and_still_reaches_ready(
     # silently swallowed - state.evaluation_failed and the saved payload both
     # carry the flag so the frontend can tell the vendor scoring didn't run,
     # instead of just showing an empty scorecard with no explanation.
-    async def fake_scout_run(state):
-        return []
+    async def fake_run_scout(company_name, representative_name, representative_role, extra_context, documents, transcript):
+        return make_scout_result()
 
-    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
         raise ValueError("Transcript too short to score (fewer than 2 vendor answers).")
 
     save_calls: list[dict] = []
@@ -172,7 +227,7 @@ async def test_evaluator_failure_sets_evaluation_failed_and_still_reaches_ready(
     async def fake_save(session_id, payload):
         save_calls.append(dict(payload))
 
-    monkeypatch.setattr(scout_agent, "run", fake_scout_run)
+    monkeypatch.setattr(data_scout_agent, "run_scout", fake_run_scout)
     monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
     monkeypatch.setattr(transcript_store, "save", fake_save)
 
@@ -192,12 +247,12 @@ async def test_evaluator_failure_sets_evaluation_failed_and_still_reaches_ready(
 
 
 async def test_final_save_failure_marks_failed_and_attempts_resave(monkeypatch):
-    async def fake_scout_run(state):
-        return []
+    async def fake_run_scout(company_name, representative_name, representative_role, extra_context, documents, transcript):
+        return make_scout_result()
 
     scorecard = make_scorecard({"interest": 40.0}, overall=40.0)
 
-    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
         return scorecard
 
     save_payloads: list[dict] = []
@@ -206,7 +261,7 @@ async def test_final_save_failure_marks_failed_and_attempts_resave(monkeypatch):
         save_payloads.append(dict(payload))
         raise OSError("disk full")
 
-    monkeypatch.setattr(scout_agent, "run", fake_scout_run)
+    monkeypatch.setattr(data_scout_agent, "run_scout", fake_run_scout)
     monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
     monkeypatch.setattr(transcript_store, "save", fake_save)
 
@@ -229,12 +284,12 @@ async def test_ready_status_only_set_after_successful_save(monkeypatch):
     # state.pipeline_status must flip to "ready" only once the save that
     # carries the "ready" record has actually succeeded - not before, so a
     # save failure can never leave a transient "ready" visible to a poll.
-    async def fake_scout_run(state):
-        return []
+    async def fake_run_scout(company_name, representative_name, representative_role, extra_context, documents, transcript):
+        return make_scout_result()
 
     scorecard = make_scorecard({"interest": 80.0}, overall=80.0)
 
-    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
         return scorecard
 
     status_during_save: list[str | None] = []
@@ -242,7 +297,7 @@ async def test_ready_status_only_set_after_successful_save(monkeypatch):
     async def fake_save(session_id, payload):
         status_during_save.append(state.pipeline_status)
 
-    monkeypatch.setattr(scout_agent, "run", fake_scout_run)
+    monkeypatch.setattr(data_scout_agent, "run_scout", fake_run_scout)
     monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
     monkeypatch.setattr(transcript_store, "save", fake_save)
 
@@ -256,16 +311,16 @@ async def test_ready_status_only_set_after_successful_save(monkeypatch):
 
 
 async def test_resave_failure_after_final_save_failure_does_not_raise(monkeypatch, caplog):
-    async def fake_scout_run(state):
-        return []
+    async def fake_run_scout(company_name, representative_name, representative_role, extra_context, documents, transcript):
+        return make_scout_result()
 
-    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
         return make_scorecard({}, overall=None)
 
     async def fake_save(session_id, payload):
         raise OSError("disk full, always")
 
-    monkeypatch.setattr(scout_agent, "run", fake_scout_run)
+    monkeypatch.setattr(data_scout_agent, "run_scout", fake_run_scout)
     monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
     monkeypatch.setattr(transcript_store, "save", fake_save)
 
@@ -278,12 +333,12 @@ async def test_resave_failure_after_final_save_failure_does_not_raise(monkeypatc
 
 
 async def test_unexpected_exception_mid_run_marks_failed_and_attempts_resave(monkeypatch):
-    async def fake_scout_run(state):
-        return []
+    async def fake_run_scout(company_name, representative_name, representative_role, extra_context, documents, transcript):
+        return make_scout_result()
 
     scorecard = make_scorecard({"interest": 100.0}, overall=100.0)
 
-    async def fake_score_interview(turns, rubric, scout_findings, vendor_context=""):
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
         return scorecard
 
     def _boom(scorecard, rubric):
@@ -294,7 +349,7 @@ async def test_unexpected_exception_mid_run_marks_failed_and_attempts_resave(mon
     async def fake_save(session_id, payload):
         save_payloads.append(dict(payload))
 
-    monkeypatch.setattr(scout_agent, "run", fake_scout_run)
+    monkeypatch.setattr(data_scout_agent, "run_scout", fake_run_scout)
     monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
     monkeypatch.setattr(coordinator_agent, "evaluate_followup", _boom)
     monkeypatch.setattr(transcript_store, "save", fake_save)

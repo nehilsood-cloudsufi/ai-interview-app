@@ -2,8 +2,8 @@
 
 One `InterviewState` per interview holds everything the live interview and the
 post-interview pipeline need: the vendor profile, the running turn history, the
-current position in the domain questionnaire, follow-up accounting, Scout
-findings, the set of manually-corrected profile fields, and the eventual
+current position in the domain questionnaire, follow-up accounting, the Scout
+report, the set of manually-corrected profile fields, and the eventual
 pipeline status / scorecard / recommendation. States live in the module-level
 `_interviews` dict for the life of the process (no database), so a backend
 restart drops all in-flight interviews - acceptable for a POC. `create` prunes
@@ -17,11 +17,11 @@ import secrets
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.models import TranscriptTurn
 
-# evaluator_agent imports ScoutFinding from this module, and coordinator_agent
+# evaluator_agent imports ScoutReport from this module, and coordinator_agent
 # imports Scorecard from evaluator_agent - so a real (runtime) import of
 # either Scorecard or FollowupRecommendation here would be circular. They are
 # only needed for type-checking, so TYPE_CHECKING + string annotations keep
@@ -50,14 +50,22 @@ class VendorProfile:
 
 
 @dataclass
-class ScoutFinding:
-    """One item of post-interview company research produced by the Scout agent:
-    a topic, a short summary, and the grounding source URL (None when the
-    finding is not tied to a single citable page)."""
+class ScoutReport:
+    """The Data Scout Agent's full post-interview company research report
+    (app.services.data_scout_agent.run_scout - the same two-pass Tavily-backed
+    agent that also powers the standalone POST /api/scout tool). `internet_findings`
+    is the synthesized Markdown report, `interview_claims` are the factual
+    claims the agent extracted from the transcript/intake material,
+    `sources` is the raw structured data gathered (kept for completeness -
+    not currently rendered anywhere), `findings_ok` is False when synthesis
+    failed but sources were still gathered, and `company_website` is whatever
+    the agent derived (or None)."""
 
-    topic: str
-    summary: str
-    source_url: str | None
+    internet_findings: str
+    interview_claims: list[str]
+    sources: dict[str, Any]
+    findings_ok: bool
+    company_website: str | None
 
 
 @dataclass
@@ -68,7 +76,7 @@ class InterviewState:
     `gateway_token`, `domain`, `tier`, the questionnaire's start node) and
     mutated in place thereafter: `host_agent` appends `turns`, advances
     `current_node_id`, and updates `followup_count`/`vendor_profile`;
-    `pipeline` fills `scout_findings`, `scorecard`, `recommendation`, and drives
+    `pipeline` fills `scout_report`, `scorecard`, `recommendation`, and drives
     `pipeline_status`. The HeyGen resource ids (`heygen_session_id`,
     `llm_config_id`, `secret_id`, `context_id`) are recorded for later teardown.
     Most fields carry defaults so tests can construct a state directly without
@@ -121,7 +129,9 @@ class InterviewState:
     # failing turn gets (see host_agent._handle_turn / _stream_turn).
     consecutive_soft_fails: int = 0
     turns: list[TranscriptTurn] = field(default_factory=list)
-    scout_findings: list[ScoutFinding] = field(default_factory=list)
+    # Set by pipeline once the Data Scout Agent has run; None until then (or
+    # if the pipeline never ran at all).
+    scout_report: "ScoutReport | None" = None
     # Profile fields the vendor manually corrected via PATCH
     # /api/interview/{id}/profile - permanently locked against the Host's
     # LLM-reported profile_updates (manual wins; re-editing manually is

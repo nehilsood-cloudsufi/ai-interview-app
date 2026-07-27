@@ -34,7 +34,7 @@ from app.config import settings
 from app.models import TranscriptTurn
 from app.services import gemini_client
 from app.services.interview_config import RubricCategory
-from app.services.interview_state import ScoutFinding
+from app.services.interview_state import ScoutReport
 from app.services.llm_json import parse_llm_json
 from app.services.transcript_render import render_transcript
 
@@ -111,17 +111,22 @@ def _render_system_content(rubric: dict[str, RubricCategory]) -> str:
     return "\n".join(lines)
 
 
-def _render_findings(scout_findings: list[ScoutFinding]) -> str:
-    """Render the Data Scout's independent research as a labelled block for the
+def _render_findings(scout_report: ScoutReport) -> str:
+    """Render the Data Scout's synthesized report as a labelled block for the
     user message, so the Evaluator can weigh the vendor's claims against
-    external findings. Each finding contributes its topic and summary, plus its
-    source URL when one is present."""
-    lines = ["Independent research findings (from internet, not from the vendor):"]
-    for finding in scout_findings:
-        lines.append(f"- Topic: {finding.topic}")
-        lines.append(f"  Summary: {finding.summary}")
-        if finding.source_url:
-            lines.append(f"  Source: {finding.source_url}")
+    independent research. Only the finished write-up (`internet_findings`) and
+    the extracted `interview_claims` are passed in - not the raw `sources`
+    dict Scout gathered them from, which is far too large/granular to be
+    useful in a scoring prompt."""
+    lines = ["Independent research findings (from internet, not from the vendor):", ""]
+    if scout_report.interview_claims:
+        lines.append("Factual claims the vendor made, extracted for verification:")
+        lines.extend(f"- {claim}" for claim in scout_report.interview_claims)
+        lines.append("")
+    if scout_report.internet_findings:
+        lines.append(scout_report.internet_findings)
+    elif not scout_report.findings_ok:
+        lines.append("(Research synthesis failed for this interview; no findings available.)")
     return "\n".join(lines)
 
 
@@ -151,7 +156,7 @@ def _resolve_value(category: RubricCategory, raw_value: str) -> tuple[str, float
 async def score_interview(
     turns: list[TranscriptTurn],
     rubric: dict[str, RubricCategory],
-    scout_findings: list[ScoutFinding],
+    scout_report: ScoutReport | None,
     vendor_context: str = "",
 ) -> Scorecard:
     """Score the whole interview with a single pro-model Gemini call and
@@ -175,8 +180,8 @@ async def score_interview(
             f"{user_content}\n\nVendor-provided background (self-reported by the vendor "
             f"before the interview, not independently verified):\n{vendor_context}"
         )
-    if scout_findings:
-        user_content = f"{user_content}\n\n{_render_findings(scout_findings)}"
+    if scout_report is not None:
+        user_content = f"{user_content}\n\n{_render_findings(scout_report)}"
 
     payload = {
         "model": settings.gemini_pro_model,

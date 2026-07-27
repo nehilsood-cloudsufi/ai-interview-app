@@ -322,17 +322,21 @@ async def test_missing_gemini_key_raises(patch_settings):
 
 
 @respx.mock
-async def test_scout_findings_not_rendered_into_system_prompt(patch_settings):
+async def test_scout_report_not_rendered_into_system_prompt(patch_settings):
     # Unbiased-interview rule: the Scout runs strictly AFTER the interview, so
-    # its findings must never reach the Host's prompt even if present on state.
+    # its report must never reach the Host's prompt even if present on state.
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
-    from app.services.interview_state import ScoutFinding
+    from app.services.interview_state import ScoutReport
 
     state = make_state()
-    state.scout_findings = [
-        ScoutFinding(topic="funding", summary="Raised a Series B in 2025.", source_url="https://news.example/acme"),
-    ]
+    state.scout_report = ScoutReport(
+        internet_findings="**Funding:** Raised a Series B in 2025.",
+        interview_claims=["We raised a Series B in 2025."],
+        sources={},
+        findings_ok=True,
+        company_website=None,
+    )
 
     await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
 

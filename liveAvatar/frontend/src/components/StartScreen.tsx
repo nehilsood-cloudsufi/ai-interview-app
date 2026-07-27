@@ -7,6 +7,7 @@ import {
   Loader2,
   MessageSquareText,
   Paperclip,
+  Search,
   Sparkles,
   Video,
   X,
@@ -32,6 +33,9 @@ interface StartScreenProps {
   // durationSeconds is set only on the prod tier (the picked session length),
   // so the interview view can show a countdown instead of an elapsed timer.
   onStart: (interviewId: string, mode: InterviewMode, durationSeconds?: number) => void;
+  // Opens the standalone Data Scout research tool - independent of the
+  // interview flow.
+  onOpenScout: () => void;
 }
 
 /**
@@ -48,7 +52,7 @@ interface StartScreenProps {
  * calls `onStart` with the interview id, the chosen mode, and - prod only -
  * the picked duration in seconds so the room can show a countdown.
  */
-export function StartScreen({ onStart }: StartScreenProps) {
+export function StartScreen({ onStart, onOpenScout }: StartScreenProps) {
   const [pending, setPending] = useState<InterviewMode | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [domains, setDomains] = useState<DomainInfo[]>([]);
@@ -367,6 +371,14 @@ export function StartScreen({ onStart }: StartScreenProps) {
         <p className="text-xs text-slate-500 text-center px-4 leading-relaxed">
           Text chat is a low-bandwidth fallback — no camera or microphone needed.
         </p>
+
+        <button
+          onClick={onOpenScout}
+          className="w-full flex items-center justify-center gap-1.5 bg-slate-800/60 hover:bg-slate-800 text-slate-300 hover:text-white text-sm font-medium px-3.5 py-2 rounded-xl border border-slate-700/60 transition-colors"
+        >
+          <Search className="w-4 h-4" />
+          Data Scout
+        </button>
 
         {notices.length > 0 && (
           <div className="flex flex-col gap-1.5 text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">

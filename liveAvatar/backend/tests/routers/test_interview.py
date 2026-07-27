@@ -12,7 +12,7 @@ from app.services import host_agent, interview_state
 from app.services.coordinator_agent import FollowupRecommendation
 from app.services.evaluator_agent import CategoryScore, Scorecard
 from app.services.host_agent import TurnResult
-from app.services.interview_state import ScoutFinding, VendorProfile
+from app.services.interview_state import ScoutReport, VendorProfile
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 CHAT_URL = f"{GEMINI_BASE_URL}chat/completions"
@@ -251,7 +251,7 @@ def test_fresh_interview_state(client):
     assert body["recommendation"] is None
     assert body["evaluation_failed"] is False
 
-    assert body["insights"] == []
+    assert body["insights"] is None
 
     assert body["vendor_profile"] == {
         "company_name": "Acme Corp",
@@ -268,10 +268,13 @@ def test_seeded_interview_state(client):
     state = _seed_interview()
     state.status = "active"
     state.current_node_id = "ai_ml_depth"
-    state.scout_findings.append(
-        ScoutFinding(topic="reputation", summary="Solid reviews.", source_url="https://example.com/reviews")
+    state.scout_report = ScoutReport(
+        internet_findings="**Reputation:** Solid reviews.\n**News:** No recent press.",
+        interview_claims=[],
+        sources={"blind_search": []},
+        findings_ok=True,
+        company_website="https://acme.example",
     )
-    state.scout_findings.append(ScoutFinding(topic="news", summary="No recent press.", source_url=None))
 
     response = client.get(_url(state.interview_id))
 
@@ -283,10 +286,12 @@ def test_seeded_interview_state(client):
     assert body["scorecard"] is None
     assert body["recommendation"] is None
 
-    assert body["insights"] == [
-        {"topic": "reputation", "summary": "Solid reviews.", "source_url": "https://example.com/reviews"},
-        {"topic": "news", "summary": "No recent press.", "source_url": None},
-    ]
+    assert body["insights"] == {
+        "internet_findings": "**Reputation:** Solid reviews.\n**News:** No recent press.",
+        "interview_claims": [],
+        "findings_ok": True,
+        "company_website": "https://acme.example",
+    }
 
 
 def test_state_reflects_pipeline_progress(client):

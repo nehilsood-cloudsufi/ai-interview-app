@@ -62,7 +62,7 @@ same suite on every push/PR (`.github/workflows/ci.yml`).
   `sessions.py` (HeyGen session lifecycle), `llm_gateway.py` (the OpenAI-compatible
   endpoint HeyGen calls per utterance), `transcripts.py` (finalize + read back),
   `concurrency.py`.
-- `app/services/` — the four agents (`host_agent`, `scout_agent`, `evaluator_agent`,
+- `app/services/` — the four agents (`host_agent`, `data_scout_agent`, `evaluator_agent`,
   `coordinator_agent`), `pipeline.py` (the only orchestrator; background task with
   `pipeline_status` tracking), interview state/config, LiveAvatar client, Gemini
   client, transcript store (GCS/local), summary generation.
