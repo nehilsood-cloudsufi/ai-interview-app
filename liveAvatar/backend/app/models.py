@@ -10,9 +10,9 @@ the rest (`TranscriptTurn`, `CategoryScoreModel`, `ScorecardModel`,
 models. Inline comments on individual fields document the non-obvious ones.
 """
 
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class CreateSessionRequest(BaseModel):
@@ -98,15 +98,15 @@ class ScorecardModel(BaseModel):
 
 class ScoutReportModel(BaseModel):
     """The Data Scout Agent's full post-interview company research report
-    (nested as `insights` in the state and finalize responses) - the same
-    two-pass Tavily-backed agent (app.services.data_scout_agent) that also
-    powers the standalone POST /api/scout tool. `internet_findings` is the
-    synthesized Markdown report, `interview_claims` are the factual claims
-    extracted from the transcript/intake material, `findings_ok` is False
-    when synthesis failed but sources were still gathered, and
-    `company_website` is whatever the agent derived (or None). The raw
-    `sources` dict is deliberately NOT included here - it's far too large/
-    granular for the UI; see ScoutResponse below if that's ever needed."""
+    (nested as `insights` in the state and finalize responses) - the
+    two-pass Tavily-backed agent (app.services.data_scout_agent) triggered
+    automatically by app.services.pipeline once an interview finalizes.
+    `internet_findings` is the synthesized Markdown report, `interview_claims`
+    are the factual claims extracted from the transcript/intake material,
+    `findings_ok` is False when synthesis failed but sources were still
+    gathered, and `company_website` is whatever the agent derived (or None).
+    The raw `sources` dict is deliberately NOT included here - it's far too
+    large/granular for the UI."""
 
     internet_findings: str
     interview_claims: list[str]
@@ -298,52 +298,3 @@ class UpdateProfileResponse(BaseModel):
     # Sorted for determinism - the full set of profile fields ever manually
     # edited, which the Host's profile_updates merge will never overwrite.
     manually_edited_fields: list[str]
-
-
-class ScoutRequest(BaseModel):
-    """Request for the on-demand Data Scout Agent (POST /api/scout) - distinct
-    from the automatic post-interview scout wired into app.services.pipeline.
-    Mirrors the pre-interview intake form's fields (full name/company
-    required, role/extra context/documents optional) plus the interview
-    transcript, which arrives once the interview completes. There is no
-    dedicated website field - Scout derives the company website itself (see
-    app.services.data_scout_agent._derive_company_website)."""
-
-    company_name: str = Field(description="The company or organization name to research.")
-    representative_name: str = Field(description="Full name of the company representative who was (or will be) interviewed.")
-    representative_role: str | None = Field(
-        default=None, description="Optional role/title of the company representative."
-    )
-    extra_context: str | None = Field(
-        default=None,
-        description="Optional free text from the intake form's \"anything else about you or your company\" field.",
-    )
-    documents: list[str] | None = Field(
-        default=None,
-        description="Extracted text of up to 3 documents attached on the intake form.",
-    )
-    transcript: str | None = Field(
-        default=None,
-        description="Interview transcript text, available once the interview completes. When provided (along with extra_context/documents), triggers Pass B: factual-claim extraction and targeted research on those claims.",
-    )
-
-
-class ScoutResponse(BaseModel):
-    """Response for the on-demand Data Scout Agent (POST /api/scout). Shares
-    the same underlying agent (and report shape) as ScoutReportModel/insights
-    above (the automatic post-interview scout), but additionally exposes
-    `scout_id` and the raw `sources` dict, which the automatic pipeline path
-    deliberately omits from the UI-facing response.
-
-    internet_findings and interview_claims are deliberately separate, peer
-    fields - not one field with both blended together - so the frontend can
-    render them side by side without implying one verifies the other. Scout
-    only gathers and presents; the Evaluator does all comparison."""
-
-    scout_id: str = Field(description="Unique identifier for this scout report; usable with GET /api/scout/{scout_id} to retrieve it again.")
-    internet_findings: str = Field(description="The synthesized findings report in GitHub-flavored Markdown, or an empty string if synthesis failed (see findings_ok).")
-    interview_claims: list[str] = Field(default_factory=list, description="Factual claims extracted from the transcript, if one was provided; empty otherwise.")
-    sources: dict[str, Any] = Field(
-        default_factory=dict, description="Raw structured data gathered from public web sources, keyed by source type; only keys with actual data are present."
-    )
-    findings_ok: bool = Field(default=True, description="False when internet_findings synthesis failed but gathered sources were still saved.")

@@ -30,14 +30,16 @@ _SETTINGS_IMPORTERS = [
     "app.services.pipeline",
     "app.services.transcript_store",
     "app.services.summary_service",
-    # Data Scout Agent - now also the automatic post-interview scout,
-    # sequenced from app.services.pipeline. Note: app.routers.scout itself no
-    # longer imports settings directly (no file-upload limits to check), so
-    # it's not listed here.
-    "app.services.github_client",
+    # Data Scout Agent - the automatic post-interview scout, sequenced from
+    # app.services.pipeline. The standalone /api/scout tool (app.routers.scout,
+    # app.services.scout_store) and the GitHub-lookup feature
+    # (app.services.github_client) were both removed entirely; this shared
+    # core remains, now split across scout_utils (pure helpers), scout_gather
+    # (network I/O), and data_scout_agent (synthesis + public entry point).
     "app.services.web_search_client",
+    "app.services.scout_utils",
+    "app.services.scout_gather",
     "app.services.data_scout_agent",
-    "app.services.scout_store",
 ]
 
 

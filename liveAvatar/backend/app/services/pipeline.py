@@ -48,7 +48,6 @@ async def run(state: InterviewState, session_id: str, payload: dict) -> None:
             scout_result = await data_scout_agent.run_scout(
                 profile.company_name,
                 profile.contact_name,
-                profile.contact_role,
                 state.vendor_context,
                 None,
                 render_transcript(state.turns),

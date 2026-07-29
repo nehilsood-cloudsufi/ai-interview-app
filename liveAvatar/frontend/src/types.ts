@@ -85,8 +85,8 @@ export interface ScorecardData {
 // Scout research report; arrives via the state payload (backend
 // ScoutReportModel). `internet_findings` is a synthesized Markdown report,
 // `interview_claims` are factual claims extracted from the transcript/intake
-// material. The raw `sources` data the standalone /api/scout tool exposes is
-// deliberately not included here - see GithubRepo etc. below for that shape.
+// material. The raw `sources` data the agent gathers along the way is
+// deliberately not included here - too large/granular for the UI.
 export interface ScoutReport {
   internet_findings: string;
   interview_claims: string[];
@@ -144,121 +144,4 @@ export interface ChatResponse {
 // it's intentionally not typed here.
 export interface UpdateProfileResponse {
   vendor_profile: VendorProfile;
-}
-
-// --- Data Scout Agent (POST /api/scout) ---
-// On-demand, company-agnostic web research. Same underlying agent/report
-// shape as ScoutReport/insights above (the automatic post-interview scout),
-// but this response additionally exposes `scout_id` and the raw `sources`
-// data, which the automatic pipeline path omits from the UI-facing response.
-
-export interface GithubRepo {
-  name: string | null;
-  description: string | null;
-  language: string | null;
-  stargazers_count: number | null;
-  html_url: string | null;
-  readme_excerpt: string | null;
-}
-
-// Conditional source: only gathered (and only present in ScoutSources) when
-// a github.com URL was actually discovered in the transcript or website -
-// absent entirely for non-technical companies, never an empty placeholder.
-export interface GithubProfile {
-  username: string;
-  account_type: 'User' | 'Organization';
-  name: string | null;
-  bio: string | null;
-  company: string | null;
-  location: string | null;
-  public_repos: number | null;
-  followers: number | null;
-  blog: string | null;
-  html_url: string | null;
-  hireable: boolean | null;
-  created_at: string | null;
-  repos: GithubRepo[];
-}
-
-export interface WebSearchResult {
-  title: string;
-  url: string;
-  snippet: string;
-  // Full page text fetched from this result's URL, when available - richer
-  // than `snippet` alone. Null if the fetch wasn't attempted or failed.
-  text: string | null;
-}
-
-export interface SubpageResult {
-  url: string;
-  text: string;
-}
-
-export interface PageResult {
-  url: string;
-  text: string;
-  subpages: SubpageResult[];
-}
-
-export interface SearchQueryResult {
-  query: string;
-  results: WebSearchResult[];
-}
-
-// Pass B only: one entry per factual claim extracted from the transcript,
-// each with its own targeted search results (deduplicated against Pass A).
-export interface TargetedSearchResult {
-  claim: string;
-  results: WebSearchResult[];
-}
-
-export interface LinkLookup {
-  url: string;
-  domain: string;
-  results: WebSearchResult[];
-  // Always false - this platform blocks full profile content from being
-  // publicly retrieved, so `results` is a partial, snippet-only view.
-  full_profile_accessible: boolean;
-}
-
-// Every key is optional: Scout only includes a key when it actually
-// gathered data for it. In particular, `github` is entirely absent (not an
-// empty array) when no GitHub URL was found - never treat its absence as a
-// negative finding.
-export interface ScoutSources {
-  pages?: PageResult[];
-  blind_search?: SearchQueryResult[];
-  github?: GithubProfile[];
-  link_lookups?: LinkLookup[];
-  targeted_search?: TargetedSearchResult[];
-  interview_claims?: string[];
-}
-
-// POST /api/scout request body. transcript is entered manually in the UI
-// for now, until the interview module pipes it in via pub/sub later.
-export interface ScoutRequest {
-  company_name: string;
-  representative_name: string;
-  representative_role?: string | null;
-  extra_context?: string | null;
-  documents?: string[] | null;
-  transcript?: string | null;
-}
-
-// POST /api/scout/document response - extracted plain text of one uploaded
-// document, for the standalone Scout form's own document handling
-// (independent of the intake form's /api/interview/{id}/document).
-export interface ScoutDocumentResponse {
-  text: string;
-}
-
-// POST /api/scout / GET /api/scout/{id} response. internet_findings and
-// interview_claims are deliberately separate, peer fields - Scout gathers
-// and presents only; the Evaluator does all comparison.
-export interface ScoutResponse {
-  scout_id: string;
-  internet_findings: string;
-  interview_claims: string[];
-  sources: ScoutSources;
-  findings_ok: boolean;
 }
