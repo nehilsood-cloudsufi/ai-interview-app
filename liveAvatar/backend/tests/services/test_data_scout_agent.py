@@ -572,7 +572,9 @@ async def test_extract_claims_tolerates_plain_string_claims(patch_settings):
 
     claims = await scout_gather._extract_claims("Some transcript.", None, None)
 
-    assert claims == [{"claim": "A bare claim", "search_query": "A bare claim", "source": "transcript"}]
+    assert claims == [
+        {"claim": "A bare claim", "category": "specific", "search_query": "A bare claim", "source": "transcript"}
+    ]
 
 
 @respx.mock

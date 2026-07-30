@@ -298,9 +298,15 @@ def _combine_claim_sources(transcript: str | None, extra_context: str | None, do
 def _parse_claims(content: str) -> list[dict[str, Any]]:
     """Parses the JSON claims list out of a Gemini response, tolerating
     markdown code fences the model sometimes wraps the JSON in. Each item is
-    expected to be {"claim", "search_query", "source"}; a bare string is
-    tolerated too (search_query falls back to the claim text itself, source
-    to "transcript") in case the model ignores the object shape. Returns the
+    expected to be {"claim", "category", "search_query", "source"}; a bare
+    string is tolerated too (category defaults to "specific", search_query
+    falls back to the claim text itself, source to "transcript") in case the
+    model ignores the object shape. A "general" claim (scale/capability/
+    reputation/internal-metric assertion, no specific number/date/name/
+    entity attached) keeps search_query as None rather than defaulting it to
+    the claim text - see _select_targeted_claims, which relies on that None
+    to keep general claims out of Pass B search entirely; they're judged in
+    synthesis against already-gathered Pass A data instead. Returns the
     non-empty, stripped claim objects."""
     text = content.strip()
     if text.startswith("```"):
@@ -316,13 +322,17 @@ def _parse_claims(content: str) -> list[dict[str, Any]]:
             claim_text = item.get("claim")
             if not isinstance(claim_text, str) or not claim_text.strip():
                 continue
+            category = item.get("category")
+            category = "general" if isinstance(category, str) and category.strip().lower() == "general" else "specific"
             search_query = item.get("search_query")
-            search_query = search_query.strip() if isinstance(search_query, str) and search_query.strip() else claim_text.strip()
+            search_query = search_query.strip() if isinstance(search_query, str) and search_query.strip() else None
+            if search_query is None and category != "general":
+                search_query = claim_text.strip()
             source = item.get("source")
             source = source.strip() if isinstance(source, str) and source.strip() else "transcript"
-            claims.append({"claim": claim_text.strip(), "search_query": search_query, "source": source})
+            claims.append({"claim": claim_text.strip(), "category": category, "search_query": search_query, "source": source})
         elif isinstance(item, str) and item.strip():
-            claims.append({"claim": item.strip(), "search_query": item.strip(), "source": "transcript"})
+            claims.append({"claim": item.strip(), "category": "specific", "search_query": item.strip(), "source": "transcript"})
     return claims
 
 
@@ -348,10 +358,15 @@ def _claim_specificity_score(claim: str) -> int:
 def _select_targeted_claims(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Caps Pass B at _MAX_TARGETED_CLAIMS searches, keeping the most
     specific/verifiable claims (see _claim_specificity_score, scored on each
-    claim's text). Returns the selected claim objects in their original
-    extraction order."""
-    if len(claims) <= _MAX_TARGETED_CLAIMS:
-        return claims
-    ranked = sorted(enumerate(claims), key=lambda pair: (-_claim_specificity_score(pair[1]["claim"]), pair[0]))
+    claim's text). "General" claims (search_query is None - see
+    _parse_claims) are filtered out before the cap is even considered, so
+    they never consume a search slot regardless of how many total claims
+    were extracted; they still reach synthesis via state.claims independently
+    of this function, judged against Pass A data instead. Returns the
+    selected claim objects in their original extraction order."""
+    searchable = [claim for claim in claims if claim.get("search_query")]
+    if len(searchable) <= _MAX_TARGETED_CLAIMS:
+        return searchable
+    ranked = sorted(enumerate(searchable), key=lambda pair: (-_claim_specificity_score(pair[1]["claim"]), pair[0]))
     selected_indices = sorted(index for index, _ in ranked[:_MAX_TARGETED_CLAIMS])
-    return [claims[index] for index in selected_indices]
+    return [searchable[index] for index in selected_indices]

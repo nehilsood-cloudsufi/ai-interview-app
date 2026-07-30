@@ -335,6 +335,14 @@ class Settings:
         "facebook.com",
         "instagram.com",
         "threads.net",
+        "reddit.com",
+        "glassdoor.com",
+        "crunchbase.com",
+        "zoominfo.com",
+        "quora.com",
+        "trustpilot.com",
+        "bloomberg.com",
+        "wsj.com",
     )
     # Third-party reference/aggregator domains that are scrapeable but are
     # never a company's own official site (unlike no_scrape_domains above,
@@ -407,16 +415,11 @@ Do NOT generate a disclaimer line yourself - the app already shows one outside t
 
 ## Interview Claims
 
-First, filter interview_claims down to only the ones worth the Evaluator's attention. INCLUDE a claim only if it is:
-- Contradicted by public data.
-- Partially supported, with a notable difference (e.g. a materially different number, date, or location).
-- A specific, business-relevant fact (e.g. a leadership title, certification, ranking, headquarters location) that public sources independently confirm.
-- About something specific and verifiable (a number, date, location, ranking, partnership, or certification) for which no public data exists at all.
+Every claim in interview_claims gets judged and included here - not just specific, checkable facts. A claim is either:
+- SPECIFIC: it names a verifiable number, date, name, or entity (e.g. "revenue is $67B", "founded in 1990", "our CEO is Jane Doe", "ranked #1 by Gartner in 2025"). It will have a matching entry in targeted_search (matched by claim text) - judge it against that plus anything relevant in blind_search/pages/representative_search/link_lookups/github, same as before.
+- GENERAL: it asserts scale or size ("thousands of deployments", "millions of users"), capability or reach ("global presence", "enterprise scale", "Fortune 500 clients"), reputation ("industry leading", "rapid growth", "strong security"), or an internal metric ("95% retention rate") without a specific, independently checkable number/date/name attached. It will NOT have a matching targeted_search entry - judge it using ONLY the data already gathered in blind_search, pages, and representative_search (no new search was run for it).
 
-SKIP a claim if it is:
-- A generic service/capability description any company or consultant in the space would plausibly make, with no meaningful public data either way (this is different from a specific, confirmable fact - skip "we offer data engineering services", but keep "our CEO is Jane Doe" if sources confirm it).
-- Vague or inherently private (e.g. retention rate, satisfaction score, internal growth percentage) - these are almost never publicly available for any company, so their absence is not meaningful signal.
-- A near-duplicate of another claim already included (e.g. "primary cloud partner is AWS" and "is an AWS shop" are the same claim - keep only one).
+SKIP a claim only if it is a near-duplicate of another claim already included (e.g. "primary cloud partner is AWS" and "is an AWS shop" are the same claim - keep only one). Otherwise, every claim - specific or general - is rendered with one of the four labels below; a lack of public data is itself informative (`NO DATA`), not a reason to omit the claim.
 
 If more than 15 claims would qualify, keep only the 15 most informative (favor contradicted/partial findings over verified or no-data entries) and drop the rest.
 
@@ -429,6 +432,8 @@ Render each surviving claim as exactly this block (blank line between blocks - n
 
 Where `<LABEL>` is exactly one of: `CONTRADICTED` | `PARTIAL` | `VERIFIED` | `NO DATA` (backticks are literal, part of the output).
 
+Applying these labels to a GENERAL claim (judged against blind_search/pages/representative_search alone, since no dedicated search was run for it): `VERIFIED` when that data clearly supports the assertion (e.g. "global presence" and the data describes offices/operations across many countries); `CONTRADICTED` when that data clearly conflicts with it (e.g. "thousands of deployments" but the data describes a company with a handful of employees and minimal revenue); `PARTIAL` when the data is broadly consistent but can't fully confirm the specific scale asserted (e.g. "thousands of deployments" and a large, established company is confirmed, but no deployment count is available); `NO DATA` when the gathered data says nothing relevant to judge the assertion against. A SPECIFIC claim keeps using targeted_search plus the credibility/discrepancy rules below, unchanged.
+
 SOURCE CREDIBILITY: Each source result you are given may include a `source_tier` field: `"official"` (the company's own derived website), `"trusted"` (a recognized, reputable source), or `"unverified"` (anything else). When sources on the same claim disagree, prefer what official/trusted sources say over unverified ones. Label a claim `VERIFIED` only when at least one official or trusted source supports it, or when at least two independent unverified sources agree with each other - otherwise, if the only support is a single unverified source, use `PARTIAL` instead and note in the description that the supporting source is unverified.
 
 DISCREPANCY CHECK: If multiple sources report different numeric values for the same fact (e.g. employee count, revenue, funding amount) and the larger value is more than 3x the smaller one, do not describe this as ordinary partial variance - explicitly note "high discrepancy - recommend manual verification" in that claim's description instead.
@@ -437,10 +442,11 @@ DESCRIPTION (the text directly beneath the claim line) - always 2 to 3 sentences
 - Sentence 1: state what public data shows on this topic.
 - Sentence 2: add relevant detail, context, or variation across sources (e.g. that multiple independent sources agree, or how figures differ between them).
 - Sentence 3 (optional): a notable nuance, a conflicting data point, or other additional context worth knowing.
-- `NO DATA` claims still get 2 sentences: what was searched for, and that nothing public was found on it (no source lines follow).
+- `NO DATA` claims still get 2 sentences: what was searched for (or, for a GENERAL claim, what already-gathered data was checked), and that nothing public was found on it (no source lines follow).
+- For a GENERAL claim, add a short clause noting it was assessed against already-gathered public company data rather than a dedicated search, so the Evaluator reads it with a different confidence level than a directly-verified specific claim.
 - Never write "the interviewee said/stated/claimed/mentioned" or refer to "the candidate" or "the representative" - describe the claim itself and what public data shows about it, as if describing the company directly.
 
-SOURCE LINES: include 2 "↳" lines per claim whenever the data supports it - zero for `NO DATA`, otherwise only drop down to 1 if a genuinely thorough check of targeted_search, blind_search, pages, github, and link_lookups together turns up just one distinct relevant source anywhere in the data. Do NOT stop at 1 just because the matching targeted_search entry only has one result - always also check blind_search/pages/github/link_lookups for a second distinct source before settling for 1. Every source line names its source clearly AND shows the actual URL path: `<Source name> (<url path>) — <description>`. The source name is the real publisher/platform name (e.g. LinkedIn, ZoomInfo, Growjo, RocketReach, Crunchbase, PR Newswire, Glassdoor, or the company's own brand name for its website) - never a generic descriptor like "Official website", "Official page", "LinkedIn Profile", or "ZoomInfo Profile". The URL path in parentheses is short and readable (e.g. `linkedin.com/company/cloudsufi`, `zoominfo.com/c/cloudsufi`, `growjo.com/company/CLOUDSUFI`), never a full https:// URL with long query strings. The description after the dash is up to 20 words and specific/informative, not generic. Use the matching targeted_search entry first, then anything directly relevant from blind_search/pages/github/link_lookups for the second source.
+SOURCE LINES: include 2 "↳" lines per claim whenever the data supports it - zero for `NO DATA`, otherwise only drop down to 1 if a genuinely thorough check of targeted_search, blind_search, pages, github, and link_lookups together turns up just one distinct relevant source anywhere in the data. Do NOT stop at 1 just because the matching targeted_search entry only has one result - always also check blind_search/pages/github/link_lookups for a second distinct source before settling for 1. Every source line names its source clearly AND shows the actual URL path: `<Source name> (<url path>) — <description>`. The source name is the real publisher/platform name (e.g. LinkedIn, ZoomInfo, Growjo, RocketReach, Crunchbase, PR Newswire, Glassdoor, or the company's own brand name for its website) - never a generic descriptor like "Official website", "Official page", "LinkedIn Profile", or "ZoomInfo Profile". The URL path in parentheses is short and readable (e.g. `linkedin.com/company/cloudsufi`, `zoominfo.com/c/cloudsufi`, `growjo.com/company/CLOUDSUFI`), never a full https:// URL with long query strings. The description after the dash is up to 20 words and specific/informative, not generic. Use the matching targeted_search entry first, then anything directly relevant from blind_search/pages/github/link_lookups for the second source. A GENERAL claim has no targeted_search entry - draw both source lines directly from blind_search/pages/representative_search/link_lookups instead.
 
 Ordering: group claims `CONTRADICTED` first, `PARTIAL` second, `VERIFIED` third, `NO DATA` last. Within each group, order financial claims first, then locations, then partnerships/certifications, then everything else.
 

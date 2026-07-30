@@ -264,34 +264,48 @@ async def _extract_claims(transcript: str | None, extra_context: str | None, doc
             {
                 "role": "system",
                 "content": (
-                    "Extract a JSON list of concrete, checkable factual claims "
-                    "the company representative made, drawn from the labeled "
-                    "sections below (an interview transcript, additional "
-                    "free-text context they provided, and/or attached "
-                    "documents - not every section will be present). Treat "
-                    "claims from every section as equally weighted candidate "
-                    "claims about the company. A factual claim is something "
-                    "that could in principle be looked up or confirmed - e.g. "
-                    "a specific number, date, name, product or service, "
-                    "client, office location, milestone, industry ranking, "
-                    "award, certification, or partnership. A ranking or award "
-                    "claim (e.g. 'we were ranked #1 by Gartner in 2025') IS a "
-                    "checkable factual claim, not an opinion - include it. "
-                    "SKIP opinions, plans, intentions, and vague or "
-                    "unfalsifiable statements (e.g. 'we care about quality' or "
-                    "'we plan to grow'). Extract claims about ANY factual topic "
-                    "- products or services, workforce, clients, revenue, "
-                    "offices, ownership, milestones, rankings, awards, "
-                    "certifications, partnerships, etc. - not only technical "
-                    "topics; this company may not be a technology company at "
-                    "all. For each claim also produce a short web-search "
-                    "phrase (3 to 5 words) that would help verify it, and tag "
-                    "which section it came from. Respond with STRICTLY a "
-                    "single JSON object (no prose, no markdown fences) of "
-                    'exactly this shape: {"claims": [{"claim": "<claim text>", '
-                    '"search_query": "<3-5 word search phrase>", "source": '
-                    '"<transcript|context|document>"}, ...]}. If there are no '
-                    'extractable factual claims, return {"claims": []}.'
+                    "Extract a JSON list of EVERY factual statement the company "
+                    "representative made, drawn from the labeled sections below "
+                    "(an interview transcript, additional free-text context they "
+                    "provided, and/or attached documents - not every section will "
+                    "be present). Treat claims from every section as equally "
+                    "weighted candidate claims about the company. A factual "
+                    "statement is anything asserted as true about the company, "
+                    "whether specific and checkable (a number, date, name, "
+                    "product or service, client, office location, milestone, "
+                    "industry ranking, award, certification, or partnership) or "
+                    "general (a scale/size assertion like 'thousands of "
+                    "deployments' or 'millions of users', a capability claim like "
+                    "'global presence' or 'Fortune 500 clients', a reputation "
+                    "claim like 'industry leading' or 'rapid growth', or an "
+                    "internal metric like '95% retention rate'). A ranking or "
+                    "award claim (e.g. 'we were ranked #1 by Gartner in 2025') IS "
+                    "a checkable factual claim, not an opinion - include it. The "
+                    "ONLY things to skip are pure opinions/preferences (e.g. 'we "
+                    "prefer co-innovation') and plans/intentions (e.g. 'we're "
+                    "planning to expand') - every other factual assertion about "
+                    "the company gets extracted, no matter how general or vague "
+                    "it sounds. Extract claims about ANY factual topic - products "
+                    "or services, workforce, clients, revenue, offices, "
+                    "ownership, milestones, rankings, awards, certifications, "
+                    "partnerships, scale, reach, reputation, etc. - not only "
+                    "technical topics; this company may not be a technology "
+                    "company at all. For each claim, tag it with a \"category\" "
+                    "of exactly \"specific\" (it names a verifiable number, date, "
+                    "name, or entity) or \"general\" (a scale, capability, "
+                    "reputation, or internal-metric assertion with no such "
+                    "specific anchor). For a \"specific\" claim, also produce a "
+                    "short web-search phrase (3 to 5 words) that would help "
+                    "verify it; for a \"general\" claim, set \"search_query\" to "
+                    "null - it will be checked against already-gathered company "
+                    "data instead of a new search. Also tag which section each "
+                    "claim came from. Respond with STRICTLY a single JSON object "
+                    "(no prose, no markdown fences) of exactly this shape: "
+                    '{"claims": [{"claim": "<claim text>", "category": '
+                    '"specific"|"general", "search_query": "<3-5 word search '
+                    'phrase or null>", "source": "<transcript|context|document>"}, '
+                    '...]}. If there are no extractable factual claims, return '
+                    '{"claims": []}.'
                 ),
             },
             {"role": "user", "content": combined},
