@@ -4,12 +4,12 @@ truncation, and claim-text parsing - all deterministic, synchronous, and
 side-effect-free (config reads aside).
 """
 
-import json
 import re
 from typing import Any
 from urllib.parse import urlparse
 
 from app.config import settings
+from app.services.llm_json import parse_llm_json
 
 # --- Payload truncation (see _truncate_sources / _combine_claim_sources) ---
 # Per-field character caps applied before the sources dict is serialised and
@@ -49,7 +49,17 @@ _VAGUE_CLAIM_MARKERS = (
 # page/subpage text and search result text/snippets before they're attached
 # to `sources`, so a vendor evaluation report can't incidentally surface a
 # third party's personal contact details.
-_PHONE_RE = re.compile(r"\b(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")
+# At least one real separator (dash/dot/space/parens) is REQUIRED between the
+# groups: with every separator optional this also matched any bare 10-digit
+# integer, redacting revenue figures like "4500000000" out of fetched pages -
+# exactly the facts the revenue/employees blind searches exist to find. A
+# separator-less phone number now slips through unredacted; that trade beats
+# destroying financial data on every ordinary run.
+_PHONE_RE = re.compile(
+    # (?<!\w) not \b: a leading "(" has no word boundary after a space, so
+    # \b silently never matched parenthesized numbers like "(555) 123-4567".
+    r"(?<!\w)(?:\+?\d{1,3}[-.\s])?(?:\(\d{3}\)[-.\s]?|\d{3}[-.\s])\d{3}[-.\s]\d{4}\b"
+)
 _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 # Generic business mailbox local-parts are allowed through unredacted (they
 # identify a department/role, not a person).
@@ -61,9 +71,14 @@ _GENERIC_EMAIL_LOCAL_PARTS = {
 # A number + street-type keyword pattern - the weakest of the three regexes
 # (address formats vary a lot internationally), but still worth catching
 # common US-style addresses; misses are no worse than not redacting at all.
+# Case-SENSITIVE with capitalized filler words required: the previous
+# lowercase-tolerant filler class matched ordinary prose ending in an
+# abbreviation - "150 employees led by Dr. Ahmed" redacted the headcount AND
+# the CEO's title on every ordinary run. Real street lines ("123 Main
+# Street", "1 Infinite Loop Suite 4") capitalize their words.
 _ADDRESS_RE = re.compile(
-    r"\b\d{1,5}\s+[A-Za-z0-9.\s]{1,30}\b(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Drive|Dr|Lane|Ln|Way|Court|Ct|Place|Pl|Suite|Ste)\.?\b",
-    re.IGNORECASE,
+    r"\b\d{1,5}\s+(?:[A-Z][A-Za-z0-9.]*\s+){1,4}"
+    r"(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Drive|Dr|Lane|Ln|Way|Court|Ct|Place|Pl|Suite|Ste)\.?\b"
 )
 
 # --- Same-company relevance filter (see _filter_relevant / _is_relevant_result) ---
@@ -156,16 +171,23 @@ def _filter_relevant(
 
 
 def _extract_urls(text_blobs: list[str]) -> list[str]:
-    """Finds every URL mentioned across the given text blobs (transcript,
-    fetched page/subpage text) - a lightweight stand-in for the old
-    file-upload link_extractor, since there's no document to extract from
-    anymore. Returns a deduplicated, sorted list of URLs."""
-    urls: set[str] = set()
+    """Finds every URL mentioned across the given text blobs (intake text,
+    fetched page/subpage text). Returns a deduplicated list in MENTION order
+    (first occurrence wins) - _derive_company_website treats the first
+    intake-mentioned URL as the likeliest company site, and the previous
+    sorted() return quietly made that "alphabetically first" instead (a
+    medium.com press link would beat the company's own zenithcorp.com)."""
+    urls: list[str] = []
+    seen: set[str] = set()
     for blob in text_blobs:
         if not blob:
             continue
-        urls.update(match.rstrip(").,;\"'") for match in _URL_RE.findall(blob))
-    return sorted(urls)
+        for match in _URL_RE.findall(blob):
+            url = match.rstrip(").,;\"'")
+            if url not in seen:
+                seen.add(url)
+                urls.append(url)
+    return urls
 
 
 def _trunc(text: str | None, limit: int) -> str | None:
@@ -332,13 +354,13 @@ def _parse_claims(content: str) -> list[dict[str, Any]]:
     the claim text - see _select_targeted_claims, which relies on that None
     to keep general claims out of Pass B search entirely; they're judged in
     synthesis against already-gathered Pass A data instead. Returns the
-    non-empty, stripped claim objects."""
-    text = content.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:]
-    parsed = json.loads(text)
+    non-empty, stripped claim objects.
+
+    Parsing goes through the shared llm_json.parse_llm_json (the helper every
+    other agent uses) - it tolerates leading prose, trailing text, and
+    language-tagged fences that the previous hand-rolled fence-stripping
+    choked on, each of which silently emptied the Interview Claims section."""
+    parsed = parse_llm_json(content)
     raw_claims = parsed.get("claims", [])
 
     claims: list[dict[str, Any]] = []

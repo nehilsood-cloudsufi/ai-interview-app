@@ -38,10 +38,18 @@ _SUBPAGE_KEYWORDS = ("about", "project", "portfolio", "resume", "cv", "experienc
 _MAX_SUBPAGES = 3  # max same-domain subpages fetched per page
 
 
+def _normalized_netloc(netloc: str) -> str:
+    """Lowercased netloc with a leading "www." stripped, so a same-site
+    comparison isn't defeated by a www-vs-bare mismatch (a bare-domain
+    homepage linking to www. About/Projects pages, or vice versa)."""
+    lowered = netloc.lower()
+    return lowered[4:] if lowered.startswith("www.") else lowered
+
+
 def _extract_subpage_links(soup: BeautifulSoup, base_url: str) -> list[str]:
     """Finds up to _MAX_SUBPAGES same-domain links on the page whose path or
     anchor text matches _SUBPAGE_KEYWORDS. Returns the absolute URLs."""
-    base_domain = urlparse(base_url).netloc.lower()
+    base_domain = _normalized_netloc(urlparse(base_url).netloc)
     base_normalized = base_url.split("#")[0].rstrip("/")
     seen: set[str] = set()
     links: list[str] = []
@@ -49,7 +57,7 @@ def _extract_subpage_links(soup: BeautifulSoup, base_url: str) -> list[str]:
     for anchor in soup.find_all("a", href=True):
         absolute = urljoin(base_url, anchor["href"])
         parsed = urlparse(absolute)
-        if parsed.scheme not in ("http", "https") or parsed.netloc.lower() != base_domain:
+        if parsed.scheme not in ("http", "https") or _normalized_netloc(parsed.netloc) != base_domain:
             continue
 
         haystack = f"{parsed.path.lower()} {anchor.get_text(strip=True).lower()}"
@@ -137,26 +145,12 @@ async def _get_validated(client: httpx.AsyncClient, url: str) -> tuple[httpx.Res
     return None
 
 
-async def _fetch_one(client: httpx.AsyncClient, url: str, discover_links: bool) -> tuple[str | None, list[str]]:
-    """Fetches a single URL (SSRF-validated per hop, body size-capped - see
-    _get_validated) and extracts its visible text (capped at _MAX_CHARS),
-    optionally also discovering same-site subpage links. Returns
-    (text, subpage_links); text is None (logged, non-fatal) on any fetch
-    failure, blocked URL, or non-HTML response."""
-    try:
-        fetched = await _get_validated(client, url)
-    except httpx.HTTPError as exc:
-        logger.warning("Failed to fetch page %s: %s", url, exc)
-        return None, []
-    if fetched is None:
-        return None, []
-    response, body = fetched
-
-    content_type = response.headers.get("content-type", "")
-    if "html" not in content_type:
-        logger.info("Skipping non-HTML content at %s (content-type: %s)", url, content_type)
-        return None, []
-
+def _parse_page(body: str, url: str, discover_links: bool) -> tuple[str | None, list[str]]:
+    """CPU-bound half of a fetch: BeautifulSoup parse, optional subpage-link
+    discovery, chrome-stripping, and visible-text extraction (capped at
+    _MAX_CHARS). Synchronous by design - callers run it via asyncio.to_thread
+    so a multi-hundred-KB parse can't block the event loop that is also
+    serving live interview turns for other sessions."""
     soup = BeautifulSoup(body, "html.parser")
     # Link discovery must run before nav/footer/header are stripped below -
     # that's exactly where "About"/"Projects" links usually live.
@@ -171,6 +165,35 @@ async def _fetch_one(client: httpx.AsyncClient, url: str, discover_links: bool) 
     content = soup.find("main") or soup.find("article") or soup
     text = " ".join(content.get_text(separator=" ").split())
     return (text[:_MAX_CHARS] if text else None), subpage_links
+
+
+async def _fetch_one(client: httpx.AsyncClient, url: str, discover_links: bool) -> tuple[str | None, list[str]]:
+    """Fetches a single URL (SSRF-validated per hop, body size-capped - see
+    _get_validated) and extracts its visible text (capped at _MAX_CHARS,
+    parsed off the event loop - see _parse_page), optionally also discovering
+    same-site subpage links. Returns (text, subpage_links); text is None
+    (logged, non-fatal) on any fetch failure, blocked URL, or non-HTML
+    response."""
+    try:
+        fetched = await _get_validated(client, url)
+    except Exception as exc:
+        # Broad on purpose: this helper's never-break-the-pipeline contract
+        # must hold for more than httpx.HTTPError - e.g. httpx.InvalidURL
+        # (malformed redirect Location, bad IDNA label) is NOT an HTTPError
+        # subclass and used to escape all the way up and discard the entire
+        # scout report.
+        logger.warning("Failed to fetch page %s: %s: %s", url, type(exc).__name__, exc)
+        return None, []
+    if fetched is None:
+        return None, []
+    response, body = fetched
+
+    content_type = response.headers.get("content-type", "")
+    if "html" not in content_type:
+        logger.info("Skipping non-HTML content at %s (content-type: %s)", url, content_type)
+        return None, []
+
+    return await asyncio.to_thread(_parse_page, body, url, discover_links)
 
 
 async def fetch_page_text(url: str) -> str | None:

@@ -58,13 +58,17 @@ async def _post_to_gemini(payload: dict[str, Any]) -> str:
                 attempt, _SYNTHESIS_MAX_ATTEMPTS, exc.response.status_code, exc, _SYNTHESIS_RETRY_BACKOFF_SECONDS,
             )
             await asyncio.sleep(_SYNTHESIS_RETRY_BACKOFF_SECONDS)
-        except httpx.ReadTimeout as exc:
+        except httpx.TransportError as exc:
+            # Read timeouts AND connect-level failures (ConnectTimeout,
+            # ConnectError, RemoteProtocolError...) are equally transient -
+            # the old ReadTimeout-only catch let a TCP connect blip skip the
+            # retry loop sitting right here.
             last_error = exc
             if attempt == _SYNTHESIS_MAX_ATTEMPTS:
                 raise
             logger.warning(
-                "Gemini synthesis attempt %d/%d timed out (%s), retrying in %.0fs",
-                attempt, _SYNTHESIS_MAX_ATTEMPTS, exc, _SYNTHESIS_RETRY_BACKOFF_SECONDS,
+                "Gemini synthesis attempt %d/%d failed in transport (%s: %s), retrying in %.0fs",
+                attempt, _SYNTHESIS_MAX_ATTEMPTS, type(exc).__name__, exc, _SYNTHESIS_RETRY_BACKOFF_SECONDS,
             )
             await asyncio.sleep(_SYNTHESIS_RETRY_BACKOFF_SECONDS)
 
@@ -135,6 +139,13 @@ async def run_scout(
     mentioned in extra_context/documents, falling back to a Tavily search for
     the company's official website.
 
+    KNOWN LIMITATION: the production caller (app.services.pipeline) always
+    passes documents=None - raw uploaded-document text is not retained after
+    upload (only the <=10-bullet vendor_context summary, which arrives here
+    as extra_context), so document claims reach extraction only through that
+    lossy summary. Passing raw document text through is a follow-up
+    (requires retaining it on InterviewState).
+
     Pass A (blind gathering) never lets the transcript drive any search or
     fetch decision - website derivation/fetch, industry-neutral blind search,
     a representative-name search, and no-scrape link lookups (the latter
@@ -171,6 +182,16 @@ async def run_scout(
             "Scout gathering exceeded %.0fs (%s) - proceeding to synthesis with partial data.",
             _GATHER_TIMEOUT_SECONDS, exc,
         )
+    except Exception as exc:
+        # Belt to the per-source guards inside scout_gather: whatever still
+        # escapes (a URL-parsing edge case, an unexpected shape) must degrade
+        # to "synthesize what we have", never discard the sources already
+        # gathered - _GatherState's partial-progress contract covers
+        # exceptions, not just timeouts.
+        logger.warning(
+            "Scout gathering failed (%s: %s) - proceeding to synthesis with partial data.",
+            type(exc).__name__, exc,
+        )
 
     # Only include keys that actually have data - an empty "targeted_search"
     # list must never appear as a biasing empty section.
@@ -188,7 +209,17 @@ async def run_scout(
     if state.targeted_search:
         sources["targeted_search"] = state.targeted_search
     if state.claims:
-        sources["interview_claims"] = state.claims
+        # Tagged claim objects, not bare strings: carrying the extraction's
+        # own category ("specific"/"general") and source lets the synthesis
+        # prompt use them directly instead of re-deriving SPECIFIC vs GENERAL
+        # from targeted_search presence - a proxy that broke whenever Pass B
+        # search was skipped, capped, or deduped to zero results. The
+        # top-level "interview_claims" return stays plain strings (that's
+        # the ScoutReport/UI contract).
+        sources["interview_claims"] = [
+            {"claim": detail["claim"], "category": detail["category"], "source": detail["source"]}
+            for detail in state.claim_details
+        ] or state.claims
 
     try:
         internet_findings = await _synthesize_internet_findings(company_name, state.company_website, sources)

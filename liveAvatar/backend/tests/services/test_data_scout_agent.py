@@ -1023,7 +1023,12 @@ async def test_run_scout_gathers_targeted_search_per_claim_when_transcript_given
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, "We have 50 employees.")
 
     assert result["interview_claims"] == ["We have 50 employees"]
-    assert result["sources"]["interview_claims"] == ["We have 50 employees"]
+    # The synthesis payload carries the extraction's own category/source tags
+    # so the model never re-derives SPECIFIC vs GENERAL from targeted_search
+    # presence; the top-level interview_claims return stays plain strings.
+    assert result["sources"]["interview_claims"] == [
+        {"claim": "We have 50 employees", "category": "specific", "source": "transcript"}
+    ]
     assert result["sources"]["targeted_search"] == [
         {
             "claim": "We have 50 employees",
@@ -1183,8 +1188,9 @@ async def test_gather_blind_search_runs_all_eight_queries_concurrently(patch_set
 
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
 
+    state = scout_gather._GatherState()
     start = time.monotonic()
-    await scout_gather._gather_blind_search("Acme Corp")
+    await scout_gather._fill_blind_search(state, "Acme Corp")
     elapsed = time.monotonic() - start
 
     # Sequential would take ~8 * delay; concurrent should take ~1 * delay.
@@ -1252,7 +1258,7 @@ async def test_gather_blind_search_biases_only_revenue_employees_leadership_quer
 
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
 
-    await scout_gather._gather_blind_search("Acme Corp")
+    await scout_gather._fill_blind_search(scout_gather._GatherState(), "Acme Corp")
 
     time_range_by_query = dict(calls)
     assert time_range_by_query["Acme Corp revenue"] == "y"
@@ -1803,3 +1809,165 @@ def test_matches_domain_exact_and_subdomain_but_not_lookalike():
     assert scout_utils._matches_domain("in.linkedin.com", ("linkedin.com",)) is True
     assert scout_utils._matches_domain("notlinkedin.com", ("linkedin.com",)) is False
     assert scout_utils._matches_domain("linkedin.com.evil.example", ("linkedin.com",)) is False
+
+
+# --- Review-hardening regressions (feature/scout-review-hardening) -----------
+
+
+def test_extract_urls_preserves_mention_order():
+    # sorted() used to make "first mentioned" mean "alphabetically first" -
+    # a medium.com press link would beat the company's own site.
+    blobs = ["Read https://zenithcorp.example first, press at https://amedium.example/story"]
+    assert scout_utils._extract_urls(blobs) == [
+        "https://zenithcorp.example",
+        "https://amedium.example/story",
+    ]
+
+
+async def test_derive_company_website_prefers_company_domain_among_mentioned_urls():
+    # A third-party link mentioned earlier must not beat the company's own
+    # domain - the intake branch now applies the same PREFERRED-domain
+    # tiebreaker as the search fallback.
+    website = await scout_gather._derive_company_website(
+        "Zenith Corp",
+        "Press coverage: https://amedium.example/story and our site https://zenithcorp.example/about",
+        None,
+    )
+    assert website == "https://zenithcorp.example/about"
+
+
+async def test_derive_company_website_falls_back_to_first_mentioned_without_domain_match():
+    website = await scout_gather._derive_company_website(
+        "Acme Corp",
+        "See https://firstlink.example/a then https://secondlink.example/b",
+        None,
+    )
+    assert website == "https://firstlink.example/a"
+
+
+def test_redact_pii_preserves_headcount_prose_with_title_abbreviation():
+    # Regression (executed live in review): the address regex ate
+    # "150 employees led by Dr" - destroying exactly the employee/leadership
+    # facts the blind searches exist to find.
+    text = "150 employees led by Dr. Ahmed Al-Faisal across three offices."
+    assert scout_utils._redact_pii(text) == text
+
+
+def test_redact_pii_preserves_bare_financial_figures():
+    # Regression: the all-separators-optional phone regex matched bare
+    # 10-digit integers, redacting revenue figures.
+    text = "annual revenue of 4500000000 SAR reported in 2025."
+    assert scout_utils._redact_pii(text) == text
+
+
+def test_redact_pii_still_masks_parenthesized_phone():
+    redacted = scout_utils._redact_pii("Call (555) 123-4567 today.")
+    assert "555" not in redacted
+    assert "[redacted]" in redacted
+
+
+def test_parse_claims_tolerates_leading_prose():
+    # The hand-rolled fence-stripping choked on any prose before the JSON;
+    # the shared parse_llm_json handles it.
+    content = 'Here are the claims:\n{"claims": [{"claim": "Founded in 2019", "category": "specific", "search_query": "founded 2019", "source": "transcript"}]}'
+    claims = scout_utils._parse_claims(content)
+    assert [c["claim"] for c in claims] == ["Founded in 2019"]
+
+
+async def test_fill_link_lookups_caps_lookup_count(patch_settings, monkeypatch):
+    search_queries = []
+
+    async def fake_search(query, **kwargs):
+        search_queries.append(query)
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+
+    urls = [f"https://linkedin.com/company/acme-{i}" for i in range(8)]
+    state = scout_gather._GatherState()
+    await scout_gather._fill_link_lookups(state, urls)
+
+    assert len(search_queries) == scout_gather._MAX_LINK_LOOKUPS
+    assert len(state.link_lookups) == scout_gather._MAX_LINK_LOOKUPS
+
+
+@respx.mock
+async def test_run_scout_fetches_duplicate_top_hit_only_once(patch_settings, monkeypatch):
+    # The same URL ranking #1 for several blind queries used to pay a full
+    # fetch+parse per occurrence; the per-run cache dedupes them.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    fetch_calls = []
+    shared_hit = {"title": "Acme Corp profile", "url": "https://news.example.com/acme", "snippet": "Acme Corp ..."}
+
+    async def fake_search(query, **kwargs):
+        if query in ("Acme Corp overview", "Acme Corp revenue"):
+            return [dict(shared_hit)]
+        return []
+
+    async def fake_fetch_page_text(url):
+        fetch_calls.append(url)
+        return "Acme Corp page text"
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]})
+    )
+
+    await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    assert fetch_calls.count("https://news.example.com/acme") == 1
+
+
+@respx.mock
+async def test_gather_timeout_preserves_already_completed_sources(patch_settings, monkeypatch):
+    # THE partial-progress contract: a deadline firing while one source is
+    # still running must keep everything the other sources already wrote.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    monkeypatch.setattr(data_scout_agent, "_GATHER_TIMEOUT_SECONDS", 0.3)
+
+    async def fake_search(query, **kwargs):
+        if query == "Acme Corp overview":
+            return [{"title": "Acme Corp overview", "url": "https://news.example.com/acme", "snippet": "..."}]
+        if query == "Jane Doe Acme Corp":
+            await asyncio.sleep(5.0)  # hangs past the deadline
+        return []
+
+    async def fake_fetch_page_text(url):
+        return None
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]})
+    )
+
+    result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    # The hung representative search is absent, but the completed blind
+    # search survived the timeout.
+    assert "representative_search" not in result["sources"]
+    assert result["sources"]["blind_search"][0]["query"] == "Acme Corp overview"
+    assert result["findings_ok"] is True
+
+
+@respx.mock
+async def test_run_scout_survives_gather_raising_unexpectedly(patch_settings, monkeypatch):
+    # Belt for exceptions that escape the per-source guards: synthesis still
+    # runs on whatever was gathered instead of the whole report being lost.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def exploding_gather_all(state, *args, **kwargs):
+        state.claims = ["We have 50 employees"]
+        state.claim_details = [{"claim": "We have 50 employees", "category": "specific", "source": "transcript"}]
+        raise ValueError("URL parsing edge case")
+
+    monkeypatch.setattr(scout_gather, "_gather_all", exploding_gather_all)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]})
+    )
+
+    result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    assert result["internet_findings"] == "report"
+    assert result["interview_claims"] == ["We have 50 employees"]

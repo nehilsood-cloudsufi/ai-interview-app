@@ -395,7 +395,9 @@ async def test_scout_report_synthesis_failure_notes_no_findings(patch_settings):
     await score_interview(make_turns(), make_rubric(), report)
 
     user_content = json.loads(route.calls[0].request.content)["messages"][-1]["content"]
-    assert "Independent research findings (from internet, not from the vendor):" in user_content
+    # Failure-only report: the independent-research header must NOT appear
+    # over nothing - just the explicit synthesis-failed note.
+    assert "Independent research findings (from internet, not from the vendor):" not in user_content
     assert "synthesis failed" in user_content
 
 
@@ -548,3 +550,36 @@ async def test_no_vendor_context_block_when_empty(patch_settings):
 
     user_content = json.loads(route.calls[0].request.content)["messages"][1]["content"]
     assert "self-reported" not in user_content
+
+
+@respx.mock
+async def test_entirely_empty_scout_report_renders_no_research_block(patch_settings):
+    # A scout run that found literally nothing (e.g. TAVILY_API_KEY unset in
+    # a deployment) must not inject a hollow "independent research" header -
+    # the model would read it as "we researched and found nothing".
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    report = make_scout_report(internet_findings="", interview_claims=[], findings_ok=True)
+
+    await score_interview(make_turns(), make_rubric(), report)
+
+    user_content = json.loads(route.calls[0].request.content)["messages"][-1]["content"]
+    assert "Independent research findings" not in user_content
+    assert "self-reported" not in user_content
+
+
+@respx.mock
+async def test_vendor_claims_labelled_self_reported_not_independent(patch_settings):
+    # The vendor's own claims must never sit under the independent-research
+    # header - they are labelled self-reported, in their own block.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    report = make_scout_report()
+
+    await score_interview(make_turns(), make_rubric(), report)
+
+    user_content = json.loads(route.calls[0].request.content)["messages"][-1]["content"]
+    header_pos = user_content.index("Independent research findings")
+    claims_pos = user_content.index("self-reported and unverified")
+    assert claims_pos > header_pos  # claims block comes after, not under, the research header
+    assert "We raised a Series B in 2025." in user_content

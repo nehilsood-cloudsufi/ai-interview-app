@@ -9,12 +9,20 @@ import dataclasses
 import logging
 
 from app.config import settings
-from app.services import coordinator_agent, data_scout_agent, evaluator_agent, transcript_store
+from app.services import coordinator_agent, data_scout_agent, evaluator_agent, scout_utils, transcript_store
 from app.services.interview_config import get_rubric
 from app.services.interview_state import InterviewState, ScoutReport
 from app.services.transcript_render import render_transcript
 
 logger = logging.getLogger(__name__)
+
+# Hard wall-clock ceiling on one Scout run. run_scout's own budgets (45s
+# gather + up to 3 x 180s synthesis attempts) can legitimately stack to ~10
+# minutes worst case, and nothing above the pipeline enforces a deadline -
+# under Cloud Run CPU throttling an instance scale-down mid-retry would lose
+# the interview record outright. Generous enough for the normal case (gather
+# + one synthesis attempt + one retry), tight enough to bound the tail.
+_SCOUT_DEADLINE_SECONDS = 300.0
 
 # Tasks scheduled by enqueue() are kept here so they aren't garbage-collected
 # mid-flight (asyncio only holds a weak reference to a task via
@@ -55,12 +63,15 @@ async def run(state: InterviewState, session_id: str, payload: dict) -> None:
             # old scout_agent guaranteed this by never raising; run_scout
             # does not, so the guarantee lives here now.
             try:
-                scout_result = await data_scout_agent.run_scout(
-                    profile.company_name,
-                    profile.contact_name,
-                    state.vendor_context,
-                    None,
-                    render_transcript(state.turns),
+                scout_result = await asyncio.wait_for(
+                    data_scout_agent.run_scout(
+                        profile.company_name,
+                        profile.contact_name,
+                        state.vendor_context,
+                        None,
+                        render_transcript(state.turns),
+                    ),
+                    timeout=_SCOUT_DEADLINE_SECONDS,
                 )
                 scout_report = ScoutReport(
                     internet_findings=scout_result["internet_findings"],
@@ -93,7 +104,15 @@ async def run(state: InterviewState, session_id: str, payload: dict) -> None:
         state.scorecard = scorecard
         state.recommendation = rec
 
-        payload["scout_report"] = dataclasses.asdict(scout_report) if scout_report is not None else None
+        # Persist with sources TRUNCATED (same caps the synthesis payload
+        # gets): the raw dict can carry hundreds of KB of scraped third-party
+        # page text per interview, which was ballooning every GCS record and
+        # getting served verbatim by GET /api/transcript/{id}.
+        payload["scout_report"] = (
+            {**dataclasses.asdict(scout_report), "sources": scout_utils._truncate_sources(scout_report.sources)}
+            if scout_report is not None
+            else None
+        )
         payload["scorecard"] = dataclasses.asdict(scorecard) if scorecard is not None else None
         payload["recommendation"] = dataclasses.asdict(rec) if rec is not None else None
         payload["pipeline_status"] = "ready"
