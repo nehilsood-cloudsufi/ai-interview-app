@@ -148,6 +148,20 @@ class Settings:
         "Thanks again for your time today - the interview is complete, and our "
         "evaluation team will follow up with next steps."
     )
+    # Standing instruction for the end_requested turn field: a vendor's
+    # explicit spoken/typed request to stop must actually end the interview
+    # (jump the script to END in code) instead of looping polite goodbyes
+    # while the remaining questions grind on - observed live 2026-07-31: six
+    # farewell exchanges after "could you please end this interview?".
+    host_end_request_prompt: str = (
+        "Ending the interview: if the vendor explicitly asks to end, stop, or "
+        "leave the interview (e.g. 'please end this interview', 'I'd like to "
+        "stop now'), set end_requested to true and make your reply one brief, "
+        "warm goodbye on behalf of the evaluation team - no further questions, "
+        "no mention of resuming. Declining to answer the current question, "
+        "asking to skip it, or a lull in conversation is NOT an end request - "
+        "in those cases end_requested must be false."
+    )
     # Safe reply when the Gemini turn fails (HTTP error or unparsable JSON);
     # state is left untouched so the vendor can simply repeat themselves.
     host_fallback_reply: str = "I'm sorry, could you say that again?"
