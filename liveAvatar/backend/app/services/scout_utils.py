@@ -245,12 +245,13 @@ def _truncate_sources(sources: dict[str, Any]) -> dict[str, Any]:
             for entry in sources["representative_search"]
         ]
 
-    if "aramco_search" in sources:
+    if "relationship_search" in sources:
         # Same {"query", "results"} shape as blind_search/representative_search -
-        # one dedicated, always-run search for a prior Saudi Aramco
-        # relationship, required by the client's evaluation rubric (see
-        # scout_system_prompt's mandatory Additional Findings bullet).
-        truncated["aramco_search"] = [
+        # one dedicated search for a prior relationship with the configured
+        # entity (settings.scout_relationship_check_entity, a client-rubric
+        # requirement - see scout_relationship_check_prompt's mandatory
+        # Additional Findings bullet).
+        truncated["relationship_search"] = [
             {
                 **entry,
                 "results": [
@@ -258,7 +259,7 @@ def _truncate_sources(sources: dict[str, Any]) -> dict[str, Any]:
                     for result in (entry.get("results") or [])
                 ],
             }
-            for entry in sources["aramco_search"]
+            for entry in sources["relationship_search"]
         ]
 
     if "targeted_search" in sources:
@@ -276,18 +277,26 @@ def _truncate_sources(sources: dict[str, Any]) -> dict[str, Any]:
     return truncated
 
 
-def _is_excluded_website_domain(domain: str, excluded_domains: set[str]) -> bool:
-    """True if `domain` is an exact match in `excluded_domains`, or a
-    subdomain of one of settings.scout_reference_site_domains (e.g.
-    "en.wikipedia.org" matches "wikipedia.org") - third-party reference/
-    aggregator sites that are scrapeable but are never a company's own
-    official site, unlike the login-walled/scraper-blocking domains in
-    `excluded_domains` itself."""
-    if domain in excluded_domains:
-        return True
+def _matches_domain(domain: str, candidates: "set[str] | tuple[str, ...]") -> bool:
+    """True if `domain` is one of `candidates` or a subdomain of one (e.g.
+    "in.linkedin.com" matches "linkedin.com"). The one domain-matching rule
+    shared by every blocklist check in the scout pipeline - exact matching
+    alone let regional/mobile subdomains slip through."""
     return any(
-        domain == reference or domain.endswith(f".{reference}")
-        for reference in settings.scout_reference_site_domains
+        domain == candidate or domain.endswith(f".{candidate}")
+        for candidate in candidates
+    )
+
+
+def _is_excluded_website_domain(domain: str, excluded_domains: set[str]) -> bool:
+    """True if `domain` matches (exactly or as a subdomain - see
+    _matches_domain) `excluded_domains` or
+    settings.scout_reference_site_domains - the latter are third-party
+    reference/aggregator sites that are scrapeable but are never a company's
+    own official site, unlike the login-walled/scraper-blocking domains in
+    `excluded_domains` itself."""
+    return _matches_domain(domain, excluded_domains) or _matches_domain(
+        domain, settings.scout_reference_site_domains
     )
 
 

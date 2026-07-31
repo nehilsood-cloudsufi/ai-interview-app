@@ -381,3 +381,65 @@ async def test_enqueue_schedules_run_and_task_is_not_gced(monkeypatch):
 
     assert calls == [(state, "sid", {"foo": "bar"})]
     assert pipeline._tasks == set()
+
+
+async def test_scout_raising_still_reaches_ready_with_scorecard(monkeypatch):
+    # THE soft-fail regression guard: the old scout_agent.run never raised by
+    # contract; data_scout_agent.run_scout carries no such guarantee, so the
+    # pipeline must shield itself - a scout explosion degrades to
+    # scout_report=None and scoring still runs, it must never cost the
+    # interview its scorecard.
+    scorecard = make_scorecard({"interest": 80.0}, overall=80.0)
+
+    async def exploding_run_scout(*args, **kwargs):
+        raise ValueError("malformed third-party response")
+
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
+        assert scout_report is None
+        return scorecard
+
+    save_calls: list[dict] = []
+
+    async def fake_save(session_id, payload):
+        save_calls.append(dict(payload))
+
+    monkeypatch.setattr(data_scout_agent, "run_scout", exploding_run_scout)
+    monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
+    monkeypatch.setattr(transcript_store, "save", fake_save)
+
+    state = make_state()
+    await pipeline.run(state, "sid", make_payload())
+
+    assert state.pipeline_status == "ready"
+    assert state.scout_report is None
+    assert state.scorecard == scorecard
+    assert save_calls[0]["pipeline_status"] == "ready"
+    assert save_calls[0]["scout_report"] is None
+    assert save_calls[0]["scorecard"]["overall"] == 80.0
+
+
+async def test_blank_company_name_skips_scout_and_still_reaches_ready(monkeypatch):
+    # Restores the old scout_agent behavior: no company name means nothing
+    # meaningful to research - zero scout calls, scoring still runs.
+    scorecard = make_scorecard({"interest": 60.0}, overall=60.0)
+
+    async def fake_run_scout(*args, **kwargs):
+        raise AssertionError("Scout must not run without a company name")
+
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
+        assert scout_report is None
+        return scorecard
+
+    async def fake_save(session_id, payload):
+        pass
+
+    monkeypatch.setattr(data_scout_agent, "run_scout", fake_run_scout)
+    monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
+    monkeypatch.setattr(transcript_store, "save", fake_save)
+
+    state = make_state()
+    state.vendor_profile.company_name = "   "
+    await pipeline.run(state, "sid", make_payload())
+
+    assert state.pipeline_status == "ready"
+    assert state.scout_report is None

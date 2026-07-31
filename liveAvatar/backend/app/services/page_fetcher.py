@@ -1,4 +1,7 @@
+import asyncio
+import ipaddress
 import logging
+import socket
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -11,6 +14,21 @@ logger = logging.getLogger(__name__)
 _PAGE_FETCH_TIMEOUT_SECONDS = 10.0  # per-request httpx timeout for page/subpage fetches
 _MAX_CHARS = 12000  # cap on extracted page text length, keeps downstream synthesis payloads bounded
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; DataScoutAgent/1.0)"}  # identifies this fetcher to servers that block unlabeled/bot requests
+
+# --- SSRF guard (see _is_public_url / _get_validated) ---
+# Every URL this module fetches is attacker-influencable: the company
+# website is derived from vendor-typed intake text, and search-result URLs
+# come from a third-party API. Each fetch (and each redirect hop - redirects
+# are followed manually, not by httpx) must therefore resolve to a public
+# address: http/https only, and every resolved IP must be global (blocking
+# loopback, RFC1918/private, link-local incl. the 169.254.169.254 cloud
+# metadata endpoint, and reserved ranges). DNS is resolved once for the
+# check and again by httpx for the fetch - a rebinding race between the two
+# is accepted for this POC. Response bodies are streamed with a byte cap so
+# an attacker-hosted page can't balloon memory before the text extraction
+# even starts.
+_MAX_REDIRECTS = 5
+_MAX_RESPONSE_BYTES = 2_000_000
 
 # --- Same-site subpage discovery ---
 # A thin homepage often hides the actual substance on /about, /projects, etc.
@@ -49,24 +67,97 @@ def _extract_subpage_links(soup: BeautifulSoup, base_url: str) -> list[str]:
     return links
 
 
-async def _fetch_one(client: httpx.AsyncClient, url: str, discover_links: bool) -> tuple[str | None, list[str]]:
-    """Fetches a single URL and extracts its visible text (capped at
-    _MAX_CHARS), optionally also discovering same-site subpage links. Returns
-    (text, subpage_links); text is None (logged, non-fatal) on any fetch
-    failure or non-HTML response."""
+async def _is_public_url(url: str) -> bool:
+    """SSRF check for one URL: http/https scheme, and the host (a literal IP
+    or every DNS-resolved address) must be a public/global IP - loopback,
+    private (RFC1918), link-local (incl. the cloud metadata endpoint), and
+    reserved ranges are all rejected, as is anything that fails to
+    resolve."""
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if parsed.scheme not in ("http", "https") or not host:
+        return False
     try:
-        response = await client.get(url, headers=_HEADERS)
-        response.raise_for_status()
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        pass  # not an IP literal - resolve it below
+    try:
+        loop = asyncio.get_running_loop()
+        infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    addresses = {info[4][0] for info in infos}
+    if not addresses:
+        return False
+    try:
+        return all(ipaddress.ip_address(address).is_global for address in addresses)
+    except ValueError:
+        return False
+
+
+async def _read_capped(response: httpx.Response) -> str:
+    """Reads a streamed response body up to _MAX_RESPONSE_BYTES (truncating
+    beyond that, logged) and decodes it with the response's declared charset
+    (utf-8 fallback, undecodable bytes replaced)."""
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        body.extend(chunk)
+        if len(body) >= _MAX_RESPONSE_BYTES:
+            logger.info(
+                "Page at %s exceeds %d bytes; truncating before parse.",
+                response.request.url, _MAX_RESPONSE_BYTES,
+            )
+            break
+    return bytes(body[:_MAX_RESPONSE_BYTES]).decode(response.encoding or "utf-8", errors="replace")
+
+
+async def _get_validated(client: httpx.AsyncClient, url: str) -> tuple[httpx.Response, str] | None:
+    """GETs a URL with the SSRF check applied to it AND to every redirect hop
+    (redirects are followed manually here - the client must have
+    follow_redirects disabled), streaming the winning response's body through
+    the byte cap. Returns (response, body_text), or None when the URL (or a
+    hop) is blocked or the redirect chain is too long. HTTP errors raise, as
+    before - the caller catches them."""
+    current = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        if not await _is_public_url(current):
+            logger.warning("Blocked page fetch of non-public/unresolvable URL %s", current)
+            return None
+        request = client.build_request("GET", current, headers=_HEADERS)
+        response = await client.send(request, stream=True)
+        try:
+            if response.is_redirect and "location" in response.headers:
+                current = urljoin(current, response.headers["location"])
+                continue
+            response.raise_for_status()
+            return response, await _read_capped(response)
+        finally:
+            await response.aclose()
+    logger.warning("Too many redirects (>%d) fetching %s", _MAX_REDIRECTS, url)
+    return None
+
+
+async def _fetch_one(client: httpx.AsyncClient, url: str, discover_links: bool) -> tuple[str | None, list[str]]:
+    """Fetches a single URL (SSRF-validated per hop, body size-capped - see
+    _get_validated) and extracts its visible text (capped at _MAX_CHARS),
+    optionally also discovering same-site subpage links. Returns
+    (text, subpage_links); text is None (logged, non-fatal) on any fetch
+    failure, blocked URL, or non-HTML response."""
+    try:
+        fetched = await _get_validated(client, url)
     except httpx.HTTPError as exc:
         logger.warning("Failed to fetch page %s: %s", url, exc)
         return None, []
+    if fetched is None:
+        return None, []
+    response, body = fetched
 
     content_type = response.headers.get("content-type", "")
     if "html" not in content_type:
         logger.info("Skipping non-HTML content at %s (content-type: %s)", url, content_type)
         return None, []
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(body, "html.parser")
     # Link discovery must run before nav/footer/header are stripped below -
     # that's exactly where "About"/"Projects" links usually live.
     subpage_links = _extract_subpage_links(soup, url) if discover_links else []
@@ -85,8 +176,10 @@ async def _fetch_one(client: httpx.AsyncClient, url: str, discover_links: bool) 
 async def fetch_page_text(url: str) -> str | None:
     """Fetches and extracts visible text from a single generic page (personal
     site, blog, Medium, dev.to, Kaggle, Behance, etc.). Returns None (logged,
-    non-fatal) on any failure so the scout pipeline can degrade gracefully."""
-    async with httpx.AsyncClient(timeout=_PAGE_FETCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
+    non-fatal) on any failure so the scout pipeline can degrade gracefully.
+    Redirects are followed manually with per-hop SSRF validation (see
+    _get_validated), so follow_redirects stays off on the client."""
+    async with httpx.AsyncClient(timeout=_PAGE_FETCH_TIMEOUT_SECONDS) as client:
         text, _ = await _fetch_one(client, url, discover_links=False)
     return text
 
@@ -98,8 +191,10 @@ async def fetch_page_with_subpages(url: str) -> dict[str, Any] | None:
     never themselves crawled for further links). Returns None only if the
     root page itself couldn't be fetched; a sub-page failing just means it's
     omitted, same graceful-degradation contract as fetch_page_text. Returns
-    {"text": str, "subpages": [{"url": str, "text": str}, ...]}."""
-    async with httpx.AsyncClient(timeout=_PAGE_FETCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
+    {"text": str, "subpages": [{"url": str, "text": str}, ...]}. Redirects
+    are followed manually with per-hop SSRF validation (see _get_validated),
+    so follow_redirects stays off on the client."""
+    async with httpx.AsyncClient(timeout=_PAGE_FETCH_TIMEOUT_SECONDS) as client:
         text, subpage_links = await _fetch_one(client, url, discover_links=True)
         if text is None:
             return None

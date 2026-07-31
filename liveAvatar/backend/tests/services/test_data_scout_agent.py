@@ -490,7 +490,7 @@ async def test_gather_representative_search_returns_empty_without_name():
 # --- Aramco relationship search (Pass A) ------------------------------------
 
 
-async def test_gather_aramco_search_runs_query_and_returns_entry(monkeypatch):
+async def test_gather_relationship_search_runs_query_and_returns_entry(monkeypatch):
     async def fake_search(query, **kwargs):
         assert query == "Acme Corp Saudi Aramco"
         return [{"title": "Acme Corp - Aramco partnership", "url": "https://news.example.com/acme-aramco", "snippet": "Acme signed a deal with Saudi Aramco."}]
@@ -501,7 +501,7 @@ async def test_gather_aramco_search_runs_query_and_returns_entry(monkeypatch):
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
     monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
 
-    result = await scout_gather._gather_aramco_search("Acme Corp")
+    result = await scout_gather._gather_relationship_search("Acme Corp")
 
     assert result == [
         {
@@ -518,16 +518,16 @@ async def test_gather_aramco_search_runs_query_and_returns_entry(monkeypatch):
     ]
 
 
-async def test_gather_aramco_search_returns_empty_without_hits(monkeypatch):
+async def test_gather_relationship_search_returns_empty_without_hits(monkeypatch):
     async def fake_search(query, **kwargs):
         return []
 
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
 
-    assert await scout_gather._gather_aramco_search("Acme Corp") == []
+    assert await scout_gather._gather_relationship_search("Acme Corp") == []
 
 
-async def test_gather_aramco_search_does_not_apply_recency_bias(monkeypatch):
+async def test_gather_relationship_search_does_not_apply_recency_bias(monkeypatch):
     # Unlike revenue/employees/leadership blind-search queries, an old Aramco
     # partnership is still relevant - no time_range should be passed.
     seen_time_range = "not called"
@@ -539,7 +539,7 @@ async def test_gather_aramco_search_does_not_apply_recency_bias(monkeypatch):
 
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
 
-    await scout_gather._gather_aramco_search("Acme Corp")
+    await scout_gather._gather_relationship_search("Acme Corp")
 
     assert seen_time_range is None
 
@@ -839,7 +839,7 @@ async def test_run_scout_gathers_representative_search(patch_settings, monkeypat
 
 
 @respx.mock
-async def test_run_scout_gathers_aramco_search_and_flows_to_synthesis_payload(patch_settings, monkeypatch):
+async def test_run_scout_gathers_relationship_search_and_flows_to_synthesis_payload(patch_settings, monkeypatch):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
 
     async def fake_search(query, **kwargs):
@@ -858,7 +858,7 @@ async def test_run_scout_gathers_aramco_search_and_flows_to_synthesis_payload(pa
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
-    assert result["sources"]["aramco_search"] == [
+    assert result["sources"]["relationship_search"] == [
         {
             "query": "Acme Corp Saudi Aramco",
             "results": [
@@ -873,12 +873,12 @@ async def test_run_scout_gathers_aramco_search_and_flows_to_synthesis_payload(pa
     ]
     # Confirm it actually reaches the synthesis call's payload, not just state.
     synthesis_user_message = json.loads(route.calls[0].request.content)["messages"][1]["content"]
-    assert "aramco_search" in synthesis_user_message
+    assert "relationship_search" in synthesis_user_message
     assert "Saudi Aramco" in synthesis_user_message
 
 
 @respx.mock
-async def test_run_scout_completes_normally_when_aramco_search_returns_nothing(patch_settings, monkeypatch):
+async def test_run_scout_completes_normally_when_relationship_search_returns_nothing(patch_settings, monkeypatch):
     # Graceful degradation: Tavily returning nothing for the Aramco query
     # must never block or fail the rest of the Scout run.
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
@@ -893,13 +893,13 @@ async def test_run_scout_completes_normally_when_aramco_search_returns_nothing(p
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
-    assert "aramco_search" not in result["sources"]
+    assert "relationship_search" not in result["sources"]
     assert result["internet_findings"] == "report"
     assert result["findings_ok"] is True
 
 
 @respx.mock
-async def test_run_scout_aramco_search_applies_relevance_filter(patch_settings, monkeypatch):
+async def test_run_scout_relationship_search_applies_relevance_filter(patch_settings, monkeypatch):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
 
     async def fake_search(query, **kwargs):
@@ -921,7 +921,7 @@ async def test_run_scout_aramco_search_applies_relevance_filter(patch_settings, 
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
-    urls = [r["url"] for r in result["sources"]["aramco_search"][0]["results"]]
+    urls = [r["url"] for r in result["sources"]["relationship_search"][0]["results"]]
     assert "https://news.example.com/acme-aramco" in urls
     assert "https://news.example.com/other" not in urls
 
@@ -1192,7 +1192,7 @@ async def test_gather_blind_search_runs_all_eight_queries_concurrently(patch_set
 
 
 @respx.mock
-async def test_run_pass_a_runs_aramco_search_concurrently_with_blind_search(patch_settings, monkeypatch):
+async def test_run_pass_a_runs_relationship_search_concurrently_with_blind_search(patch_settings, monkeypatch):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     delay = 0.05
 
@@ -1219,10 +1219,10 @@ async def test_run_pass_a_runs_aramco_search_concurrently_with_blind_search(patc
     await scout_gather._run_pass_a(state, "Acme Corp", "Jane Doe", "Visit us at https://acme.example.com", None)
     elapsed = time.monotonic() - start
 
-    # 8 blind-search queries + representative_search + aramco_search all fire
+    # 8 blind-search queries + representative_search + relationship_search all fire
     # concurrently - sequential would take ~10 * delay, concurrent ~1 * delay.
     assert elapsed < delay * 4
-    assert state.aramco_search == [
+    assert state.relationship_search == [
         {
             "query": "Acme Corp Saudi Aramco",
             "results": [
@@ -1312,7 +1312,7 @@ async def test_run_scout_gathering_timeout_proceeds_with_partial_data(patch_sett
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     monkeypatch.setattr(data_scout_agent, "_GATHER_TIMEOUT_SECONDS", 0.05)
 
-    async def slow_search(query):
+    async def slow_search(query, **kwargs):
         await asyncio.sleep(1.0)
         return []
 
@@ -1399,7 +1399,7 @@ async def test_run_scout_redacts_pii_from_enriched_search_result_text(patch_sett
 
 
 @respx.mock
-async def test_run_scout_redacts_pii_from_aramco_search_results(patch_settings, monkeypatch):
+async def test_run_scout_redacts_pii_from_relationship_search_results(patch_settings, monkeypatch):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
 
     async def fake_search(query, **kwargs):
@@ -1424,7 +1424,7 @@ async def test_run_scout_redacts_pii_from_aramco_search_results(patch_settings, 
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
-    entry = result["sources"]["aramco_search"][0]
+    entry = result["sources"]["relationship_search"][0]
     assert "555-123-4567" not in entry["results"][0]["snippet"]
     assert "jane.doe@acme.example" not in entry["results"][0]["text"]
 
@@ -1650,3 +1650,156 @@ async def test_run_scout_targeted_search_drops_unrelated_company_result(patch_se
     assert targeted_entry is not None
     assert len(targeted_entry["results"]) == 1
     assert targeted_entry["results"][0]["title"] == "Acme Corp has 50 employees"
+
+
+# --- Config-driven relationship check ---------------------------------------
+
+
+async def test_gather_relationship_search_disabled_when_entity_blank(patch_settings, monkeypatch):
+    # Blanking scout_relationship_check_entity must skip the search entirely
+    # (zero Tavily calls) - the check is a per-deployment client requirement,
+    # not shared product behavior.
+    patch_settings(scout_relationship_check_entity="")
+    search_calls = []
+
+    async def fake_search(query, **kwargs):
+        search_calls.append(query)
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+
+    assert await scout_gather._gather_relationship_search("Acme Corp") == []
+    assert search_calls == []
+
+
+async def test_gather_relationship_search_uses_configured_entity(patch_settings, monkeypatch):
+    patch_settings(scout_relationship_check_entity="Globex Corporation")
+    seen_queries = []
+
+    async def fake_search(query, **kwargs):
+        seen_queries.append(query)
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+
+    await scout_gather._gather_relationship_search("Acme Corp")
+
+    assert seen_queries == ["Acme Corp Globex Corporation"]
+
+
+@respx.mock
+async def test_synthesis_system_prompt_includes_relationship_check_when_entity_set(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]})
+    )
+
+    await data_scout_agent._synthesize_internet_findings("Acme Corp", None, {})
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert "MANDATORY RELATIONSHIP CHECK" in system_content
+    assert "Saudi Aramco" in system_content  # the shipped default entity
+    assert "{entity}" not in system_content  # placeholder actually filled in
+
+
+@respx.mock
+async def test_synthesis_system_prompt_omits_relationship_check_when_entity_blank(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL, scout_relationship_check_entity="")
+    route = respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]})
+    )
+
+    await data_scout_agent._synthesize_internet_findings("Acme Corp", None, {})
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert "MANDATORY RELATIONSHIP CHECK" not in system_content
+    assert "Saudi Aramco" not in system_content
+
+
+# --- Pass A resilience (one source failing must not abort the others) --------
+
+
+@respx.mock
+async def test_run_pass_a_survives_one_source_raising(patch_settings, monkeypatch):
+    # The soft-fail contract: an unexpected exception from one Pass A source
+    # (here the representative search) degrades to "nothing from that source"
+    # instead of cancelling its siblings and propagating out of run_scout
+    # into the pipeline.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        if query == "Acme Corp overview":
+            return [{"title": "Acme Corp overview", "url": "https://news.example.com/acme", "snippet": "..."}]
+        return []
+
+    async def exploding_representative_search(representative_name, company_name):
+        raise ValueError("malformed search response")
+
+    async def fake_fetch_page_text(url):
+        return None
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
+    monkeypatch.setattr(scout_gather, "_gather_representative_search", exploding_representative_search)
+
+    state = scout_gather._GatherState()
+    await scout_gather._run_pass_a(state, "Acme Corp", "Jane Doe", None, None)
+
+    assert state.representative_search == []  # failed source degraded to empty
+    assert state.blind_search[0]["query"] == "Acme Corp overview"  # sibling survived
+
+
+# --- Subdomain-aware no-scrape matching --------------------------------------
+
+
+async def test_derive_company_website_skips_regional_linkedin_subdomain(monkeypatch):
+    # in.linkedin.com (common for Indian companies) must be excluded the same
+    # as linkedin.com - exact-match-only exclusion let it through and the
+    # regional profile page could be picked as the company's own website.
+    async def fake_search(query, **kwargs):
+        return [
+            {"title": "Acme Corp - LinkedIn India", "url": "https://in.linkedin.com/company/acme", "snippet": "Acme Corp"},
+            {"title": "Acme", "url": "https://www.acme.example.com/home", "snippet": "..."},
+        ]
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+
+    website = await scout_gather._derive_company_website("Acme Corp", None, None)
+
+    assert website == "https://acme.example.com"
+
+
+@respx.mock
+async def test_run_scout_link_lookup_matches_no_scrape_subdomain(patch_settings, monkeypatch):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_fetch_page_text(url):
+        return None
+
+    async def fake_search(query, **kwargs):
+        if query.startswith("site:in.linkedin.com"):
+            return [{"title": "Acme - LinkedIn", "url": "https://in.linkedin.com/company/acme", "snippet": "A company"}]
+        return []
+
+    monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        side_effect=[
+            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": []})}}]}),
+            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
+        ]
+    )
+
+    result = await data_scout_agent.run_scout(
+        "Acme Corp", "Jane Doe", "Follow us at https://in.linkedin.com/company/acme", None, None
+    )
+
+    assert result["sources"]["link_lookups"][0]["domain"] == "in.linkedin.com"
+    assert result["sources"]["link_lookups"][0]["full_profile_accessible"] is False
+
+
+def test_matches_domain_exact_and_subdomain_but_not_lookalike():
+    assert scout_utils._matches_domain("linkedin.com", ("linkedin.com",)) is True
+    assert scout_utils._matches_domain("in.linkedin.com", ("linkedin.com",)) is True
+    assert scout_utils._matches_domain("notlinkedin.com", ("linkedin.com",)) is False
+    assert scout_utils._matches_domain("linkedin.com.evil.example", ("linkedin.com",)) is False

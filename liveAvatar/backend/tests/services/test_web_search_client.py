@@ -121,3 +121,32 @@ async def test_omitting_time_range_preserves_old_payload_exactly(patch_settings)
     sent_payload = json.loads(route.calls.last.request.content)
     assert "time_range" not in sent_payload
     assert sent_payload == {"query": "Acme Corp overview", "max_results": web_search_client._MAX_RESULTS}
+
+
+@respx.mock
+async def test_non_json_200_response_returns_empty_not_raises(patch_settings):
+    # The never-raises contract must hold even for a 200 with a non-JSON body
+    # (proxy interception, an HTML error page, etc.) - response.json() raises
+    # JSONDecodeError, which is NOT an httpx.HTTPError; an escape here would
+    # abort the whole scout pipeline.
+    patch_settings(tavily_api_key="tvly-key", tavily_api_base_url=TAVILY_BASE_URL)
+    respx.post(f"{TAVILY_BASE_URL}/search").mock(
+        return_value=httpx.Response(200, text="<html>Service temporarily unavailable</html>")
+    )
+
+    assert await web_search_client.search("Acme Corp") == []
+
+
+@respx.mock
+async def test_non_dict_result_items_are_skipped(patch_settings):
+    patch_settings(tavily_api_key="tvly-key", tavily_api_base_url=TAVILY_BASE_URL)
+    respx.post(f"{TAVILY_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={"results": ["not-a-dict", {"title": "Real", "url": "https://news.example/acme", "content": "..."}]},
+        )
+    )
+
+    results = await web_search_client.search("Acme Corp")
+
+    assert [r["url"] for r in results] == ["https://news.example/acme"]

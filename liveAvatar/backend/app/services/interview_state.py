@@ -52,8 +52,8 @@ class VendorProfile:
 @dataclass
 class ScoutReport:
     """The Data Scout Agent's full post-interview company research report
-    (app.services.data_scout_agent.run_scout - the same two-pass Tavily-backed
-    agent that also powers the standalone POST /api/scout tool). `internet_findings`
+    (app.services.data_scout_agent.run_scout, the two-pass Tavily-backed
+    agent). `internet_findings`
     is the synthesized Markdown report, `interview_claims` are the factual
     claims the agent extracted from the transcript/intake material,
     `sources` is the raw structured data gathered (kept for completeness -

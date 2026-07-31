@@ -46,6 +46,8 @@ def _extract_results(data: dict[str, Any]) -> list[dict[str, Any]]:
     the mapped, filtered result list."""
     results = []
     for item in data.get("results") or []:
+        if not isinstance(item, dict):
+            continue
         url = item.get("url")
         if not url:
             continue
@@ -86,6 +88,10 @@ async def search(query: str, *, time_range: str | None = None) -> list[dict[str,
     if time_range is not None:
         payload["time_range"] = time_range
 
+    # Except-Exception, not just httpx.HTTPError: a 200 with a non-JSON body
+    # (response.json() -> JSONDecodeError) or an unexpected response shape
+    # must also degrade to "not available" - callers rely on the never-raises
+    # contract, and an escape here would abort the whole scout pipeline.
     try:
         async with httpx.AsyncClient(timeout=_SEARCH_TIMEOUT_SECONDS) as client:
             response = await client.post(
@@ -98,8 +104,7 @@ async def search(query: str, *, time_range: str | None = None) -> list[dict[str,
             )
             response.raise_for_status()
             response_body = response.json()
-    except httpx.HTTPError as exc:
-        logger.warning("Tavily search failed for query %r: %s", query, exc)
+        return _extract_results(response_body)
+    except Exception as exc:
+        logger.warning("Tavily search failed for query %r: %s: %s", query, type(exc).__name__, exc)
         return []
-
-    return _extract_results(response_body)

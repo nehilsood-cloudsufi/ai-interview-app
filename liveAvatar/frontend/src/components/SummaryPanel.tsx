@@ -4,6 +4,7 @@ import { SESSIONS_SHEET_URL } from '../config';
 import { downloadTranscript } from '../utils/downloadTranscript';
 import { FollowupPanel } from './FollowupPanel';
 import { ScorecardPanel } from './ScorecardPanel';
+import { ScoutMarkdown } from './ScoutMarkdown';
 import { TranscriptBubble } from './TranscriptBubble';
 
 interface SummaryPanelProps {
@@ -137,9 +138,7 @@ function ScoutReportSection({ report }: { report: ScoutReport | null | undefined
         </div>
       )}
       {report.internet_findings ? (
-        <pre className="whitespace-pre-wrap font-sans text-sm text-slate-200 leading-relaxed">
-          {report.internet_findings}
-        </pre>
+        <ScoutMarkdown markdown={report.internet_findings} />
       ) : (
         <p className="text-sm text-slate-500 italic">Research synthesis did not complete for this interview.</p>
       )}

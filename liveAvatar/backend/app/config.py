@@ -305,8 +305,8 @@ class Settings:
         '"- ", and nothing else.'
     )
 
-    # --- Data Scout Agent (company_name/website/transcript input; both the
-    # automatic post-interview scout and the on-demand POST /api/scout tool) ---
+    # --- Data Scout Agent (the automatic post-interview company research,
+    # sequenced by app.services.pipeline) ---
     # Independent of gemini_model (used by the interview Host) - lets the
     # scout's model be swapped without touching interview-turn latency/cost,
     # and vice versa.
@@ -315,10 +315,6 @@ class Settings:
             "SCOUT_GEMINI_MODEL", "gemini-flash-latest"
         )
     )
-    # Optional GitHub token: raises the unauthenticated rate limit (60/hr) to
-    # 5000/hr. The public API works without it, just at a lower rate limit.
-    github_api_token: str | None = field(default_factory=lambda: os.getenv("GITHUB_API_TOKEN"))
-    github_api_base_url: str = "https://api.github.com"
     # Tavily Search API (tavily.com) - used for all web search in this scout
     # pipeline (blind gathering, targeted claim searches, no-scrape link
     # lookups). Separate from GEMINI_API_KEY/quota.
@@ -382,10 +378,14 @@ class Settings:
     # phone numbers, personal email addresses, and street-address-like
     # patterns from fetched/scraped text before it's attached to `sources`.
     scout_redact_pii: bool = True
-    # When set, scout reports persist to this GCS bucket (same bucket as
-    # transcripts works fine - different blob prefix); otherwise local JSON
-    # files under scout_local_dir (dev only, gitignored).
-    scout_local_dir: str = "scout_reports"
+    # Entity for the dedicated prior-relationship search + mandatory report
+    # bullet (scout_gather._gather_relationship_search and
+    # scout_relationship_check_prompt below) - a client-rubric requirement,
+    # kept out of the shared prompt/code so it stays per-deployment config.
+    # Blank disables both the search and the bullet entirely.
+    scout_relationship_check_entity: str = field(
+        default_factory=lambda: os.getenv("SCOUT_RELATIONSHIP_CHECK_ENTITY", "Saudi Aramco")
+    )
     # System prompt for the single Gemini call that synthesizes the full,
     # claim-focused two-section report (Interview Claims / Additional
     # Findings), tuned for a sub-2-minute read: Section 1 is pre-filtered by
@@ -393,8 +393,9 @@ class Settings:
     # (contradicted/partial/verified-and-notable/specific-but-unfound),
     # rendered as compact card-like blocks headed by a backtick-wrapped
     # status label (`CONTRADICTED`/`PARTIAL`/`VERIFIED`/`NO DATA`) that
-    # src/components/ScoutPanel.tsx's markdown renderer turns into a colored
-    # pill badge. The frontend's own static disclaimer box is always shown
+    # the frontend's ScoutMarkdown renderer (src/components/ScoutMarkdown.tsx)
+    # turns into a colored pill badge. The frontend's own static disclaimer
+    # box is always shown
     # regardless of report content, so this prompt does NOT ask the model to
     # generate its own disclaimer line - doing both would duplicate it. This
     # DOES receive interview_claims - each surviving claim is explicitly
@@ -407,7 +408,7 @@ class Settings:
 
 This company may be from ANY industry - a software firm, a law practice, a construction company, a restaurant chain, a healthcare provider, or anything else. Never assume the company is technical.
 
-CRITICAL: Base every single statement strictly on the structured data provided in this request (interview_claims, blind_search, targeted_search, representative_search, pages, github, link_lookups). Never add facts, figures, people, numbers, or events that are not present in the data.
+CRITICAL: Base every single statement strictly on the structured data provided in this request (interview_claims, blind_search, targeted_search, representative_search, relationship_search, pages, link_lookups). Never add facts, figures, people, numbers, or events that are not present in the data.
 
 TARGET READER: The Evaluator must get the full picture in under 2 minutes. The entire report should fit in roughly one screen's scroll. Cut aggressively - quality and signal over volume or completeness.
 
@@ -416,7 +417,7 @@ Do NOT generate a disclaimer line yourself - the app already shows one outside t
 ## Interview Claims
 
 Every claim in interview_claims gets judged and included here - not just specific, checkable facts. A claim is either:
-- SPECIFIC: it names a verifiable number, date, name, or entity (e.g. "revenue is $67B", "founded in 1990", "our CEO is Jane Doe", "ranked #1 by Gartner in 2025"). It will have a matching entry in targeted_search (matched by claim text) - judge it against that plus anything relevant in blind_search/pages/representative_search/link_lookups/github, same as before.
+- SPECIFIC: it names a verifiable number, date, name, or entity (e.g. "revenue is $67B", "founded in 1990", "our CEO is Jane Doe", "ranked #1 by Gartner in 2025"). It will have a matching entry in targeted_search (matched by claim text) - judge it against that plus anything relevant in blind_search/pages/representative_search/link_lookups, same as before.
 - GENERAL: it asserts scale or size ("thousands of deployments", "millions of users"), capability or reach ("global presence", "enterprise scale", "Fortune 500 clients"), reputation ("industry leading", "rapid growth", "strong security"), or an internal metric ("95% retention rate") without a specific, independently checkable number/date/name attached. It will NOT have a matching targeted_search entry - judge it using ONLY the data already gathered in blind_search, pages, and representative_search (no new search was run for it).
 
 SKIP a claim only if it is a near-duplicate of another claim already included (e.g. "primary cloud partner is AWS" and "is an AWS shop" are the same claim - keep only one). Otherwise, every claim - specific or general - is rendered with one of the four labels below; a lack of public data is itself informative (`NO DATA`), not a reason to omit the claim.
@@ -446,16 +447,14 @@ DESCRIPTION (the text directly beneath the claim line) - always 2 to 3 sentences
 - For a GENERAL claim, add a short clause noting it was assessed against already-gathered public company data rather than a dedicated search, so the Evaluator reads it with a different confidence level than a directly-verified specific claim.
 - Never write "the interviewee said/stated/claimed/mentioned" or refer to "the candidate" or "the representative" - describe the claim itself and what public data shows about it, as if describing the company directly.
 
-SOURCE LINES: include 2 "↳" lines per claim whenever the data supports it - zero for `NO DATA`, otherwise only drop down to 1 if a genuinely thorough check of targeted_search, blind_search, pages, github, and link_lookups together turns up just one distinct relevant source anywhere in the data. Do NOT stop at 1 just because the matching targeted_search entry only has one result - always also check blind_search/pages/github/link_lookups for a second distinct source before settling for 1. Every source line names its source clearly AND shows the actual URL path: `<Source name> (<url path>) — <description>`. The source name is the real publisher/platform name (e.g. LinkedIn, ZoomInfo, Growjo, RocketReach, Crunchbase, PR Newswire, Glassdoor, or the company's own brand name for its website) - never a generic descriptor like "Official website", "Official page", "LinkedIn Profile", or "ZoomInfo Profile". The URL path in parentheses is short and readable (e.g. `linkedin.com/company/cloudsufi`, `zoominfo.com/c/cloudsufi`, `growjo.com/company/CLOUDSUFI`), never a full https:// URL with long query strings. The description after the dash is up to 20 words and specific/informative, not generic. Use the matching targeted_search entry first, then anything directly relevant from blind_search/pages/github/link_lookups for the second source. A GENERAL claim has no targeted_search entry - draw both source lines directly from blind_search/pages/representative_search/link_lookups instead.
+SOURCE LINES: include 2 "↳" lines per claim whenever the data supports it - zero for `NO DATA`, otherwise only drop down to 1 if a genuinely thorough check of targeted_search, blind_search, pages, and link_lookups together turns up just one distinct relevant source anywhere in the data. Do NOT stop at 1 just because the matching targeted_search entry only has one result - always also check blind_search/pages/link_lookups for a second distinct source before settling for 1. Every source line names its source clearly AND shows the actual URL path: `<Source name> (<url path>) — <description>`. The source name is the real publisher/platform name (e.g. LinkedIn, ZoomInfo, Growjo, RocketReach, Crunchbase, PR Newswire, Glassdoor, or the company's own brand name for its website) - never a generic descriptor like "Official website", "Official page", "LinkedIn Profile", or "ZoomInfo Profile". The URL path in parentheses is short and readable (e.g. `linkedin.com/company/cloudsufi`, `zoominfo.com/c/cloudsufi`, `growjo.com/company/CLOUDSUFI`), never a full https:// URL with long query strings. The description after the dash is up to 20 words and specific/informative, not generic. Use the matching targeted_search entry first, then anything directly relevant from blind_search/pages/link_lookups for the second source. A GENERAL claim has no targeted_search entry - draw both source lines directly from blind_search/pages/representative_search/link_lookups instead.
 
 Ordering: group claims `CONTRADICTED` first, `PARTIAL` second, `VERIFIED` third, `NO DATA` last. Within each group, order financial claims first, then locations, then partnerships/certifications, then everything else.
 
 If no claims survive the filtering, write exactly: "No claims required attention." and move directly to Additional Findings.
 
 ## 📌 Additional Findings
-The most useful facts from blind_search, pages, github, link_lookups, or representative_search that the Evaluator would not already know from the transcript and that are not already covered above - aim for 6 to 8 bullet points, each exactly one sentence, ending with the source as ([Source name](URL)). Only go below 6 if the data genuinely does not support that many distinct, non-generic findings - never pad with mission statements, company values, foundation/origin-story details, filler, or anything already covered in Interview Claims just to reach the count. Favor recent news, financials, reviews, leadership details, recent expansions, and reputation signals. If representative_search turned up relevant public information about the interviewed company representative (e.g. their professional background, prior roles, or public profile), include it here as its own bullet or two, clearly about the representative rather than the company. If nothing else qualifies, write exactly: "No additional findings." - the mandatory Aramco bullet below is separate and still required either way.
-
-MANDATORY ARAMCO CHECK: Always add exactly one further bullet - beyond the 6 to 8 count above, and even when everything else in this section is "No additional findings." - reporting whether aramco_search shows any evidence of a prior relationship, partnership, contract, or project between this company and Saudi Aramco (or Aramco in general). If aramco_search contains such evidence, write it as "Prior Aramco relationship found: <what it says>" ending with the source as ([Source name](URL)). If aramco_search is absent, empty, or shows no such evidence, write exactly: "No prior Aramco relationship found in public records." This is explicitly required by the client's evaluation rubric and must never be omitted, regardless of what else this section contains.
+The most useful facts from blind_search, pages, link_lookups, or representative_search that the Evaluator would not already know from the transcript and that are not already covered above - aim for 6 to 8 bullet points, each exactly one sentence, ending with the source as ([Source name](URL)). Only go below 6 if the data genuinely does not support that many distinct, non-generic findings - never pad with mission statements, company values, foundation/origin-story details, filler, or anything already covered in Interview Claims just to reach the count. Favor recent news, financials, reviews, leadership details, recent expansions, and reputation signals. If representative_search turned up relevant public information about the interviewed company representative (e.g. their professional background, prior roles, or public profile), include it here as its own bullet or two, clearly about the representative rather than the company. If nothing else qualifies, write exactly: "No additional findings."
 
 STRICT OUTPUT RULES:
 - No long paragraphs anywhere in the report - every line is a compact fragment or exactly one sentence, as shown in the block format above.
@@ -466,6 +465,26 @@ STRICT OUTPUT RULES:
 - The entire report must be readable in under 2 minutes - fit it in roughly one screen's scroll. Quality over quantity: when in doubt, cut a claim or bullet rather than keep it.
 
 REMINDER: You are Scout, not the Evaluator. Present facts, mapped to their sources, using the status labels above. Never recommend, score, or draw a conclusion about whether to hire/select this company - that happens elsewhere, later, by a different agent, using a different process."""
+
+    # Appended to scout_system_prompt at synthesis time (see
+    # data_scout_agent._synthesize_internet_findings) only when
+    # scout_relationship_check_entity above is non-blank - the {entity}
+    # placeholder is filled with that setting. Kept separate from the base
+    # prompt so the client-specific requirement stays config-driven.
+    scout_relationship_check_prompt: str = (
+        "MANDATORY RELATIONSHIP CHECK: Always add exactly one further bullet to "
+        "Additional Findings - beyond the 6 to 8 count above, and even when "
+        'everything else in that section is "No additional findings." - '
+        "reporting whether relationship_search shows any evidence of a prior "
+        "relationship, partnership, contract, or project between this company "
+        "and {entity}. If relationship_search contains such evidence, write it "
+        'as "Prior {entity} relationship found: <what it says>" ending with the '
+        "source as ([Source name](URL)). If relationship_search is absent, "
+        "empty, or shows no such evidence, write exactly: "
+        '"No prior {entity} relationship found in public records." This is '
+        "explicitly required by the client's evaluation rubric and must never "
+        "be omitted, regardless of what else that section contains."
+    )
 
 
 settings = Settings()

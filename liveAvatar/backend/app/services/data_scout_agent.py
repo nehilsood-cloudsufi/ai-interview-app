@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.services import scout_gather, scout_utils
+from app.services import gemini_client, scout_gather, scout_utils
 
 logger = logging.getLogger(__name__)
 
@@ -30,28 +30,26 @@ _GATHER_TIMEOUT_SECONDS = 45.0  # total wall-clock budget for Pass A + Pass B co
 
 
 async def _post_to_gemini(payload: dict[str, Any]) -> str:
-    """Sends a chat/completions payload to Gemini with retry-on-5xx/timeout
-    (up to _SYNTHESIS_MAX_ATTEMPTS), raising immediately on 4xx. Returns the
-    model's reply text; raises the last error if all attempts fail."""
+    """Sends a chat/completions payload to Gemini (through the shared
+    gemini_client, so the pinned-fallback-model retry applies) with
+    retry-on-5xx/timeout (up to _SYNTHESIS_MAX_ATTEMPTS), raising immediately
+    on 4xx. Returns the model's reply text; raises the last error if all
+    attempts fail."""
     last_error: Exception | None = None
     for attempt in range(1, _SYNTHESIS_MAX_ATTEMPTS + 1):
         try:
-            async with httpx.AsyncClient(timeout=_SYNTHESIS_TIMEOUT_SECONDS) as client:
-                response = await client.post(
-                    scout_gather._gemini_chat_completions_url(),
-                    json=payload,
-                    headers=scout_gather._gemini_headers(),
-                )
-                if response.status_code != 200:
-                    logger.error(
-                        "Gemini synthesis HTTP %s on attempt %d/%d: %s",
-                        response.status_code, attempt, _SYNTHESIS_MAX_ATTEMPTS,
-                        response.text[:500],
-                    )
-                response.raise_for_status()
-                response_body = response.json()
+            response_body = await gemini_client.chat_completion(
+                payload,
+                timeout=_SYNTHESIS_TIMEOUT_SECONDS,
+                fallback_model=settings.gemini_model_fallback,
+            )
             return response_body["choices"][0]["message"]["content"].strip()
         except httpx.HTTPStatusError as exc:
+            logger.error(
+                "Gemini synthesis HTTP %s on attempt %d/%d: %s",
+                exc.response.status_code, attempt, _SYNTHESIS_MAX_ATTEMPTS,
+                exc.response.text[:500],
+            )
             last_error = exc
             if exc.response.status_code < 500 or attempt == _SYNTHESIS_MAX_ATTEMPTS:
                 raise
@@ -100,10 +98,21 @@ async def _synthesize_internet_findings(company_name: str, company_website: str 
         "applicable):\n"
         f"{payload_json}"
     )
+    # The relationship-entity check (a client-rubric requirement) is a
+    # config-driven prompt suffix, not part of the base prompt - blanking
+    # scout_relationship_check_entity removes both the dedicated search
+    # (scout_gather._gather_relationship_search) and this instruction.
+    system_content = settings.scout_system_prompt
+    entity = settings.scout_relationship_check_entity.strip()
+    if entity:
+        system_content = (
+            f"{system_content}\n\n"
+            f"{settings.scout_relationship_check_prompt.format(entity=entity)}"
+        )
     payload = {
         "model": settings.scout_gemini_model,
         "messages": [
-            {"role": "system", "content": settings.scout_system_prompt},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": user_content},
         ],
     }
@@ -172,8 +181,8 @@ async def run_scout(
         sources["blind_search"] = state.blind_search
     if state.representative_search:
         sources["representative_search"] = state.representative_search
-    if state.aramco_search:
-        sources["aramco_search"] = state.aramco_search
+    if state.relationship_search:
+        sources["relationship_search"] = state.relationship_search
     if state.link_lookups:
         sources["link_lookups"] = state.link_lookups
     if state.targeted_search:

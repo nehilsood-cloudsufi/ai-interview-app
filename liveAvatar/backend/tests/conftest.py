@@ -113,13 +113,6 @@ def tmp_transcripts_dir(tmp_path, patch_settings):
 
 
 @pytest.fixture
-def tmp_scout_dir(tmp_path, patch_settings):
-    directory = tmp_path / "scout_reports"
-    patch_settings(scout_local_dir=str(directory), gcs_bucket=None)
-    return directory
-
-
-@pytest.fixture
 def fake_gcs_client(monkeypatch):
     from google.cloud import storage
 

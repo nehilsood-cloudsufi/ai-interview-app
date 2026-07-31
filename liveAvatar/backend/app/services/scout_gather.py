@@ -7,10 +7,8 @@ import asyncio
 import logging
 from typing import Any
 
-import httpx
-
 from app.config import settings
-from app.services import page_fetcher, scout_utils, web_search_client
+from app.services import gemini_client, page_fetcher, scout_utils, web_search_client
 
 logger = logging.getLogger(__name__)
 
@@ -44,17 +42,6 @@ _RECENCY_BIASED_BLIND_SEARCH_QUERY_TEMPLATES = frozenset({
     "{name} employees",
     "{name} leadership",
 })
-
-
-def _gemini_chat_completions_url() -> str:
-    return f"{settings.gemini_base_url}chat/completions"
-
-
-def _gemini_headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {settings.gemini_api_key}",
-        "Content-Type": "application/json",
-    }
 
 
 async def _enrich_with_full_text(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -203,19 +190,23 @@ async def _derive_company_website(
     return None
 
 
-async def _gather_aramco_search(company_name: str) -> list[dict[str, Any]]:
+async def _gather_relationship_search(company_name: str) -> list[dict[str, Any]]:
     """One dedicated search for any prior publicly known relationship,
-    partnership, contract, or project between the company and Saudi Aramco -
-    explicitly required by the client's evaluation rubric, so it runs as its
-    own named query rather than being folded into the generic
-    _BLIND_SEARCH_QUERY_TEMPLATES loop (that set stays untouched). No
-    recency bias is applied - unlike revenue/employees/leadership, an old
-    Aramco partnership is still relevant however long ago it happened.
-    Returns a single {"query", "results"} entry (same shape as a
-    blind_search/representative_search entry) or [] if nothing came back or
-    survives relevance filtering - never raises, same as every other search
-    in this module."""
-    query = f"{company_name} Saudi Aramco"
+    partnership, contract, or project between the company and the entity
+    named by settings.scout_relationship_check_entity (a client-rubric
+    requirement - "Saudi Aramco" by default, env-overridable, and disabled
+    entirely when blank). Runs as its own named query rather than being
+    folded into the generic _BLIND_SEARCH_QUERY_TEMPLATES loop (that set
+    stays untouched). No recency bias is applied - unlike revenue/employees/
+    leadership, an old partnership is still relevant however long ago it
+    happened. Returns a single {"query", "results"} entry (same shape as a
+    blind_search/representative_search entry) or [] if the check is
+    disabled, nothing came back, or nothing survives relevance filtering -
+    never raises, same as every other search in this module."""
+    entity = settings.scout_relationship_check_entity.strip()
+    if not entity:
+        return []
+    query = f"{company_name} {entity}"
     hits = await web_search_client.search(query)
     if not hits:
         return []
@@ -259,7 +250,10 @@ async def _gather_link_lookups(discovered_urls: list[str]) -> list[dict[str, Any
     lookups = []
     for url in discovered_urls:
         domain = scout_utils._domain_of(url)
-        if domain in settings.no_scrape_domains:
+        # Suffix-aware, not exact: regional/mobile subdomains of no-scrape
+        # platforms (in.linkedin.com, m.facebook.com, ...) must get the same
+        # search-instead-of-scrape treatment as the bare domain.
+        if scout_utils._matches_domain(domain, settings.no_scrape_domains):
             lookups.append(await _lookup_no_scrape_link(url, domain))
     return lookups
 
@@ -335,14 +329,14 @@ async def _extract_claims(transcript: str | None, extra_context: str | None, doc
     }
 
     try:
-        async with httpx.AsyncClient(timeout=_CLAIM_EXTRACTION_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                _gemini_chat_completions_url(),
-                json=payload,
-                headers=_gemini_headers(),
-            )
-            response.raise_for_status()
-            response_body = response.json()
+        # Through the shared gemini_client so the pinned-fallback-model retry
+        # applies here too - an alias hot-swap must not silently disable
+        # claim extraction.
+        response_body = await gemini_client.chat_completion(
+            payload,
+            timeout=_CLAIM_EXTRACTION_TIMEOUT_SECONDS,
+            fallback_model=settings.gemini_model_fallback,
+        )
         content = response_body["choices"][0]["message"]["content"]
         claims = scout_utils._parse_claims(content)
         logger.info("Extracted %d claim(s)", len(claims))
@@ -398,7 +392,7 @@ class _GatherState:
         self.pages: list[dict[str, Any]] = []
         self.blind_search: list[dict[str, Any]] = []
         self.representative_search: list[dict[str, Any]] = []
-        self.aramco_search: list[dict[str, Any]] = []
+        self.relationship_search: list[dict[str, Any]] = []
         self.link_lookups: list[dict[str, Any]] = []
         self.claims: list[str] = []
         self.targeted_search: list[dict[str, Any]] = []
@@ -416,19 +410,31 @@ async def _run_pass_a(
     decision here. There is no dedicated website field on the intake form -
     the company website is derived first (see _derive_company_website), then
     its fetch, the 8 blind-search queries, the representative search, and
-    the dedicated Saudi Aramco relationship search (see
-    _gather_aramco_search - client-rubric-required, always run, no recency
-    bias) all run concurrently - they're independent of each other. Writes
-    results into `state`; returns nothing."""
+    the dedicated relationship-entity search (see
+    _gather_relationship_search - client-rubric-required, configurable, no
+    recency bias) all run concurrently - they're independent of each other.
+    return_exceptions=True so one source blowing up degrades to "nothing
+    from that source" (logged) instead of cancelling its siblings and
+    aborting the whole run - the same per-item policy the blind-search and
+    targeted-search gathers already use. Writes results into `state`;
+    returns nothing."""
     company_website = await _derive_company_website(company_name, extra_context, documents)
     state.company_website = company_website
 
-    page_data, blind_search, representative_search, aramco_search = await asyncio.gather(
+    gathered = await asyncio.gather(
         _maybe_fetch_website(company_website),
         _gather_blind_search(company_name),
         _gather_representative_search(representative_name, company_name),
-        _gather_aramco_search(company_name),
+        _gather_relationship_search(company_name),
+        return_exceptions=True,
     )
+    source_names = ("website fetch", "blind search", "representative search", "relationship search")
+    fallbacks = (None, [], [], [])
+    for index, (name, result) in enumerate(zip(source_names, gathered)):
+        if isinstance(result, BaseException):
+            logger.warning("Pass A %s failed: %s: %s", name, type(result).__name__, result)
+            gathered[index] = fallbacks[index]
+    page_data, blind_search, representative_search, relationship_search = gathered
 
     if page_data:
         # The company's own derived website - the most credible source
@@ -458,8 +464,8 @@ async def _run_pass_a(
     for entry in representative_search:
         state.already_fetched_urls.update(result["url"] for result in entry["results"])
 
-    state.aramco_search = aramco_search
-    for entry in aramco_search:
+    state.relationship_search = relationship_search
+    for entry in relationship_search:
         state.already_fetched_urls.update(result["url"] for result in entry["results"])
 
     # extra_context/documents/website text are scanned here only for literal
