@@ -44,7 +44,7 @@ state (which question is next, follow-up limits, merging profile updates) is
 deterministic code we can unit-test, not the LLM's job. After the interview ends,
 a post-interview **pipeline** (`pipeline.py`, an in-process `asyncio` task) runs
 three more agents in sequence: the **Scout** researches the company on the web
-(Gemini + Google Search grounding), the **Evaluator** scores the whole transcript
+(two-pass Tavily web search + page fetching + Gemini synthesis), the **Evaluator** scores the whole transcript
 against the rubric in one holistic pass, and the **Coordinator** applies a
 deterministic threshold rule to recommend advancing / a clarification call /
 nothing. Crucially, the Scout runs **only after** the interview — it never sees
@@ -325,7 +325,7 @@ gcloud run deploy <service> \
   --region <region> \
   --allow-unauthenticated \
   --no-cpu-throttling \
-  --update-secrets "LIVEAVATAR_API_KEY=LIVEAVATAR_API_KEY:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,DEMO_PASSCODE=DEMO_PASSCODE:latest" \
+  --update-secrets "LIVEAVATAR_API_KEY=LIVEAVATAR_API_KEY:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,DEMO_PASSCODE=DEMO_PASSCODE:latest,TAVILY_API_KEY=TAVILY_API_KEY:latest" \
   --update-env-vars "PROD_AVATAR_ID=<public-avatar-id>,PROD_VOICE_ID=<voice-id>,DEFAULT_DOMAIN=frontier_tech,GCS_BUCKET=<bucket>,HOST_STREAMING_ENABLED=true"
 ```
 
@@ -431,9 +431,11 @@ top level.
   `transcripts/{session_id}.json` (via Application Default Credentials). If unset,
   they're written as local JSON under `backend/transcripts/` — the zero-config dev
   fallback, gitignored.
-- **Scout insights are download-only by design.** The Scout's findings are
-  included in the downloadable Markdown record, but deliberately not rendered in
-  the summary UI.
+- **The Scout report renders in the summary UI** (a deliberate 2026-07-31
+  decision reversing the earlier download-only rule): `SummaryPanel` shows the
+  claim-labelled report via the `ScoutMarkdown` renderer, and it's also included
+  in the downloadable Markdown record. Note the vendor themselves can see it —
+  including `CONTRADICTED` labels on their own claims.
 - **Never pair the sandbox avatar with `is_sandbox: false`** — LiveKit times out
   silently (see §4.2).
 - **Summary failures never lose the transcript.** If Gemini can't produce the
@@ -486,9 +488,9 @@ If you ever migrate this code elsewhere, these are the clean seams:
   GCP Pub/Sub publish/subscriber would replace the in-process `asyncio` task in
   production.
 - **`gemini_client.py`** — the one shared LLM HTTP path (Gemini's OpenAI-compatible
-  chat endpoint) used by every agent — *except* the Scout's native
-  Google-Search-grounded call in `scout_agent.py`, which is the only other LLM
-  HTTP path.
+  chat endpoint) used by every agent, the Data Scout's claim-extraction and
+  synthesis calls included (the Scout's web retrieval goes through Tavily via
+  `web_search_client.py` + `page_fetcher.py`, not an LLM).
 - **`liveavatar_client.py`** — isolates **all** HeyGen HTTP (contexts, per-interview
   LLM configs + secrets, session tokens, stop). If HeyGen's API changes, it changes
   here.

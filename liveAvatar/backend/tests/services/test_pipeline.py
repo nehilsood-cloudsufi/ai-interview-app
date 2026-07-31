@@ -443,3 +443,69 @@ async def test_blank_company_name_skips_scout_and_still_reaches_ready(monkeypatc
 
     assert state.pipeline_status == "ready"
     assert state.scout_report is None
+
+
+async def test_scout_deadline_exceeded_still_reaches_ready(monkeypatch):
+    # The pipeline bounds one scout run with a hard wall-clock deadline -
+    # unbounded synthesis retries (~10min worst case) under Cloud Run CPU
+    # throttling risked losing the record to an instance scale-down.
+    monkeypatch.setattr(pipeline, "_SCOUT_DEADLINE_SECONDS", 0.05)
+    scorecard = make_scorecard({"interest": 80.0}, overall=80.0)
+
+    async def hanging_run_scout(*args, **kwargs):
+        import asyncio
+
+        await asyncio.sleep(5.0)
+
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
+        assert scout_report is None
+        return scorecard
+
+    async def fake_save(session_id, payload):
+        pass
+
+    monkeypatch.setattr(data_scout_agent, "run_scout", hanging_run_scout)
+    monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
+    monkeypatch.setattr(transcript_store, "save", fake_save)
+
+    state = make_state()
+    await pipeline.run(state, "sid", make_payload())
+
+    assert state.pipeline_status == "ready"
+    assert state.scout_report is None
+    assert state.scorecard == scorecard
+
+
+async def test_persisted_scout_report_sources_are_truncated(monkeypatch):
+    # The raw sources dict (page texts up to 12k chars each) must not land
+    # untruncated in the persisted record - the same caps the synthesis
+    # payload gets apply to what's saved/served by GET /api/transcript.
+    scout_result = make_scout_result(
+        sources={"pages": [{"url": "https://acme.example", "text": "x" * 12_000, "subpages": []}]}
+    )
+    scorecard = make_scorecard({"interest": 80.0}, overall=80.0)
+
+    async def fake_run_scout(*args, **kwargs):
+        return scout_result
+
+    async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
+        return scorecard
+
+    save_calls: list[dict] = []
+
+    async def fake_save(session_id, payload):
+        save_calls.append(dict(payload))
+
+    monkeypatch.setattr(data_scout_agent, "run_scout", fake_run_scout)
+    monkeypatch.setattr(evaluator_agent, "score_interview", fake_score_interview)
+    monkeypatch.setattr(transcript_store, "save", fake_save)
+
+    state = make_state()
+    await pipeline.run(state, "sid", make_payload())
+
+    saved_text = save_calls[0]["scout_report"]["sources"]["pages"][0]["text"]
+    assert len(saved_text) < 4_000
+    assert "chars omitted" in saved_text
+    # The in-memory state keeps the full sources (the Evaluator never sees
+    # them; truncation is a persistence concern only).
+    assert len(state.scout_report.sources["pages"][0]["text"]) == 12_000

@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.config import settings
+from app.services import scout_utils
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,13 @@ def _source_tier(url: str) -> str:
     unparsable URL) defaults to "unverified" rather than dropping the result
     or crashing the whole search call."""
     try:
-        return "trusted" if _domain_of(url) in settings.scout_trusted_domains else "unverified"
+        # Suffix-aware like every other domain blocklist in the scout
+        # pipeline - "news.reuters.com" must count as "reuters.com".
+        return (
+            "trusted"
+            if scout_utils._matches_domain(_domain_of(url), settings.scout_trusted_domains)
+            else "unverified"
+        )
     except Exception:
         logger.warning("Source-tier classification failed for %r; defaulting to unverified.", url, exc_info=True)
         return "unverified"
@@ -52,7 +59,7 @@ def _extract_results(data: dict[str, Any]) -> list[dict[str, Any]]:
         if not url:
             continue
         try:
-            if _domain_of(url) in settings.scout_low_quality_domains:
+            if scout_utils._matches_domain(_domain_of(url), settings.scout_low_quality_domains):
                 continue
         except Exception:
             logger.warning("Low-quality domain check failed for %r; keeping result.", url, exc_info=True)

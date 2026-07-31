@@ -112,21 +112,39 @@ def _render_system_content(rubric: dict[str, RubricCategory]) -> str:
 
 
 def _render_findings(scout_report: ScoutReport) -> str:
-    """Render the Data Scout's synthesized report as a labelled block for the
+    """Render the Data Scout's synthesized report as labelled blocks for the
     user message, so the Evaluator can weigh the vendor's claims against
     independent research. Only the finished write-up (`internet_findings`) and
     the extracted `interview_claims` are passed in - not the raw `sources`
     dict Scout gathered them from, which is far too large/granular to be
-    useful in a scoring prompt."""
-    lines = ["Independent research findings (from internet, not from the vendor):", ""]
-    if scout_report.interview_claims:
-        lines.append("Factual claims the vendor made, extracted for verification:")
-        lines.extend(f"- {claim}" for claim in scout_report.interview_claims)
-        lines.append("")
+    useful in a scoring prompt.
+
+    Returns "" when the report is entirely empty (no claims, no findings,
+    synthesis succeeded) - e.g. a deployment with no TAVILY_API_KEY produces
+    exactly that, and rendering a bare "independent research" header over
+    nothing reads to the scoring model as "we researched and found nothing
+    about this company", a signal nobody actually produced.
+
+    The vendor's own extracted claims are labelled as SELF-REPORTED, in
+    their own block - they must never sit under the independent-research
+    header, or the model may weight them as external corroboration."""
+    if not scout_report.interview_claims and not scout_report.internet_findings and scout_report.findings_ok:
+        return ""
+    lines: list[str] = []
     if scout_report.internet_findings:
+        lines.append("Independent research findings (from internet, not from the vendor):")
+        lines.append("")
         lines.append(scout_report.internet_findings)
     elif not scout_report.findings_ok:
-        lines.append("(Research synthesis failed for this interview; no findings available.)")
+        lines.append("(Independent research synthesis failed for this interview; no findings available.)")
+    if scout_report.interview_claims:
+        if lines:
+            lines.append("")
+        lines.append(
+            "Factual claims the vendor made during the interview (self-reported and "
+            "unverified - extracted so you can cross-check them against the research above):"
+        )
+        lines.extend(f"- {claim}" for claim in scout_report.interview_claims)
     return "\n".join(lines)
 
 
@@ -181,7 +199,9 @@ async def score_interview(
             f"before the interview, not independently verified):\n{vendor_context}"
         )
     if scout_report is not None:
-        user_content = f"{user_content}\n\n{_render_findings(scout_report)}"
+        findings_block = _render_findings(scout_report)
+        if findings_block:
+            user_content = f"{user_content}\n\n{findings_block}"
 
     payload = {
         "model": settings.gemini_pro_model,

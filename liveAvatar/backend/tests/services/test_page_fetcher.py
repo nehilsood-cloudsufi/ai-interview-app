@@ -144,3 +144,34 @@ async def test_fetch_page_text_caps_oversized_body(allow_all_hosts, monkeypatch)
     # Truncated read still parses; the returned text is bounded by the cap.
     assert text is not None
     assert len(text) < 200
+
+
+@respx.mock
+async def test_fetch_page_text_survives_invalid_url():
+    # httpx.InvalidURL is NOT an httpx.HTTPError subclass - it used to escape
+    # the narrow catch and discard the entire scout report upstream.
+    assert await page_fetcher.fetch_page_text("http://[malformed-ipv6/") is None
+    assert len(respx.calls) == 0
+
+
+@respx.mock
+async def test_subpage_discovery_tolerates_www_mismatch(allow_all_hosts):
+    # A www. homepage linking to bare-domain About pages (or vice versa) is
+    # the same site - the raw netloc comparison used to drop them all.
+    respx.get("https://www.acme.example.com/").mock(
+        return_value=httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text='<html><body><a href="https://acme.example.com/about">About us</a><main>Home</main></body></html>',
+        )
+    )
+    respx.get("https://acme.example.com/about").mock(
+        return_value=httpx.Response(
+            200, headers={"content-type": "text/html"}, text="<html><body>About Acme</body></html>"
+        )
+    )
+
+    result = await page_fetcher.fetch_page_with_subpages("https://www.acme.example.com/")
+
+    assert result is not None
+    assert [sub["url"] for sub in result["subpages"]] == ["https://acme.example.com/about"]

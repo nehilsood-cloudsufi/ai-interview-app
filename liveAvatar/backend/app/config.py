@@ -370,10 +370,20 @@ class Settings:
     # filtered out entirely; a domain in scout_trusted_domains (recognized,
     # reputable sources - business registries, government/regulatory records,
     # major news outlets, etc.) is tagged source_tier="trusted"; everything
-    # else is "unverified". Both empty by default - populate with real
-    # domains to enable this filtering/tagging.
-    scout_low_quality_domains: tuple[str, ...] = ()
-    scout_trusted_domains: tuple[str, ...] = ()
+    # else is "unverified". Matching is suffix-aware (news.reuters.com counts
+    # as reuters.com). Both empty by default; env-overridable as
+    # comma-separated lists so a deployment can actually enable the tiers
+    # without a code change.
+    scout_low_quality_domains: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            domain.strip() for domain in os.getenv("SCOUT_LOW_QUALITY_DOMAINS", "").split(",") if domain.strip()
+        )
+    )
+    scout_trusted_domains: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            domain.strip() for domain in os.getenv("SCOUT_TRUSTED_DOMAINS", "").split(",") if domain.strip()
+        )
+    )
     # When multiple sources report different numeric values for the same
     # fact, a ratio (larger/smaller) at or above this is a "high
     # discrepancy" worth flagging for manual verification rather than
@@ -430,9 +440,9 @@ Do NOT generate a disclaimer line yourself - the app already shows one outside t
 
 ## Interview Claims
 
-Every claim in interview_claims gets judged and included here - not just specific, checkable facts. A claim is either:
-- SPECIFIC: it names a verifiable number, date, name, or entity (e.g. "revenue is $67B", "founded in 1990", "our CEO is Jane Doe", "ranked #1 by Gartner in 2025"). It will have a matching entry in targeted_search (matched by claim text) - judge it against that plus anything relevant in blind_search/pages/representative_search/link_lookups, same as before.
-- GENERAL: it asserts scale or size ("thousands of deployments", "millions of users"), capability or reach ("global presence", "enterprise scale", "Fortune 500 clients"), reputation ("industry leading", "rapid growth", "strong security"), or an internal metric ("95% retention rate") without a specific, independently checkable number/date/name attached. It will NOT have a matching targeted_search entry - judge it using ONLY the data already gathered in blind_search, pages, and representative_search (no new search was run for it).
+Every claim in interview_claims gets judged and included here - not just specific, checkable facts. Each interview_claims item is an object carrying the claim text plus its extraction tags: "category" (exactly "specific" or "general") and "source" (where the claim came from). Use the "category" field directly - do NOT infer it from whether a targeted_search entry exists (searches can be capped or deduplicated away):
+- category "specific": it names a verifiable number, date, name, or entity (e.g. "revenue is $67B", "founded in 1990", "our CEO is Jane Doe", "ranked #1 by Gartner in 2025"). It usually has a matching entry in targeted_search (matched by claim text) - judge it against that plus anything relevant in blind_search/pages/representative_search/link_lookups; if its targeted_search entry is missing or empty, judge it against that already-gathered data alone.
+- category "general": it asserts scale or size ("thousands of deployments", "millions of users"), capability or reach ("global presence", "enterprise scale", "Fortune 500 clients"), reputation ("industry leading", "rapid growth", "strong security"), or an internal metric ("95% retention rate") without a specific, independently checkable number/date/name attached. No search was run for it - judge it using ONLY the data already gathered in blind_search, pages, and representative_search.
 
 SKIP a claim only if it is a near-duplicate of another claim already included (e.g. "primary cloud partner is AWS" and "is an AWS shop" are the same claim - keep only one). Otherwise, every claim - specific or general - is rendered with one of the four labels below; a lack of public data is itself informative (`NO DATA`), not a reason to omit the claim.
 

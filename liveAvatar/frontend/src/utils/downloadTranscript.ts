@@ -49,7 +49,11 @@ export function buildTranscriptMarkdown(
     );
   }
 
-  if (insights && (insights.internet_findings || insights.interview_claims.length > 0)) {
+  // Array.isArray: same stale-shape guard as SummaryPanel's ScoutReportSection
+  // - a version-mismatched backend still serving the pre-migration findings
+  // array would otherwise throw on .interview_claims inside the Download
+  // click handler, silently killing the export.
+  if (insights && !Array.isArray(insights) && (insights.internet_findings || insights.interview_claims.length > 0)) {
     parts.push('\n## Data Scout Report\n');
     if (insights.company_website) {
       parts.push(`_Company website: ${insights.company_website}_\n`);

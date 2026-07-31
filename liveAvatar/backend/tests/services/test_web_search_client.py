@@ -150,3 +150,41 @@ async def test_non_dict_result_items_are_skipped(patch_settings):
     results = await web_search_client.search("Acme Corp")
 
     assert [r["url"] for r in results] == ["https://news.example/acme"]
+
+
+@respx.mock
+async def test_trusted_subdomain_is_tagged_trusted(patch_settings):
+    # Suffix-aware like every other blocklist: news.reuters.com counts as
+    # reuters.com once the trusted list is populated.
+    patch_settings(
+        tavily_api_key="tvly-key",
+        tavily_api_base_url=TAVILY_BASE_URL,
+        scout_trusted_domains=("trusted-source.example",),
+    )
+    respx.post(f"{TAVILY_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={"results": [{"title": "T", "url": "https://news.trusted-source.example/acme", "content": "..."}]},
+        )
+    )
+
+    results = await web_search_client.search("Acme Corp")
+
+    assert results[0]["source_tier"] == "trusted"
+
+
+@respx.mock
+async def test_low_quality_subdomain_is_filtered(patch_settings):
+    patch_settings(
+        tavily_api_key="tvly-key",
+        tavily_api_base_url=TAVILY_BASE_URL,
+        scout_low_quality_domains=("spamfarm.example",),
+    )
+    respx.post(f"{TAVILY_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={"results": [{"title": "S", "url": "https://m.spamfarm.example/acme", "content": "junk"}]},
+        )
+    )
+
+    assert await web_search_client.search("Acme Corp") == []
