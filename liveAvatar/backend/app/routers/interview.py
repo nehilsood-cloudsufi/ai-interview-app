@@ -309,7 +309,7 @@ async def get_interview_state(interview_id: str):
         "domain": state.domain,
         "current_topic": node.topic if node else None,
         "done": state.current_node_id == host_agent.END_NODE_ID,
-        "insights": [dataclasses.asdict(finding) for finding in state.scout_findings],
+        "insights": dataclasses.asdict(state.scout_report) if state.scout_report is not None else None,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "pipeline_status": state.pipeline_status,
         "scorecard": dataclasses.asdict(state.scorecard) if state.scorecard is not None else None,

@@ -5,7 +5,7 @@ request bodies against them and shapes responses with them, which is what the
 `/docs` OpenAPI schema is generated from). Names ending in `Request` are
 request bodies, those ending in `Response` are top-level response shapes, and
 the rest (`TranscriptTurn`, `CategoryScoreModel`, `ScorecardModel`,
-`ScoutFindingModel`, `FollowupRecommendationModel`, `DomainInfo`,
+`ScoutReportModel`, `FollowupRecommendationModel`, `DomainInfo`,
 `VendorProfileModel`) are nested pieces reused inside the request/response
 models. Inline comments on individual fields document the non-obvious ones.
 """
@@ -96,14 +96,22 @@ class ScorecardModel(BaseModel):
     status: Literal["APPROVED", "REJECTED"] | None
 
 
-class ScoutFindingModel(BaseModel):
-    """A single Data Scout research finding (nested in the insights lists): a
-    short `topic` label, a 1-3 sentence `summary`, and an optional
-    `source_url`."""
+class ScoutReportModel(BaseModel):
+    """The Data Scout Agent's full post-interview company research report
+    (nested as `insights` in the state and finalize responses) - the
+    two-pass Tavily-backed agent (app.services.data_scout_agent) triggered
+    automatically by app.services.pipeline once an interview finalizes.
+    `internet_findings` is the synthesized Markdown report, `interview_claims`
+    are the factual claims extracted from the transcript/intake material,
+    `findings_ok` is False when synthesis failed but sources were still
+    gathered, and `company_website` is whatever the agent derived (or None).
+    The raw `sources` dict is deliberately NOT included here - it's far too
+    large/granular for the UI."""
 
-    topic: str
-    summary: str
-    source_url: str | None
+    internet_findings: str
+    interview_claims: list[str]
+    findings_ok: bool
+    company_website: str | None
 
 
 class FollowupRecommendationModel(BaseModel):
@@ -136,7 +144,7 @@ class FinalizeTranscriptResponse(BaseModel):
     # response - the pipeline runs in the background after finalize returns,
     # so these are always None in gateway mode too.
     scorecard: ScorecardModel | None = None
-    insights: list[ScoutFindingModel] | None = None
+    insights: ScoutReportModel | None = None
     recommendation: FollowupRecommendationModel | None = None
 
 
@@ -236,7 +244,7 @@ class InterviewStateResponse(BaseModel):
     # auto-stops the session shortly after this flips, so post-interview
     # utterances can't loop the canned closing forever.
     done: bool = False
-    insights: list[ScoutFindingModel]
+    insights: ScoutReportModel | None
     updated_at: str  # ISO-8601 UTC timestamp of this snapshot
     # Post-interview pipeline progress (None until finalize hands the
     # interview to app.services.pipeline); the UI polls this endpoint for it.

@@ -12,7 +12,7 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 LEGACY_RECORD_KEYS = {"session_id", "created_at", "turns", "summary", "summary_ok"}
 
 
-def _seed_interview(turns=None, findings=None):
+def _seed_interview(turns=None):
     state = interview_state.create(
         VendorProfile(
             company_name="Acme Corp",
@@ -29,7 +29,6 @@ def _seed_interview(turns=None, findings=None):
             TranscriptTurn(role="candidate", text="We build ML pipelines for banks."),
         ]
     )
-    state.scout_findings.extend(findings or [])
     return state
 
 

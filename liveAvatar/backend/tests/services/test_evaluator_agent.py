@@ -9,7 +9,7 @@ from app.models import TranscriptTurn
 from app.services import evaluator_agent
 from app.services.evaluator_agent import CategoryScore, Scorecard, score_interview
 from app.services.interview_config import RubricCategory, ValueOption
-from app.services.interview_state import ScoutFinding
+from app.services.interview_state import ScoutReport
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 CHAT_URL = f"{GEMINI_BASE_URL}chat/completions"
@@ -72,7 +72,7 @@ async def test_score_interview_happy_path(patch_settings):
     )
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
 
-    scorecard = await score_interview(make_turns(), make_rubric(), [])
+    scorecard = await score_interview(make_turns(), make_rubric(), None)
 
     assert isinstance(scorecard, Scorecard)
     assert [c.id for c in scorecard.categories] == ["quality", "speed"]
@@ -123,7 +123,7 @@ async def test_invalid_value_is_dropped_softly(patch_settings):
         )
     )
 
-    scorecard = await score_interview(make_turns(), make_rubric(), [])
+    scorecard = await score_interview(make_turns(), make_rubric(), None)
 
     by_id = {c.id: c for c in scorecard.categories}
     # "Amazing" doesn't match any of quality's value_options (Good/Bad) - this
@@ -151,7 +151,7 @@ async def test_unknown_categories_dropped(patch_settings):
         )
     )
 
-    scorecard = await score_interview(make_turns(), make_rubric(), [])
+    scorecard = await score_interview(make_turns(), make_rubric(), None)
 
     assert {c.id for c in scorecard.categories} == {"quality", "speed"}
     # only quality has data -> its weight renormalizes to 1.0
@@ -167,7 +167,7 @@ async def test_blank_evidence_quotes_dropped(patch_settings):
         )
     )
 
-    scorecard = await score_interview(make_turns(), make_rubric(), [])
+    scorecard = await score_interview(make_turns(), make_rubric(), None)
 
     quality = next(c for c in scorecard.categories if c.id == "quality")
     assert quality.evidence == ["Real quote."]
@@ -185,7 +185,7 @@ async def test_full_coverage_plain_weighted_sum(patch_settings):
         )
     )
 
-    scorecard = await score_interview(make_turns(), make_rubric(), [])
+    scorecard = await score_interview(make_turns(), make_rubric(), None)
 
     # 0 * 0.5 + 100 * 0.5 = 50.0 - both categories have data so the rubric's
     # own weights (which already sum to 1.0) are used unchanged.
@@ -202,7 +202,7 @@ async def test_zero_resolved_categories_raises(patch_settings):
     respx.post(CHAT_URL).mock(return_value=gemini_response({}))
 
     with pytest.raises(ValueError, match="zero rubric categories"):
-        await score_interview(make_turns(), make_rubric(), [])
+        await score_interview(make_turns(), make_rubric(), None)
 
 
 @respx.mock
@@ -211,7 +211,7 @@ async def test_http_error_raises(patch_settings):
     respx.post(CHAT_URL).mock(return_value=httpx.Response(500))
 
     with pytest.raises(httpx.HTTPStatusError):
-        await score_interview(make_turns(), make_rubric(), [])
+        await score_interview(make_turns(), make_rubric(), None)
 
 
 @respx.mock
@@ -222,7 +222,7 @@ async def test_malformed_json_raises(patch_settings):
     )
 
     with pytest.raises(ValueError, match="No JSON object"):
-        await score_interview(make_turns(), make_rubric(), [])
+        await score_interview(make_turns(), make_rubric(), None)
 
 
 @respx.mock
@@ -233,7 +233,7 @@ async def test_fenced_json_content_is_parsed(patch_settings):
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
     )
 
-    scorecard = await score_interview(make_turns(), make_rubric(), [])
+    scorecard = await score_interview(make_turns(), make_rubric(), None)
 
     quality = next(c for c in scorecard.categories if c.id == "quality")
     assert quality.value == "Good"
@@ -245,7 +245,7 @@ async def test_missing_gemini_key_raises(patch_settings):
     patch_settings(gemini_api_key=None)
     with respx.mock:
         with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
-            await score_interview(make_turns(), make_rubric(), [])
+            await score_interview(make_turns(), make_rubric(), None)
         assert len(respx.calls) == 0
 
 
@@ -253,7 +253,7 @@ async def test_empty_transcript_raises(patch_settings):
     patch_settings(gemini_api_key="gem-key")
     with respx.mock:
         with pytest.raises(ValueError, match="empty"):
-            await score_interview([], make_rubric(), [])
+            await score_interview([], make_rubric(), None)
         assert len(respx.calls) == 0
 
 
@@ -268,7 +268,7 @@ async def test_too_short_transcript_raises(patch_settings):
     ]
     with respx.mock:
         with pytest.raises(ValueError, match="Transcript too short"):
-            await score_interview(turns, make_rubric(), [])
+            await score_interview(turns, make_rubric(), None)
         assert len(respx.calls) == 0
 
 
@@ -283,7 +283,7 @@ async def test_exactly_two_candidate_turns_proceeds_to_call(patch_settings):
         TranscriptTurn(role="candidate", text="Two-week sprints with a dedicated PM."),
     ]
 
-    scorecard = await score_interview(turns, make_rubric(), [])
+    scorecard = await score_interview(turns, make_rubric(), None)
 
     assert route.call_count == 1
     assert scorecard.overall is not None
@@ -317,7 +317,7 @@ async def test_status_approved_at_or_above_threshold(patch_settings):
         return_value=gemini_response({"quality": {"value": "Right-At-Threshold", "evidence": [], "rationale": ""}})
     )
 
-    scorecard = await score_interview(make_turns(), make_threshold_rubric(), [])
+    scorecard = await score_interview(make_turns(), make_threshold_rubric(), None)
 
     assert scorecard.overall == 70.0
     assert scorecard.status == "APPROVED"
@@ -330,41 +330,51 @@ async def test_status_rejected_below_threshold(patch_settings):
         return_value=gemini_response({"quality": {"value": "Just-Below-Threshold", "evidence": [], "rationale": ""}})
     )
 
-    scorecard = await score_interview(make_turns(), make_threshold_rubric(), [])
+    scorecard = await score_interview(make_turns(), make_threshold_rubric(), None)
 
     assert scorecard.overall == 69.0
     assert scorecard.status == "REJECTED"
 
 
-# --- scout_findings ---
+# --- scout_report ---
+
+
+def make_scout_report(**overrides) -> ScoutReport:
+    report = ScoutReport(
+        internet_findings="**Funding:** Raised a Series B in 2025 ([source](https://news.example/a)).\n"
+        "**Reviews:** Mixed reviews on delivery speed.",
+        interview_claims=["We raised a Series B in 2025."],
+        sources={},
+        findings_ok=True,
+        company_website=None,
+    )
+    for key, value in overrides.items():
+        setattr(report, key, value)
+    return report
 
 
 @respx.mock
-async def test_scout_findings_rendered_when_present(patch_settings):
+async def test_scout_report_rendered_when_present(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
-    findings = [
-        ScoutFinding(topic="funding", summary="Raised a Series B in 2025.", source_url="https://news.example/a"),
-        ScoutFinding(topic="reviews", summary="Mixed reviews on delivery speed.", source_url=None),
-    ]
+    report = make_scout_report()
 
-    await score_interview(make_turns(), make_rubric(), findings)
+    await score_interview(make_turns(), make_rubric(), report)
 
     user_content = json.loads(route.calls[0].request.content)["messages"][-1]["content"]
     assert "Independent research findings (from internet, not from the vendor):" in user_content
-    assert "funding" in user_content
-    assert "Raised a Series B in 2025." in user_content
+    assert "We raised a Series B in 2025." in user_content
+    assert "Raised a Series B in 2025" in user_content
     assert "https://news.example/a" in user_content
-    assert "reviews" in user_content
     assert "Mixed reviews on delivery speed." in user_content
 
 
 @respx.mock
-async def test_scout_findings_section_omitted_when_empty(patch_settings):
+async def test_scout_report_section_omitted_when_none(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
 
-    await score_interview(make_turns(), make_rubric(), [])
+    await score_interview(make_turns(), make_rubric(), None)
 
     user_content = json.loads(route.calls[0].request.content)["messages"][-1]["content"]
     assert "Independent research findings" not in user_content
@@ -377,12 +387,25 @@ async def test_scout_findings_section_omitted_when_empty(patch_settings):
 
 
 @respx.mock
-async def test_scout_findings_do_not_change_scoring_behavior(patch_settings):
+async def test_scout_report_synthesis_failure_notes_no_findings(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    report = make_scout_report(internet_findings="", interview_claims=[], findings_ok=False)
+
+    await score_interview(make_turns(), make_rubric(), report)
+
+    user_content = json.loads(route.calls[0].request.content)["messages"][-1]["content"]
+    assert "Independent research findings (from internet, not from the vendor):" in user_content
+    assert "synthesis failed" in user_content
+
+
+@respx.mock
+async def test_scout_report_does_not_change_scoring_behavior(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     respx.post(CHAT_URL).mock(return_value=gemini_response())
-    findings = [ScoutFinding(topic="funding", summary="Raised a Series B.", source_url=None)]
+    report = make_scout_report()
 
-    scorecard = await score_interview(make_turns(), make_rubric(), findings)
+    scorecard = await score_interview(make_turns(), make_rubric(), report)
 
     by_id = {c.id: c for c in scorecard.categories}
     assert by_id["quality"].points == 100.0
@@ -430,7 +453,7 @@ async def test_unresolved_label_logs_warning(patch_settings, caplog):
     )
 
     with caplog.at_level(logging.WARNING, logger="app.services.evaluator_agent"):
-        await score_interview(make_turns(), make_rubric(), [])
+        await score_interview(make_turns(), make_rubric(), None)
 
     assert "Amazing" in caplog.text
     assert "quality" in caplog.text
@@ -448,7 +471,7 @@ async def test_alias_resolves_to_label_and_points(patch_settings):
         )
     )
 
-    scorecard = await score_interview(make_turns(), make_rubric_with_aliases(), [])
+    scorecard = await score_interview(make_turns(), make_rubric_with_aliases(), None)
 
     quality = next(c for c in scorecard.categories if c.id == "quality")
     assert quality.value == "Native"
@@ -467,7 +490,7 @@ async def test_alias_match_is_case_insensitive(patch_settings):
         )
     )
 
-    scorecard = await score_interview(make_turns(), make_rubric_with_aliases(), [])
+    scorecard = await score_interview(make_turns(), make_rubric_with_aliases(), None)
 
     quality = next(c for c in scorecard.categories if c.id == "quality")
     assert quality.value == "Native"
@@ -487,7 +510,7 @@ async def test_no_substring_alias_matching(patch_settings):
         )
     )
 
-    scorecard = await score_interview(make_turns(), make_rubric_with_aliases(), [])
+    scorecard = await score_interview(make_turns(), make_rubric_with_aliases(), None)
 
     quality = next(c for c in scorecard.categories if c.id == "quality")
     assert quality.value is None
@@ -507,7 +530,7 @@ async def test_vendor_context_included_as_self_reported_background(patch_setting
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
 
     await score_interview(
-        make_turns(), make_rubric(), [], vendor_context="- Builds reusable rockets"
+        make_turns(), make_rubric(), None, vendor_context="- Builds reusable rockets"
     )
 
     user_content = json.loads(route.calls[0].request.content)["messages"][1]["content"]
@@ -521,7 +544,7 @@ async def test_no_vendor_context_block_when_empty(patch_settings):
     patch_settings(gemini_api_key="gem-key")
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
 
-    await score_interview(make_turns(), make_rubric(), [])
+    await score_interview(make_turns(), make_rubric(), None)
 
     user_content = json.loads(route.calls[0].request.content)["messages"][1]["content"]
     assert "self-reported" not in user_content

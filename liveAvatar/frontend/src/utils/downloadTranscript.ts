@@ -1,9 +1,9 @@
 /**
- * Builds and downloads the human-readable interview record as Markdown. This
- * is the only place Scout research insights surface to a reviewer (the
- * SummaryPanel UI deliberately omits them — see useInterviewSummary).
+ * Builds and downloads the human-readable interview record as Markdown,
+ * including the Data Scout Agent's research report (also rendered live in
+ * SummaryPanel — see useInterviewSummary).
  */
-import type { FollowupRecommendation, ScorecardData, ScoutFinding, TranscriptTurn } from '../types';
+import type { FollowupRecommendation, ScorecardData, ScoutReport, TranscriptTurn } from '../types';
 
 const ROLE_LABELS: Record<TranscriptTurn['role'], string> = {
   interviewer: 'Interviewer',
@@ -12,7 +12,7 @@ const ROLE_LABELS: Record<TranscriptTurn['role'], string> = {
 
 export interface TranscriptExtras {
   scorecard?: ScorecardData | null;
-  insights?: ScoutFinding[] | null;
+  insights?: ScoutReport | null;
   recommendation?: FollowupRecommendation | null;
 }
 
@@ -49,11 +49,22 @@ export function buildTranscriptMarkdown(
     );
   }
 
-  if (insights && insights.length > 0) {
-    parts.push('\n## Research Insights\n');
-    for (const finding of insights) {
-      const source = finding.source_url ? ` ([source](${finding.source_url}))` : '';
-      parts.push(`- **${finding.topic}:** ${finding.summary}${source}`);
+  if (insights && (insights.internet_findings || insights.interview_claims.length > 0)) {
+    parts.push('\n## Data Scout Report\n');
+    if (insights.company_website) {
+      parts.push(`_Company website: ${insights.company_website}_\n`);
+    }
+    if (insights.interview_claims.length > 0) {
+      parts.push('### Claims made in the interview\n');
+      for (const claim of insights.interview_claims) {
+        parts.push(`- ${claim}`);
+      }
+      parts.push('');
+    }
+    if (insights.internet_findings) {
+      parts.push(insights.internet_findings);
+    } else if (!insights.findings_ok) {
+      parts.push('_Research synthesis did not complete for this interview._');
     }
   }
 

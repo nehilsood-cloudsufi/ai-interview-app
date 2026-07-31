@@ -77,6 +77,9 @@ _TURN_SCHEMA = {
     "properties": {
         "reply": {"type": "string"},
         "answer_complete": {"type": "boolean"},
+        # True ONLY when the vendor explicitly asks to end the interview (see
+        # settings.host_end_request_prompt); code jumps the script to END.
+        "end_requested": {"type": "boolean"},
         "profile_updates": {
             "type": "object",
             "properties": {
@@ -87,7 +90,7 @@ _TURN_SCHEMA = {
             "required": ["company_name", "contact_name", "contact_role"],
         },
     },
-    "required": ["reply", "answer_complete", "profile_updates"],
+    "required": ["reply", "answer_complete", "end_requested", "profile_updates"],
 }
 
 # Keys of profile_updates / VendorProfile fields it may overwrite.
@@ -259,6 +262,8 @@ def _render_system_content(
         # 2026-07-20).
         "If the answer is complete, the next question to ask in the same reply:",
         next_line,
+        "",
+        settings.host_end_request_prompt,
     ]
 
     if mode == "avatar":
@@ -442,6 +447,7 @@ async def _handle_turn(
         parsed = await _call_gemini(state, node, user_text, questionnaire, mode, time_pressured, time_generous)
         reply = str(parsed["reply"])
         answer_complete = bool(parsed.get("answer_complete"))
+        end_requested = bool(parsed.get("end_requested"))
         profile_updates = parsed.get("profile_updates")
         # Reset before any state mutation below - a success always clears a
         # prior failure streak, regardless of what this turn goes on to do.
@@ -498,7 +504,8 @@ async def _handle_turn(
     # the answer incomplete, accept it and advance rather than spend the
     # remaining seconds on follow-ups.
     return _apply_outcome(
-        state, node, user_text, reply, answer_complete or time_pressured, profile_updates
+        state, node, user_text, reply, answer_complete or time_pressured, profile_updates,
+        end_requested=end_requested,
     )
 
 
@@ -527,11 +534,21 @@ def _apply_outcome(
     reply: str,
     answer_complete: bool,
     profile_updates: dict | None,
+    end_requested: bool = False,
 ) -> TurnResult:
     """Deterministic state mutation once the reply and judgement are in hand.
     Shared by `handle_turn` and `stream_turn` so both drive the state machine
     identically. Only reached on the success path - soft-fail returns before
-    ever calling this, so a failed turn never merges a profile update."""
+    ever calling this, so a failed turn never merges a profile update.
+
+    `end_requested` (the vendor explicitly asked to stop - see
+    settings.host_end_request_prompt) overrides everything else: the exchange
+    still lands in the transcript, but the script jumps straight to END - the
+    reply is the goodbye, `done` flips on the next state poll, and the
+    frontend's existing auto-stop tears the session down. Without this, a
+    spoken "please end the interview" had no path into the state machine and
+    the avatar looped farewells while the remaining questions ground on
+    (observed live 2026-07-31)."""
     _merge_profile_updates(state.vendor_profile, profile_updates, state.manually_edited_fields)
 
     # Candidate texts already given for this node (see module docstring),
@@ -544,6 +561,16 @@ def _apply_outcome(
 
     state.turns.append(TranscriptTurn(role="candidate", text=user_text))
     state.turns.append(TranscriptTurn(role="interviewer", text=reply))
+
+    if end_requested:
+        state.current_node_id = END_NODE_ID
+        state.followup_count = 0
+        return TurnResult(
+            reply=reply,
+            answer_complete=False,
+            completed_question=None,
+            answer_text="",
+        )
 
     if not answer_complete:
         # Stay on the current question, however many rounds it takes. The
@@ -746,4 +773,5 @@ async def _stream_turn(
         extractor.emitted + remainder,
         bool(parsed.get("answer_complete")) or time_pressured,
         parsed.get("profile_updates"),
+        end_requested=bool(parsed.get("end_requested")),
     )

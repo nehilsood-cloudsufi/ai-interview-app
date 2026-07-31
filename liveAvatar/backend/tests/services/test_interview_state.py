@@ -27,7 +27,7 @@ def test_create_returns_state_with_defaults():
     assert state.current_node_id == "company_overview"  # first node of the shipped questionnaire
     assert state.followup_count == 0
     assert state.turns == []
-    assert state.scout_findings == []
+    assert state.scout_report is None
 
 
 def test_vendor_profile_has_empty_defaults():

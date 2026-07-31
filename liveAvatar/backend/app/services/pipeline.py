@@ -8,9 +8,11 @@ import asyncio
 import dataclasses
 import logging
 
-from app.services import coordinator_agent, evaluator_agent, scout_agent, transcript_store
+from app.config import settings
+from app.services import coordinator_agent, data_scout_agent, evaluator_agent, transcript_store
 from app.services.interview_config import get_rubric
-from app.services.interview_state import InterviewState
+from app.services.interview_state import InterviewState, ScoutReport
+from app.services.transcript_render import render_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +42,44 @@ async def run(state: InterviewState, session_id: str, payload: dict) -> None:
         rubric = get_rubric()
 
         state.pipeline_status = "scouting"
-        findings = await scout_agent.run(state)  # never raises, by contract
+        scout_report = None
+        profile = state.vendor_profile
+        if not settings.scout_enabled:
+            logger.info("Data Scout disabled (scout_enabled=False); skipping interview %s.", state.interview_id)
+        elif not profile.company_name.strip():
+            logger.info("No company name captured for interview %s; skipping Scout research.", state.interview_id)
+        else:
+            # Soft-fail boundary, mirroring score_interview below: a research
+            # hiccup (search API glitch, fetch failure, synthesis error) must
+            # never break the Evaluator/Coordinator steps that follow - the
+            # old scout_agent guaranteed this by never raising; run_scout
+            # does not, so the guarantee lives here now.
+            try:
+                scout_result = await data_scout_agent.run_scout(
+                    profile.company_name,
+                    profile.contact_name,
+                    state.vendor_context,
+                    None,
+                    render_transcript(state.turns),
+                )
+                scout_report = ScoutReport(
+                    internet_findings=scout_result["internet_findings"],
+                    interview_claims=scout_result["interview_claims"],
+                    sources=scout_result["sources"],
+                    findings_ok=scout_result["findings_ok"],
+                    company_website=scout_result["company_website"],
+                )
+            except Exception as e:
+                logger.warning(
+                    "Data Scout research failed for session %s; continuing without a report: %s", session_id, e
+                )
+        state.scout_report = scout_report
 
         state.pipeline_status = "evaluating"
         scorecard = None
         try:
             scorecard = await evaluator_agent.score_interview(
-                state.turns, rubric, state.scout_findings, vendor_context=state.vendor_context
+                state.turns, rubric, scout_report, vendor_context=state.vendor_context
             )
         except Exception as e:
             logger.warning("Holistic scoring failed for session %s: %s", session_id, e)
@@ -60,7 +93,7 @@ async def run(state: InterviewState, session_id: str, payload: dict) -> None:
         state.scorecard = scorecard
         state.recommendation = rec
 
-        payload["scout_findings"] = [dataclasses.asdict(finding) for finding in findings]
+        payload["scout_report"] = dataclasses.asdict(scout_report) if scout_report is not None else None
         payload["scorecard"] = dataclasses.asdict(scorecard) if scorecard is not None else None
         payload["recommendation"] = dataclasses.asdict(rec) if rec is not None else None
         payload["pipeline_status"] = "ready"

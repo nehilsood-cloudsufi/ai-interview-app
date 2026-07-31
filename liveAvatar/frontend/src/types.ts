@@ -82,11 +82,16 @@ export interface ScorecardData {
   status: 'APPROVED' | 'REJECTED' | null;    // approval status
 }
 
-// Scout research insights; arrive via the state payload.
-export interface ScoutFinding {
-  topic: string;
-  summary: string;
-  source_url: string | null;
+// Scout research report; arrives via the state payload (backend
+// ScoutReportModel). `internet_findings` is a synthesized Markdown report,
+// `interview_claims` are factual claims extracted from the transcript/intake
+// material. The raw `sources` data the agent gathers along the way is
+// deliberately not included here - too large/granular for the UI.
+export interface ScoutReport {
+  internet_findings: string;
+  interview_claims: string[];
+  findings_ok: boolean;
+  company_website: string | null;
 }
 
 // Follow-up recommendation (backend FollowupRecommendationModel).
@@ -103,7 +108,7 @@ export interface FinalizeTranscriptResponse {
   summary_ok: boolean;
   pipeline_status: PipelineStatus | null;
   scorecard: ScorecardData | null;
-  insights: ScoutFinding[] | null;
+  insights: ScoutReport | null;
   recommendation: FollowupRecommendation | null;
 }
 
@@ -114,7 +119,7 @@ export interface InterviewStateResponse {
   // True once the script reached END (closing spoken/being spoken). The
   // avatar view auto-stops the session shortly after this flips.
   done: boolean;
-  insights: ScoutFinding[];
+  insights: ScoutReport | null;
   updated_at: string;
   pipeline_status: PipelineStatus | null;
   scorecard: ScorecardData | null;

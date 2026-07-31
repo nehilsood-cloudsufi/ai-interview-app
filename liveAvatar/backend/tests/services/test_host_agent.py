@@ -94,9 +94,14 @@ def make_state(
 
 
 def gemini_response(
-    reply: str = "Thanks!", answer_complete: bool = True, profile_updates: dict | None = None
+    reply: str = "Thanks!",
+    answer_complete: bool = True,
+    profile_updates: dict | None = None,
+    end_requested: bool | None = None,
 ) -> httpx.Response:
     body = {"reply": reply, "answer_complete": answer_complete}
+    if end_requested is not None:
+        body["end_requested"] = end_requested
     if profile_updates is not None:
         body["profile_updates"] = profile_updates
     content = json.dumps(body)
@@ -143,7 +148,7 @@ async def test_advances_on_complete_answer(patch_settings):
     schema_spec = body["response_format"]["json_schema"]
     assert schema_spec["name"] == "host_turn"
     assert schema_spec["strict"] is True
-    assert set(schema_spec["schema"]["required"]) == {"reply", "answer_complete", "profile_updates"}
+    assert set(schema_spec["schema"]["required"]) == {"reply", "answer_complete", "end_requested", "profile_updates"}
     assert body["reasoning_effort"] == "low"
     assert body["max_tokens"] == 800
     assert body["messages"][0]["role"] == "system"
@@ -322,17 +327,21 @@ async def test_missing_gemini_key_raises(patch_settings):
 
 
 @respx.mock
-async def test_scout_findings_not_rendered_into_system_prompt(patch_settings):
+async def test_scout_report_not_rendered_into_system_prompt(patch_settings):
     # Unbiased-interview rule: the Scout runs strictly AFTER the interview, so
-    # its findings must never reach the Host's prompt even if present on state.
+    # its report must never reach the Host's prompt even if present on state.
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     route = respx.post(CHAT_URL).mock(return_value=gemini_response())
-    from app.services.interview_state import ScoutFinding
+    from app.services.interview_state import ScoutReport
 
     state = make_state()
-    state.scout_findings = [
-        ScoutFinding(topic="funding", summary="Raised a Series B in 2025.", source_url="https://news.example/acme"),
-    ]
+    state.scout_report = ScoutReport(
+        internet_findings="**Funding:** Raised a Series B in 2025.",
+        interview_claims=["We raised a Series B in 2025."],
+        sources={},
+        findings_ok=True,
+        company_website=None,
+    )
 
     await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
 
@@ -529,9 +538,11 @@ def _sse(*deltas: str) -> str:
 
 
 def stream_response(
-    reply="Thanks!", answer_complete=True, profile_updates: dict | None = None, *, chunk_size=None
+    reply="Thanks!", answer_complete=True, profile_updates: dict | None = None, end_requested: bool | None = None, *, chunk_size=None
 ) -> httpx.Response:
     body = {"reply": reply, "answer_complete": answer_complete}
+    if end_requested is not None:
+        body["end_requested"] = end_requested
     if profile_updates is not None:
         body["profile_updates"] = profile_updates
     content = json.dumps(body)
@@ -1293,3 +1304,114 @@ async def test_consecutive_soft_fails_switch_fallback_reply(patch_settings):
     assert state.consecutive_soft_fails == 1
 
     assert route.call_count == 4
+
+
+# --- vendor-requested end (end_requested) ------------------------------------
+
+
+@respx.mock
+async def test_end_requested_jumps_script_to_end(patch_settings):
+    # A spoken "please end this interview" must actually end it: the script
+    # jumps to END so `done` flips on the next state poll and the frontend
+    # auto-stop fires - instead of looping goodbyes while the remaining
+    # questions grind on (observed live 2026-07-31).
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=gemini_response(
+            reply="Of course - thank you for your time today, goodbye!",
+            answer_complete=False,
+            end_requested=True,
+        )
+    )
+    state = make_state()
+
+    result = await handle_turn(
+        state, "I would not like to answer any questions. Please end this interview.",
+        make_questionnaire(), make_rubric(),
+    )
+
+    assert state.current_node_id == host_agent.END_NODE_ID
+    assert state.followup_count == 0
+    assert result.reply == "Of course - thank you for your time today, goodbye!"
+    assert result.answer_complete is False
+    assert result.completed_question is None
+    # The exchange still lands in the transcript for the Evaluator.
+    assert state.turns[-2].role == "candidate"
+    assert state.turns[-1].text == "Of course - thank you for your time today, goodbye!"
+
+
+@respx.mock
+async def test_end_requested_wins_even_when_answer_judged_complete(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=gemini_response(reply="Understood, goodbye!", answer_complete=True, end_requested=True)
+    )
+    state = make_state()
+
+    result = await handle_turn(state, "That's my answer, and please end the interview.", make_questionnaire(), make_rubric())
+
+    assert state.current_node_id == host_agent.END_NODE_ID
+    assert result.answer_complete is False
+    assert result.completed_question is None
+
+
+@respx.mock
+async def test_end_requested_absent_keeps_existing_behavior(patch_settings):
+    # Old-shape responses (no end_requested key) must behave exactly as before.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(return_value=gemini_response(reply="Next question...", answer_complete=True))
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    assert state.current_node_id == "ai_ml_depth"
+
+
+@respx.mock
+async def test_turn_after_end_request_returns_canned_closing(patch_settings):
+    # Post-end utterances hit the existing END branch: canned closing, no
+    # LLM call, no state change - the frontend auto-stop handles teardown.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=gemini_response(reply="Goodbye!", answer_complete=False, end_requested=True)
+    )
+    state = make_state()
+    questionnaire = make_questionnaire()
+
+    await handle_turn(state, "Please end the interview.", questionnaire, make_rubric())
+    with respx.mock:  # no further Gemini call expected
+        result = await handle_turn(state, "You are still on screen.", questionnaire, make_rubric())
+
+    assert result.reply == host_agent.settings.host_closing_reply
+    assert state.current_node_id == host_agent.END_NODE_ID
+
+
+@respx.mock
+async def test_stream_turn_end_requested_jumps_script_to_end(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(CHAT_URL).mock(
+        return_value=stream_response(
+            reply="Thank you for your time - goodbye!", answer_complete=False, end_requested=True, chunk_size=7
+        )
+    )
+    state = make_state()
+
+    deltas, outcome = await _collect_stream(state, "Please end this interview now.", make_questionnaire(), make_rubric())
+
+    assert "".join(deltas) == "Thank you for your time - goodbye!"
+    assert state.current_node_id == host_agent.END_NODE_ID
+    assert outcome.result is not None
+    assert outcome.result.answer_complete is False
+
+
+@respx.mock
+async def test_system_prompt_carries_end_request_instruction(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(CHAT_URL).mock(return_value=gemini_response())
+    state = make_state()
+
+    await handle_turn(state, "We build ML pipelines.", make_questionnaire(), make_rubric())
+
+    system_content = json.loads(route.calls[0].request.content)["messages"][0]["content"]
+    assert "end_requested" in system_content
+    assert "NOT an end request" in system_content
