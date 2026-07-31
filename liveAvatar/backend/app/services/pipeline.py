@@ -45,9 +45,13 @@ async def run(state: InterviewState, session_id: str, payload: dict) -> None:
         state.pipeline_status = "evaluating"
         scorecard = None
         try:
-            scorecard = await evaluator_agent.score_interview(state.turns, rubric, state.scout_findings)
+            scorecard = await evaluator_agent.score_interview(
+                state.turns, rubric, state.scout_findings, vendor_context=state.vendor_context
+            )
         except Exception as e:
             logger.warning("Holistic scoring failed for session %s: %s", session_id, e)
+            state.evaluation_failed = True
+            payload["evaluation_failed"] = True
 
         rec = None
         if scorecard is not None and scorecard.overall is not None:

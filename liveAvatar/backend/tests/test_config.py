@@ -2,7 +2,7 @@ import dataclasses
 
 import pytest
 
-from app.config import Settings, settings
+from app.config import SANDBOX_AVATAR_ID, Settings, settings
 
 
 def test_settings_is_frozen_dataclass():
@@ -32,7 +32,34 @@ def test_settings_env_overrides(monkeypatch):
     assert fresh.gcs_bucket == "my-bucket"
 
 
-def test_host_streaming_disabled_by_default():
+def test_prod_tier_defaults(monkeypatch):
+    # Prod tier is entirely opt-in: unset env means it's disabled and the
+    # dev-tier avatar is the sandbox one. The vars are explicitly cleared so
+    # a developer's local .env (loaded at import time) can't leak in.
+    for var in ("PROD_AVATAR_ID", "PROD_VOICE_ID", "DEMO_PASSCODE", "PROD_MAX_SESSION_SECONDS"):
+        monkeypatch.delenv(var, raising=False)
+    fresh = Settings(liveavatar_api_key=None, gemini_api_key=None, gcs_bucket=None)
+    assert fresh.avatar_id == SANDBOX_AVATAR_ID
+    assert fresh.prod_avatar_id is None
+    assert fresh.prod_voice_id is None
+    assert fresh.demo_passcode is None
+    assert fresh.prod_max_session_seconds == 600
+
+
+def test_prod_tier_env_overrides(monkeypatch):
+    monkeypatch.setenv("PROD_AVATAR_ID", "avatar-june")
+    monkeypatch.setenv("PROD_VOICE_ID", "voice-amy")
+    monkeypatch.setenv("DEMO_PASSCODE", "s3cret")
+    monkeypatch.setenv("PROD_MAX_SESSION_SECONDS", "900")
+    fresh = Settings()
+    assert fresh.prod_avatar_id == "avatar-june"
+    assert fresh.prod_voice_id == "voice-amy"
+    assert fresh.demo_passcode == "s3cret"
+    assert fresh.prod_max_session_seconds == 900
+
+
+def test_host_streaming_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("HOST_STREAMING_ENABLED", raising=False)
     fresh = Settings(liveavatar_api_key=None, gemini_api_key=None, gcs_bucket=None)
     assert fresh.host_streaming_enabled is False
 
@@ -48,6 +75,15 @@ def test_host_streaming_env_override(monkeypatch, value, expected):
 
 def test_settings_prompt_content():
     assert "Topics Covered" in settings.interview_summary_prompt
+
+
+def test_evaluator_system_prompt_requires_verbatim_labels():
+    # Guards against paraphrased labels (e.g. "Proprietary" instead of
+    # "Native") slipping past _resolve_value's exact match.
+    assert (
+        "Copy the chosen value EXACTLY as it appears in the allowed list, "
+        "character for character - do not paraphrase, translate, or reword it."
+    ) in settings.evaluator_system_prompt
 
 
 def test_host_chat_mode_prompt_default():

@@ -29,5 +29,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
       - run: uv sync --frozen
+      - run: uv run ruff check .
       - run: uv run python -c "import app.main"
       - run: uv run pytest -q

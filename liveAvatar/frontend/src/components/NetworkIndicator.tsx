@@ -1,6 +1,12 @@
 import { SignalHigh, SignalLow, SignalMedium, SignalZero } from 'lucide-react';
 import type { NetworkQuality } from '../types';
 
+/**
+ * Signal-strength icon reflecting the current NetworkQuality (emerald high ->
+ * amber good -> rose poor -> grey unknown), with a tooltip naming the level.
+ * Mounted by InterviewHeader in the left cluster, avatar mode only; the value
+ * comes from App's useNetworkQuality. Purely presentational.
+ */
 export function NetworkIndicator({ networkQuality }: { networkQuality: NetworkQuality }) {
   const icon =
     networkQuality === 'excellent' ? <SignalHigh className="w-4 h-4 text-emerald-500" /> :

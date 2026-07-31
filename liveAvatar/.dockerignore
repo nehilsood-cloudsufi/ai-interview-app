@@ -1,23 +1,37 @@
 # Dockerignore
+#
+# NOTE: unlike .gitignore, .dockerignore patterns are anchored to the build-context
+# root (liveAvatar/). A bare `foo/` only matches the top-level foo/ — use `**/foo`
+# to match at any depth. This bit us once: backend/.coverage, backend/.pytest_cache/
+# and every __pycache__/ were shipping inside the production image.
 
 # Environment files
 .env
-.env.*
-!.env.example
+**/.env
+**/.env.*
+!**/.env.example
 
 # Python
-__pycache__/
-*.py[cod]
-*$py.class
-.venv/
-venv/
-.pytest_cache/
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/.venv/
+**/venv/
+**/.pytest_cache/
+**/.coverage
+**/htmlcov/
+
+# Local interview transcript dumps (real interview data — must never ship in the image)
+backend/transcripts/
+
+# Tests are CI-only; dead weight in the production image
+backend/tests/
 
 # Node
-node_modules/
-npm-debug.log
-yarn-error.log
-yarn-debug.log
+**/node_modules/
+**/npm-debug.log
+**/yarn-error.log
+**/yarn-debug.log
 
 # Build outputs
 frontend/dist/
@@ -31,5 +45,5 @@ build/
 # IDE / OS
 .vscode/
 .idea/
-.DS_Store
-*.swp
+**/.DS_Store
+**/*.swp

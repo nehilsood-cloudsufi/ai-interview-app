@@ -1,9 +1,25 @@
+"""Quick manual inspection (and unstick) of the LiveAvatar account.
+
+Prints the account's remaining credits and its currently-active sessions,
+then deletes the first active session it finds - handy when a stuck/orphaned
+session is holding a concurrency slot and blocking new ones. This is a one-off
+operational script, not part of the served app and not run by the test suite.
+
+Requires `LIVEAVATAR_API_KEY` in the environment (read via app.config.settings,
+so a backend/.env works). Run from liveAvatar/backend:
+    uv run python scripts/check_account.py
+"""
+
 import httpx
 
 from app.config import settings
 
 
 def check():
+    """Fetch and print the account's credits and active sessions, then delete
+    the first active session (if any) to free its concurrency slot. Prints the
+    HTTP status and body of each call so the outcome is visible in the
+    terminal."""
     with httpx.Client() as client:
         # Check credits
         res = client.get(

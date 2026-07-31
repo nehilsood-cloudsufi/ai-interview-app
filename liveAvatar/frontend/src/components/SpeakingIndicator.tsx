@@ -5,6 +5,13 @@ interface SpeakingIndicatorProps {
   speakingState: SpeakingState;
 }
 
+/**
+ * Floating "who's talking" pill over the avatar video: three animated audio
+ * bars plus a label that follows `speakingState` (You are speaking / Avatar
+ * speaking / Thinking... / Listening...). App mounts it in the avatar video
+ * area and gates `visible` on a connected session; renders nothing when
+ * `visible` is false. Purely presentational.
+ */
 export function SpeakingIndicator({ visible, speakingState }: SpeakingIndicatorProps) {
   if (!visible) return null;
   return (

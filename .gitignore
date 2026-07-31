@@ -13,3 +13,6 @@ htmlcov/
 
 # Local transcript store (dev fallback when GCS_BUCKET is unset)
 transcripts/
+
+# Playwright MCP browser artifacts (screenshots/console logs from smoke tests)
+.playwright-mcp/

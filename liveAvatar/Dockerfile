@@ -1,5 +1,5 @@
 # Stage 1: Build the React frontend
-FROM node:20-alpine as frontend-builder
+FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
@@ -10,8 +10,9 @@ ARG VITE_SESSIONS_SHEET_URL=""
 ENV VITE_SHOW_SELF_VIEW=${VITE_SHOW_SELF_VIEW}
 ENV VITE_SESSIONS_SHEET_URL=${VITE_SESSIONS_SHEET_URL}
 
+# npm ci (not npm install) so the build always matches package-lock.json exactly
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install
+RUN npm ci
 
 COPY frontend/ ./
 RUN npm run build

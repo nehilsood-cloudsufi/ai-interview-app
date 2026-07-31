@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def _auth_headers() -> dict[str, str]:
+    """Bearer-auth + JSON content-type headers for the OpenAI-compatible endpoint."""
     return {
         "Authorization": f"Bearer {settings.gemini_api_key}",
         "Content-Type": "application/json",
@@ -30,6 +31,9 @@ def _auth_headers() -> dict[str, str]:
 
 
 def _is_model_error(response: httpx.Response) -> bool:
+    """Whether a failed buffered response looks like a model-not-found error -
+    a 404, or a 400 whose body mentions the model - and so warrants the
+    single fallback-model retry rather than propagating."""
     if response.status_code == 404:
         return True
     return response.status_code == 400 and "model" in response.text.lower()
@@ -66,6 +70,9 @@ async def chat_completion(payload: dict, *, timeout: float, fallback_model: str 
 
 
 async def _is_model_error_stream(response: httpx.Response) -> bool:
+    """Streaming counterpart to `_is_model_error`. Because a streamed response's
+    body has not been read yet, this awaits `response.aread()` before doing the
+    400-body "model" check; a 404 short-circuits without reading."""
     # A streamed response's body isn't read yet; the 400 text check needs it.
     if response.status_code == 404:
         return True

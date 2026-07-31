@@ -9,8 +9,11 @@
 # node's `next` must be the literal "END".
 #
 # Each domain file is a COMPLETE, standalone script (deliberate duplication
-# of the onboarding/closing nodes across domain files - no shared-prefix
-# compose mechanism - so each file stays admin-legible on its own).
+# of the closing node across domain files - no shared-prefix compose
+# mechanism - so each file stays admin-legible on its own). There are no
+# onboarding nodes: the vendor profile (name, role, company) comes from the
+# start screen's intake form, and the Host greets the vendor by name on the
+# opening exchange instead.
 #
 # Placeholder content: this is a sensible first draft of domain-specific
 # vendor-evaluation questions; the real 20-question set for this domain
@@ -18,35 +21,12 @@
 domain: data_engineering
 title: "Data Engineering"
 questions:
-  - id: intro
-    topic: onboarding
-    ask: >
-      Greet the vendor warmly and invite them to introduce themselves
-      naturally: their name, their role, the company they represent, and
-      that company's website. If their answer leaves any of those out,
-      ask briefly for just what's missing - do NOT read back the details
-      they already gave (a single read-back happens in the next step).
-    rubric_categories: []
-    max_followups: 2
-    next: confirm_profile
-
-  - id: confirm_profile
-    topic: onboarding
-    ask: >
-      In ONE short sentence, read the captured name, role, company, and
-      website back to the vendor and ask if it's all correct. No preamble,
-      and never re-confirm a detail that was already confirmed. If they
-      correct anything, capture the correction.
-    rubric_categories: []
-    max_followups: 1
-    next: company_overview
-
   - id: company_overview
     topic: company_overview
     ask: >
       Ask for a brief overview of their company: what they do, how long
       they've been operating, and which industries they serve.
-    rubric_categories: [experience]
+    rubric_categories: []
     max_followups: 1
     next: data_platform_expertise
 
@@ -56,7 +36,7 @@ questions:
       Ask which data platforms and tools they specialize in (for example
       Spark, Snowflake, Databricks, or Airflow), and how deep that
       expertise runs.
-    rubric_categories: [capability]
+    rubric_categories: []
     max_followups: 1
     next: pipeline_architecture
 
@@ -66,7 +46,7 @@ questions:
       Ask how they typically design ETL/ELT pipelines - their approach
       to orchestration, data quality checks, and handling schema
       changes over time.
-    rubric_categories: [capability]
+    rubric_categories: []
     max_followups: 1
     next: data_governance_practices
 
@@ -75,7 +55,7 @@ questions:
     ask: >
       Ask how they approach data governance: cataloging, lineage
       tracking, and access controls across the pipelines they build.
-    rubric_categories: [credibility]
+    rubric_categories: []
     max_followups: 1
     next: delivery_team
 
@@ -85,7 +65,7 @@ questions:
       Ask about the team that would deliver this engagement: its size,
       seniority, and how they typically structure delivery (onsite,
       remote, hybrid) and project management.
-    rubric_categories: [delivery]
+    rubric_categories: []
     max_followups: 1
     next: scalability_and_performance
 
@@ -95,7 +75,7 @@ questions:
       Ask about a project where they had to handle large-scale data
       volumes: the scale involved, and how they tuned the pipeline for
       throughput and cost.
-    rubric_categories: [capability]
+    rubric_categories: []
     max_followups: 1
     next: references
 
@@ -104,7 +84,7 @@ questions:
     ask: >
       Ask for one or two reference clients or case studies relevant to
       this kind of engagement, and what outcomes were achieved.
-    rubric_categories: [experience, credibility]
+    rubric_categories: []
     max_followups: 1
     next: security_posture
 
@@ -114,7 +94,7 @@ questions:
       Ask about their security posture and any relevant compliance
       certifications (for example SOC 2 or ISO 27001) relevant to
       handling company data.
-    rubric_categories: [credibility]
+    rubric_categories: []
     max_followups: 1
     next: closing
 

@@ -13,11 +13,15 @@ async def test_create_context_returns_id(patch_settings):
     route = respx.post(f"{BASE_URL}/contexts").mock(
         return_value=httpx.Response(200, json={"data": {"id": "ctx-123"}})
     )
-    context_id = await liveavatar_client.create_context("api-key", "some prompt")
+    context_id = await liveavatar_client.create_context("api-key", "some prompt", "hello there")
     assert context_id == "ctx-123"
     assert route.called
     sent_request = route.calls[0].request
     assert sent_request.headers["x-api-key"] == "api-key"
+    import json
+
+    body = json.loads(sent_request.content)
+    assert body["opening_text"] == "hello there"
 
 
 @respx.mock
@@ -27,7 +31,7 @@ async def test_create_context_truncates_long_prompt(patch_settings):
         return_value=httpx.Response(200, json={"data": {"id": "ctx-123"}})
     )
     long_prompt = "x" * 30000
-    await liveavatar_client.create_context("api-key", long_prompt)
+    await liveavatar_client.create_context("api-key", long_prompt, "hi")
     sent_body = respx.calls[0].request.content
     import json
 
@@ -40,7 +44,7 @@ async def test_create_context_raises_on_http_error(patch_settings):
     patch_settings(liveavatar_base_url=BASE_URL)
     respx.post(f"{BASE_URL}/contexts").mock(return_value=httpx.Response(500, json={"error": "boom"}))
     with pytest.raises(httpx.HTTPStatusError):
-        await liveavatar_client.create_context("api-key", "prompt")
+        await liveavatar_client.create_context("api-key", "prompt", "hi")
 
 
 @respx.mock
@@ -61,7 +65,7 @@ async def test_create_session_token_without_llm_or_context(patch_settings):
             200, json={"data": {"session_token": "tok", "session_id": "sid"}}
         )
     )
-    result = await liveavatar_client.create_session_token("api-key", None, None, None)
+    result = await liveavatar_client.create_session_token("api-key", None, None)
     assert result == {"session_token": "tok", "session_id": "sid"}
     assert route.call_count == 1
     body = route.calls[0].request.content
@@ -82,7 +86,7 @@ async def test_create_session_token_with_llm_and_context(patch_settings):
             200, json={"data": {"session_token": "tok", "session_id": "sid"}}
         )
     )
-    await liveavatar_client.create_session_token("api-key", "llm-1", "ctx-1", "llm-1")
+    await liveavatar_client.create_session_token("api-key", "llm-1", "ctx-1")
     import json
 
     body = json.loads(route.calls[0].request.content)
@@ -91,67 +95,63 @@ async def test_create_session_token_with_llm_and_context(patch_settings):
 
 
 @respx.mock
-async def test_create_session_token_is_sandbox_always_true(patch_settings):
-    patch_settings(liveavatar_base_url=BASE_URL)
+async def test_create_session_token_defaults_are_dev_tier(patch_settings):
+    # No explicit avatar/sandbox args -> settings sandbox avatar, sandbox on,
+    # and neither voice_id nor max_session_duration in the payload.
+    patch_settings(liveavatar_base_url=BASE_URL, avatar_id="sandbox-avatar")
     route = respx.post(f"{BASE_URL}/sessions/token").mock(
         return_value=httpx.Response(
             200, json={"data": {"session_token": "tok", "session_id": "sid"}}
         )
     )
-    await liveavatar_client.create_session_token("api-key", "llm-1", "ctx-1", "llm-1")
+    await liveavatar_client.create_session_token("api-key", "llm-1", "ctx-1")
     import json
 
     body = json.loads(route.calls[0].request.content)
+    assert body["avatar_id"] == "sandbox-avatar"
     assert body["is_sandbox"] is True
+    assert "max_session_duration" not in body
+    assert "voice_id" not in body["avatar_persona"]
 
 
 @respx.mock
-async def test_create_session_token_gemini_fallback_to_heygen(patch_settings):
-    patch_settings(liveavatar_base_url=BASE_URL)
-    route = respx.post(f"{BASE_URL}/sessions/token")
-    route.side_effect = [
-        httpx.Response(500, json={"error": "gemini config invalid"}),
-        httpx.Response(200, json={"data": {"session_token": "tok", "session_id": "sid"}}),
-    ]
-
-    result = await liveavatar_client.create_session_token(
-        "api-key", "gemini-llm-id", "ctx-1", "gemini-llm-id"
+async def test_create_session_token_prod_tier_args(patch_settings):
+    patch_settings(liveavatar_base_url=BASE_URL, avatar_id="sandbox-avatar")
+    route = respx.post(f"{BASE_URL}/sessions/token").mock(
+        return_value=httpx.Response(
+            200, json={"data": {"session_token": "tok", "session_id": "sid"}}
+        )
     )
-
-    assert result == {"session_token": "tok", "session_id": "sid"}
-    assert route.call_count == 2
+    await liveavatar_client.create_session_token(
+        "api-key",
+        "llm-1",
+        "ctx-1",
+        avatar_id="avatar-june",
+        is_sandbox=False,
+        voice_id="voice-amy",
+        max_session_duration=600,
+    )
     import json
 
-    second_body = json.loads(route.calls[1].request.content)
-    assert "llm_configuration_id" not in second_body
-    # context should still be present on the retry
-    assert second_body["avatar_persona"]["context_id"] == "ctx-1"
+    body = json.loads(route.calls[0].request.content)
+    assert body["avatar_id"] == "avatar-june"
+    assert body["is_sandbox"] is False
+    assert body["max_session_duration"] == 600
+    assert body["avatar_persona"]["voice_id"] == "voice-amy"
+    assert body["avatar_persona"]["context_id"] == "ctx-1"
 
 
 @respx.mock
-async def test_create_session_token_no_fallback_without_gemini_id(patch_settings):
+async def test_create_session_token_raises_on_http_error(patch_settings):
+    # Session-token failures propagate to the caller (sessions.py turns them
+    # into an HTTP error response) - no retry, no fallback.
     patch_settings(liveavatar_base_url=BASE_URL)
     route = respx.post(f"{BASE_URL}/sessions/token").mock(
         return_value=httpx.Response(500, json={"error": "boom"})
     )
     with pytest.raises(httpx.HTTPStatusError):
-        await liveavatar_client.create_session_token("api-key", "custom-llm-id", None, None)
+        await liveavatar_client.create_session_token("api-key", "custom-llm-id", None)
     assert route.call_count == 1
-
-
-@respx.mock
-async def test_create_session_token_fallback_also_fails(patch_settings):
-    patch_settings(liveavatar_base_url=BASE_URL)
-    route = respx.post(f"{BASE_URL}/sessions/token")
-    route.side_effect = [
-        httpx.Response(500, json={"error": "first failure"}),
-        httpx.Response(500, json={"error": "second failure"}),
-    ]
-    with pytest.raises(httpx.HTTPStatusError):
-        await liveavatar_client.create_session_token(
-            "api-key", "gemini-llm-id", None, "gemini-llm-id"
-        )
-    assert route.call_count == 2
 
 
 @respx.mock

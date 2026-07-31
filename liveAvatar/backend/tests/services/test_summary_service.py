@@ -86,6 +86,42 @@ async def test_malformed_success_response_raises(patch_settings, sample_turns):
 
 
 @respx.mock
+async def test_empty_completion_raises(patch_settings, sample_turns):
+    # An empty (but 200 OK) completion must be treated as a failure, not a
+    # silently "successful" empty summary - the router converts this raise
+    # into summary_ok=False while still saving the transcript.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": ""}}]})
+    )
+
+    with pytest.raises(ValueError, match="empty completion"):
+        await summary_service.generate_summary(sample_turns)
+
+
+@respx.mock
+async def test_whitespace_completion_raises(patch_settings, sample_turns):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "   \n  "}}]})
+    )
+
+    with pytest.raises(ValueError, match="empty completion"):
+        await summary_service.generate_summary(sample_turns)
+
+
+@respx.mock
+async def test_null_content_raises(patch_settings, sample_turns):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": None}}]})
+    )
+
+    with pytest.raises(ValueError, match="empty completion"):
+        await summary_service.generate_summary(sample_turns)
+
+
+@respx.mock
 async def test_blank_turns_are_filtered_out(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     turns = [

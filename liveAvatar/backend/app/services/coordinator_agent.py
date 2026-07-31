@@ -17,20 +17,33 @@ from app.services.interview_config import RubricCategory
 
 # Decision thresholds for evaluate_followup. These are logic constants, not
 # deployment configuration, so they live here rather than in app.config.
-ADVANCE_THRESHOLD = 3.5  # overall >= this -> recommend a next-round deep-dive
-CLARIFY_FLOOR = 2.5  # overall in [CLARIFY_FLOOR, ADVANCE_THRESHOLD) may warrant clarification
-WEAK_CATEGORY_MAX = 2  # a category scoring <= this counts as weak
+# Rescaled x20 from the old 0-5 scale to the new 0-100 points scale.
+ADVANCE_THRESHOLD = 70  # overall >= this -> recommend a next-round deep-dive
+# ADVANCE_THRESHOLD intentionally equals Evaluator.STATUS_THRESHOLD (70) - the
+# same proportional bar applied at a different layer, not accidental
+# duplication.
+CLARIFY_FLOOR = 50  # overall in [CLARIFY_FLOOR, ADVANCE_THRESHOLD) may warrant clarification
+WEAK_CATEGORY_MAX_POINTS = 40  # a category scoring <= this counts as weak
 
 
 @dataclass
 class FollowupRecommendation:
+    """The Coordinator's output for the human procurement lead. `kind` is
+    either "advance" (the overall met the advance bar, so a next-round
+    deep-dive is warranted) or "clarify" (a borderline overall paired with one
+    or more weak categories, so a clarification call is recommended); `reason`
+    is the human-readable justification built from the triggering rule; and
+    `focus_categories` lists the rubric category ids that should drive the
+    call's agenda. `evaluate_followup` returns None instead of this when
+    neither rule fires."""
+
     kind: Literal["advance", "clarify"]
     reason: str  # template-built from the triggering rule, human-readable
     focus_categories: list[str]  # rubric category ids driving the agenda
 
 
 def _fmt(value: float) -> str:
-    """Format a score without trailing zeros (3.5 -> '3.5', 4.0 -> '4')."""
+    """Format a score without trailing zeros (70.5 -> '70.5', 70.0 -> '70')."""
     return f"{value:g}"
 
 
@@ -44,30 +57,30 @@ def evaluate_followup(
 
     # Categories that have any data, in rubric order.
     by_id = {c.id: c for c in scorecard.categories}
-    with_data = [by_id[cid] for cid in rubric if cid in by_id and by_id[cid].score is not None]
+    with_data = [by_id[cid] for cid in rubric if cid in by_id and by_id[cid].points is not None]
 
     if overall >= ADVANCE_THRESHOLD:
         # Focus the deep-dive on the two lowest-scoring categories with data;
         # the stable sort keeps rubric order among ties.
-        focus = sorted(with_data, key=lambda c: c.score)[:2]  # type: ignore[arg-type, return-value]
+        focus = sorted(with_data, key=lambda c: c.points)[:2]  # type: ignore[arg-type, return-value]
         return FollowupRecommendation(
             kind="advance",
             reason=(
-                f"Overall score {_fmt(overall)}/5 meets the advance threshold of "
+                f"Overall score {_fmt(overall)}/100 meets the advance threshold of "
                 f"{_fmt(ADVANCE_THRESHOLD)}; a next-round deep-dive is warranted."
             ),
             focus_categories=[c.id for c in focus],
         )
 
     if overall >= CLARIFY_FLOOR:
-        weak = [c for c in with_data if c.score <= WEAK_CATEGORY_MAX]  # type: ignore[operator]
+        weak = [c for c in with_data if c.points <= WEAK_CATEGORY_MAX_POINTS]  # type: ignore[operator]
         if weak:
             names = ", ".join(c.name for c in weak)
             return FollowupRecommendation(
                 kind="clarify",
                 reason=(
-                    f"Overall score {_fmt(overall)}/5 is borderline, and these "
-                    f"categories scored {WEAK_CATEGORY_MAX} or below: {names}. "
+                    f"Overall score {_fmt(overall)}/100 is borderline, and these "
+                    f"categories scored {WEAK_CATEGORY_MAX_POINTS} or below: {names}. "
                     "A clarification call is recommended."
                 ),
                 focus_categories=[c.id for c in weak],

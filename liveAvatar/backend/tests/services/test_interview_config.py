@@ -5,8 +5,8 @@ import yaml
 
 from app.config import settings
 from app.services.interview_config import (
+    build_question_plan,
     get_questionnaire,
-    get_rubric,
     get_start_node_id,
     list_domains,
     load_questionnaire,
@@ -46,8 +46,26 @@ def _valid_questionnaire_data(domain: str = "company_overview", title: str = "Te
 def _valid_rubric_data() -> dict:
     return {
         "categories": [
-            {"id": "experience", "name": "Experience", "weight": 0.5, "description": "desc"},
-            {"id": "capability", "name": "Capability", "weight": 0.5, "description": "desc"},
+            {
+                "id": "experience",
+                "name": "Experience",
+                "weight": 0.5,
+                "description": "desc",
+                "value_options": [
+                    {"label": "Deep", "points": 100},
+                    {"label": "Shallow", "points": 40},
+                ],
+            },
+            {
+                "id": "capability",
+                "name": "Capability",
+                "weight": 0.5,
+                "description": "desc",
+                "value_options": [
+                    {"label": "Strong", "points": 100},
+                    {"label": "Weak", "points": 20},
+                ],
+            },
         ]
     }
 
@@ -127,6 +145,14 @@ def test_load_rubric_valid(tmp_path):
     assert set(categories) == {"experience", "capability"}
     assert categories["experience"].weight == 0.5
     assert categories["experience"].name == "Experience"
+    assert [(o.label, o.points) for o in categories["experience"].value_options] == [
+        ("Deep", 100),
+        ("Shallow", 40),
+    ]
+    assert [(o.label, o.points) for o in categories["capability"].value_options] == [
+        ("Strong", 100),
+        ("Weak", 20),
+    ]
 
 
 def test_load_rubric_weights_not_summing_to_one_raises(tmp_path):
@@ -147,6 +173,91 @@ def test_load_rubric_weights_within_tolerance_is_allowed(tmp_path):
     categories = load_rubric(path)
 
     assert len(categories) == 2
+
+
+def test_load_rubric_missing_value_options_key_raises(tmp_path):
+    # No `value_options` key at all is a malformed-YAML condition (distinct
+    # from an explicit empty list, which is the shape `_validate_rubric`
+    # checks) - it fails at parse time with a KeyError.
+    data = _valid_rubric_data()
+    del data["categories"][0]["value_options"]
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(KeyError, match="value_options"):
+        load_rubric(path)
+
+
+def test_load_rubric_empty_value_options_raises(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"] = []
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(ValueError, match="value_option"):
+        load_rubric(path)
+
+
+def test_load_rubric_duplicate_value_option_labels_raises(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"] = [
+        {"label": "Deep", "points": 100},
+        {"label": "Deep", "points": 40},
+    ]
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(ValueError, match="duplicate"):
+        load_rubric(path)
+
+
+@pytest.mark.parametrize("bad_points", [-1, 100.1, 200])
+def test_load_rubric_value_option_points_out_of_range_raises(tmp_path, bad_points):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"][0]["points"] = bad_points
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(ValueError, match=r"\[0, 100\]"):
+        load_rubric(path)
+
+
+# --- value_option aliases (paraphrase-tolerant Evaluator label matching) ---
+
+
+def test_load_rubric_value_option_aliases_parsed(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"][0]["aliases"] = ["Profound", "In-depth"]
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    categories = load_rubric(path)
+
+    assert categories["experience"].value_options[0].aliases == ("Profound", "In-depth")
+
+
+def test_load_rubric_value_option_aliases_default_empty(tmp_path):
+    # No `aliases:` key at all -> defaults to an empty tuple so existing
+    # rubric YAML (without aliases) loads unchanged.
+    path = _write_yaml(tmp_path / "r.yaml", _valid_rubric_data())
+
+    categories = load_rubric(path)
+
+    assert categories["experience"].value_options[0].aliases == ()
+    assert categories["capability"].value_options[0].aliases == ()
+
+
+def test_load_rubric_value_option_aliases_not_a_list_raises(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"][0]["aliases"] = "not-a-list"
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(ValueError, match="alias"):
+        load_rubric(path)
+
+
+def test_load_rubric_value_option_aliases_empty_string_raises(tmp_path):
+    data = _valid_rubric_data()
+    data["categories"][0]["value_options"][0]["aliases"] = ["ok", ""]
+    path = _write_yaml(tmp_path / "r.yaml", data)
+
+    with pytest.raises(ValueError, match="alias"):
+        load_rubric(path)
 
 
 def test_shipped_rubric_loads_and_weights_sum_to_one():
@@ -229,15 +340,46 @@ def test_all_shipped_questionnaires_load_and_validate():
     rubric = load_rubric(_BACKEND_ROOT / settings.rubric_path)
     yaml_files = sorted(directory.glob("*.yaml"))
 
-    assert len(yaml_files) == 3
+    assert len(yaml_files) == 4
 
     for path in yaml_files:
         questionnaire = load_questionnaire(path)
         assert questionnaire.domain == path.stem
         assert questionnaire.title
-        assert next(iter(questionnaire.nodes)) == "intro"
+        # Onboarding nodes are gone (profile comes from the intake form) -
+        # every script must open straight on a substantive question.
+        assert "intro" not in questionnaire.nodes
+        assert "confirm_profile" not in questionnaire.nodes
         for node in questionnaire.nodes.values():
             for category_id in node.rubric_categories:
                 assert category_id in rubric, (
                     f"{path.name} question '{node.id}' references unknown rubric category '{category_id}'"
                 )
+
+
+# --- build_question_plan (top-K question sizing for clocked interviews) ---
+
+
+def test_build_question_plan_unclocked_is_full_script():
+    # No clock (dev tier, chat mode) -> every node in script order.
+    plan = build_question_plan("frontier_tech")
+    assert plan == list(get_questionnaire("frontier_tech"))
+
+
+def test_build_question_plan_long_session_keeps_everything():
+    # 600s fits far more than 7 questions - identical to the unclocked plan.
+    assert build_question_plan("frontier_tech", 600) == build_question_plan("frontier_tech")
+
+
+def test_build_question_plan_short_session_keeps_top_weights_in_script_order():
+    # 180s: K = round((180 - 30) / 40) = 4 -> the four heaviest rubric
+    # categories (interest .20, offerings .20, maturity .15, connectivity
+    # .15), kept in script order, plus the always-included closing.
+    plan = build_question_plan("frontier_tech", 180)
+    assert plan == ["theme_interest", "existing_offerings", "tech_maturity", "connectivity", "closing"]
+
+
+def test_build_question_plan_minimum_one_question():
+    # 60s: round((60 - 30) / 40) rounds to 1 -> the single heaviest question
+    # (interest and offerings tie at .20; script order breaks the tie).
+    assert build_question_plan("frontier_tech", 60) == ["theme_interest", "closing"]

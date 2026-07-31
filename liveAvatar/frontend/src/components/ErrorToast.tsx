@@ -5,6 +5,12 @@ interface ErrorToastProps {
   onDismiss: () => void;
 }
 
+/**
+ * Transient error banner pinned to the top-center of the screen, with a
+ * click-to-dismiss X (onDismiss). App mounts it on both the start screen and
+ * the interview room, fed by the `error` string it collects from the session
+ * and chat hooks. Renders nothing when `error` is null.
+ */
 export function ErrorToast({ error, onDismiss }: ErrorToastProps) {
   if (!error) return null;
   return (

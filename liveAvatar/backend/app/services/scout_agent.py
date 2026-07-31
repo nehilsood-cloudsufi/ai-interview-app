@@ -33,10 +33,18 @@ class ResearchProvider(Protocol):
     added later by implementing this one method. No registry, no
     config-driven selection, no factory."""
 
-    async def research(self, company_name: str, website: str | None) -> list[ScoutFinding]: ...
+    async def research(self, company_name: str) -> list[ScoutFinding]:
+        """Research the named company and return whatever findings it turns
+        up. Implementations are free to raise on failure - `run()` is the
+        single soft-fail boundary that catches everything and degrades to an
+        empty list."""
+        ...
 
 
 def _is_model_error(response: httpx.Response) -> bool:
+    """True when the response looks like a model-not-found error - a 404, or a
+    400 whose body mentions "model" - which is the signal to retry the call
+    once on the pinned fallback model."""
     # Mirrors gemini_client._is_model_error. Duplicated locally (not
     # imported) because that helper belongs to the OpenAI-compatible
     # transport this module deliberately does not use.
@@ -88,10 +96,19 @@ class GeminiSearchProvider:
     (responseMimeType/responseSchema) cannot be combined with that tool, so
     the JSON contract is requested in the prompt and parsed defensively."""
 
-    async def research(self, company_name: str, website: str | None) -> list[ScoutFinding]:
+    async def research(self, company_name: str) -> list[ScoutFinding]:
+        """Research one vendor company via Gemini's native generateContent API
+        with the google_search grounding tool enabled. Sends the scout
+        research prompt, retries once on the pinned fallback model when the
+        primary model is unavailable (see `_is_model_error`), then parses the
+        JSON object the prompt asked for and coerces it into ScoutFindings,
+        backfilling any missing source URL from the response's grounding
+        metadata. On an unparsable response, retries the same call once more
+        (grounded sampling varies between calls - mirrors host_agent's
+        parse-retry) before re-raising. May raise on HTTP or parse failure;
+        `run()` is the soft-fail boundary that swallows it."""
         user_text = (
-            f"Vendor company name: {company_name}\n"
-            f"Vendor website: {website or 'unknown'}\n\n"
+            f"Vendor company name: {company_name}\n\n"
             f"{settings.scout_research_prompt}"
         )
         payload = {
@@ -110,20 +127,32 @@ class GeminiSearchProvider:
                     response.status_code,
                     settings.gemini_model_fallback,
                 )
-                fallback_url = (
-                    f"{settings.gemini_native_base_url}models/{settings.gemini_model_fallback}:generateContent"
-                )
-                response = await client.post(fallback_url, json=payload, headers=headers)
+                url = f"{settings.gemini_native_base_url}models/{settings.gemini_model_fallback}:generateContent"
+                response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
 
-        text = "".join(part.get("text", "") for part in data["candidates"][0]["content"]["parts"])
-        # The prompt asks for a JSON object (not a bare array) so the shared
-        # parse_llm_json helper can be reused as-is: it only ever extracts a
-        # top-level JSON *object* (see tests/services/test_llm_json.py -
-        # top-level arrays are rejected there by design), and a bare array of
-        # objects would silently decode to just its first element.
-        parsed = parse_llm_json(text)
+            # The prompt asks for a JSON object (not a bare array) so the
+            # shared parse_llm_json helper can be reused as-is: it only ever
+            # extracts a top-level JSON *object* (see
+            # tests/services/test_llm_json.py - top-level arrays are rejected
+            # there by design), and a bare array of objects would silently
+            # decode to just its first element.
+            text = "".join(part.get("text", "") for part in data["candidates"][0]["content"]["parts"])
+            try:
+                parsed = parse_llm_json(text)
+            except ValueError:
+                logger.warning(
+                    "Unparsable Scout research response for %r; retrying once. Content: %.500r",
+                    company_name,
+                    text,
+                )
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                text = "".join(part.get("text", "") for part in data["candidates"][0]["content"]["parts"])
+                parsed = parse_llm_json(text)
+
         return _coerce_findings(parsed.get("findings"), _grounding_urls(data))
 
 
@@ -144,7 +173,7 @@ async def run(state: InterviewState, provider: ResearchProvider | None = None) -
 
     active_provider = provider or GeminiSearchProvider()
     try:
-        findings = await active_provider.research(company_name, state.vendor_profile.website)
+        findings = await active_provider.research(company_name)
     except Exception:
         logger.warning(
             "Data Scout research failed for interview %s; continuing with no findings.",

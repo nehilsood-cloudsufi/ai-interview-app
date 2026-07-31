@@ -1,19 +1,70 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, ExternalLink, Loader2, MessageSquareText, Sparkles, Video } from 'lucide-react';
-import { API_URL, SESSIONS_SHEET_URL } from '../config';
-import type { CreateInterviewResponse, DomainInfo, DomainsResponse, InterviewMode } from '../types';
+import {
+  AlertTriangle,
+  ExternalLink,
+  FileText,
+  KeyRound,
+  Loader2,
+  MessageSquareText,
+  Paperclip,
+  Sparkles,
+  Video,
+  X,
+} from 'lucide-react';
+import { API_URL, SESSIONS_SHEET_URL, TIER } from '../config';
+import type {
+  CreateInterviewResponse,
+  DomainInfo,
+  DomainsResponse,
+  InterviewMode,
+  UploadDocumentResponse,
+} from '../types';
+
+// Shared styling for the intake text inputs/textarea.
+const FIELD_CLASSES =
+  'w-full bg-slate-800/60 border border-slate-700/60 rounded-xl px-4 py-3 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/70 focus:border-transparent transition-all disabled:opacity-50';
+
+const MAX_DOCUMENTS = 3;
 
 interface StartScreenProps {
   // Creates the interview and hands control to the interview view in the
   // chosen mode. The caller owns the interview_id from here on.
-  onStart: (interviewId: string, mode: InterviewMode) => void;
+  // durationSeconds is set only on the prod tier (the picked session length),
+  // so the interview view can show a countdown instead of an elapsed timer.
+  onStart: (interviewId: string, mode: InterviewMode, durationSeconds?: number) => void;
 }
 
+/**
+ * The app's entry view (App's 'start' view). Hosts the pre-interview intake:
+ * the vendor enters their name and company (required) plus optional role, an
+ * optional "about you" note, and up to three context documents - the
+ * onboarding questions are gone, so Noor walks in already knowing who she's
+ * talking to. Also lets the vendor pick an interview domain (a dev stand-in
+ * for the admin-assigned domain; hidden when GET /api/domains returns
+ * nothing) and, on the prod tier, enter the demo passcode and choose a
+ * session length. "Start Interview" (avatar) or "Use text chat instead"
+ * POSTs /api/interview with the intake fields, uploads the staged documents
+ * (oversize ones are trimmed server-side - a short notice is shown), then
+ * calls `onStart` with the interview id, the chosen mode, and - prod only -
+ * the picked duration in seconds so the room can show a countdown.
+ */
 export function StartScreen({ onStart }: StartScreenProps) {
   const [pending, setPending] = useState<InterviewMode | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [domains, setDomains] = useState<DomainInfo[]>([]);
   const [selectedDomain, setSelectedDomain] = useState<string>('');
+  const [passcode, setPasscode] = useState<string>('');
+  const [durationMinutes, setDurationMinutes] = useState<number>(5);
+  const [contactName, setContactName] = useState<string>('');
+  const [contactRole, setContactRole] = useState<string>('');
+  const [companyName, setCompanyName] = useState<string>('');
+  const [aboutText, setAboutText] = useState<string>('');
+  // Context documents staged client-side; uploaded only once Start is
+  // clicked (the upload endpoint needs an interview_id).
+  const [files, setFiles] = useState<File[]>([]);
+  // Post-upload notices (trimmed-document / skipped-document messages),
+  // shown briefly before entering the interview.
+  const [notices, setNotices] = useState<string[]>([]);
 
   // In production an admin assigns the vendor's interview domain; here the
   // vendor picks one. If the fetch fails or returns nothing, hide the select
@@ -27,7 +78,12 @@ export function StartScreen({ onStart }: StartScreenProps) {
         const data: DomainsResponse = await res.json();
         if (cancelled || data.domains.length === 0) return;
         setDomains(data.domains);
-        setSelectedDomain(data.domains[0].id);
+        // Preselect the server's default domain (falling back to the first
+        // entry if the default isn't in the list for any reason).
+        const preselect = data.domains.some((d) => d.id === data.default)
+          ? data.default
+          : data.domains[0].id;
+        setSelectedDomain(preselect);
       } catch (err) {
         console.error('Failed to fetch domains:', err);
       }
@@ -38,22 +94,83 @@ export function StartScreen({ onStart }: StartScreenProps) {
     };
   }, []);
 
+  const addFiles = (picked: FileList | null) => {
+    if (!picked) return;
+    // Materialize NOW: FileList is live, and the caller clears the input
+    // right after this call - by the time React runs the state updater the
+    // list would already be empty.
+    const additions = Array.from(picked);
+    setFiles((prev) => [...prev, ...additions].slice(0, MAX_DOCUMENTS));
+  };
+
+  const removeFile = (index: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const begin = async (mode: InterviewMode) => {
     try {
       setPending(mode);
       setError(null);
+      setNotices([]);
 
       const res = await fetch(`${API_URL}/api/interview`, {
         method: 'POST',
-        ...(selectedDomain && {
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ domain: selectedDomain }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...(selectedDomain && { domain: selectedDomain }),
+          tier: TIER,
+          contact_name: contactName.trim(),
+          company_name: companyName.trim(),
+          ...(contactRole.trim() && { contact_role: contactRole.trim() }),
+          ...(aboutText.trim() && { about_text: aboutText.trim() }),
+          ...(TIER === 'prod' && { passcode, duration_minutes: durationMinutes }),
         }),
       });
-      if (!res.ok) throw new Error('Failed to start the interview');
+      if (!res.ok) {
+        // The prod tier has specific, actionable failures; surface them.
+        if (res.status === 403) throw new Error('Invalid passcode');
+        if (res.status === 503) {
+          const detail = (await res.json().catch(() => null))?.detail;
+          throw new Error(detail || 'Production tier is not configured');
+        }
+        throw new Error('Failed to start the interview');
+      }
 
       const data: CreateInterviewResponse = await res.json();
-      onStart(data.interview_id, mode);
+
+      // Upload the staged context documents. A failed document is skipped
+      // with a notice rather than blocking the interview - it only means
+      // Noor gets less background.
+      const uploadNotices: string[] = [];
+      for (const file of files) {
+        try {
+          const form = new FormData();
+          form.append('file', file);
+          const uploadRes = await fetch(`${API_URL}/api/interview/${data.interview_id}/document`, {
+            method: 'POST',
+            body: form,
+          });
+          if (!uploadRes.ok) throw new Error(`upload failed (${uploadRes.status})`);
+          const uploaded: UploadDocumentResponse = await uploadRes.json();
+          if (uploaded.truncated) {
+            uploadNotices.push(
+              `${uploaded.filename} is over the 3,000-word limit — only its first 3,000 words were used.`,
+            );
+          }
+        } catch (err) {
+          console.error(`Failed to upload ${file.name}:`, err);
+          uploadNotices.push(`Couldn't process ${file.name} — continuing without it.`);
+        }
+      }
+
+      // Give the vendor a beat to read any trim/skip notices before the
+      // screen swaps to the interview.
+      if (uploadNotices.length > 0) {
+        setNotices(uploadNotices);
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+      }
+
+      onStart(data.interview_id, mode, TIER === 'prod' ? durationMinutes * 60 : undefined);
     } catch (err) {
       console.error('Failed to create interview:', err);
       setError(err instanceof Error ? err.message : 'Failed to start the interview');
@@ -62,6 +179,7 @@ export function StartScreen({ onStart }: StartScreenProps) {
   };
 
   const busy = pending !== null;
+  const intakeIncomplete = !contactName.trim() || !companyName.trim();
 
   return (
     <div className="min-h-screen w-full flex flex-col items-center justify-center bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-indigo-950/40 via-slate-950 to-black px-4 py-10">
@@ -74,6 +192,11 @@ export function StartScreen({ onStart }: StartScreenProps) {
           <span className="text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white via-slate-200 to-slate-400">
             Resonance
           </span>
+          {TIER === 'prod' && (
+            <span className="ml-1 px-2.5 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              Production
+            </span>
+          )}
         </div>
         <p className="text-slate-400 text-sm md:text-base max-w-md leading-relaxed">
           A vendor evaluation interview hosted by <span className="text-slate-200 font-medium">Noor</span>.
@@ -83,6 +206,85 @@ export function StartScreen({ onStart }: StartScreenProps) {
 
       {/* Actions */}
       <div className="w-full max-w-md flex flex-col gap-3">
+        {/* Pre-interview intake: who you are + optional context, so Noor
+            skips the onboarding questions entirely. */}
+        <div className="flex flex-col gap-2 mb-1">
+          <label className="text-sm font-semibold text-slate-300">Your details</label>
+          <input
+            value={contactName}
+            onChange={(e) => setContactName(e.target.value)}
+            disabled={busy}
+            placeholder="Full name *"
+            className={FIELD_CLASSES}
+          />
+          <input
+            value={companyName}
+            onChange={(e) => setCompanyName(e.target.value)}
+            disabled={busy}
+            placeholder="Company *"
+            className={FIELD_CLASSES}
+          />
+          <input
+            value={contactRole}
+            onChange={(e) => setContactRole(e.target.value)}
+            disabled={busy}
+            placeholder="Role (optional)"
+            className={FIELD_CLASSES}
+          />
+          <textarea
+            value={aboutText}
+            onChange={(e) => setAboutText(e.target.value)}
+            disabled={busy}
+            rows={3}
+            placeholder="Anything else about you or your company? e.g. what you work on, what you'd like to showcase (optional)"
+            className={`${FIELD_CLASSES} resize-none`}
+          />
+
+          {/* Context documents, staged until Start is clicked. */}
+          {files.length < MAX_DOCUMENTS && (
+            <label
+              className={`flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-200 transition-colors ${busy ? 'opacity-50' : 'cursor-pointer'}`}
+            >
+              <Paperclip className="w-4 h-4" />
+              Attach documents for context (optional, up to {MAX_DOCUMENTS})
+              <input
+                type="file"
+                accept=".pdf,.docx,.txt,.md"
+                multiple
+                disabled={busy}
+                onChange={(e) => {
+                  addFiles(e.target.files);
+                  e.target.value = '';
+                }}
+                className="hidden"
+              />
+            </label>
+          )}
+          {files.map((file, index) => (
+            <div
+              key={`${file.name}-${index}`}
+              className="flex items-center gap-2 bg-slate-800/40 border border-slate-700/40 rounded-lg px-3 py-2 text-sm text-slate-300"
+            >
+              <FileText className="w-4 h-4 shrink-0 text-slate-500" />
+              <span className="truncate flex-1">{file.name}</span>
+              {!busy && (
+                <button
+                  onClick={() => removeFile(index)}
+                  aria-label={`Remove ${file.name}`}
+                  className="text-slate-500 hover:text-slate-200 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          ))}
+          {files.length > 0 && (
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Documents longer than 3,000 words are shortened to their first 3,000 words.
+            </p>
+          )}
+        </div>
+
         {domains.length > 0 && (
           <div className="flex flex-col gap-1.5 mb-1">
             <label htmlFor="domain-select" className="text-sm font-semibold text-slate-300">
@@ -107,27 +309,75 @@ export function StartScreen({ onStart }: StartScreenProps) {
           </div>
         )}
 
+        {TIER === 'prod' && (
+          <div className="flex flex-col gap-1.5 mb-1">
+            <label htmlFor="passcode-input" className="text-sm font-semibold text-slate-300 flex items-center gap-1.5">
+              <KeyRound className="w-4 h-4" />
+              Demo passcode
+            </label>
+            <input
+              id="passcode-input"
+              type="password"
+              value={passcode}
+              onChange={(e) => setPasscode(e.target.value)}
+              disabled={busy}
+              placeholder="Required for production sessions"
+              className="w-full bg-slate-800/60 border border-slate-700/60 rounded-xl px-4 py-3 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/70 focus:border-transparent transition-all disabled:opacity-50"
+            />
+            <label htmlFor="duration-select" className="text-sm font-semibold text-slate-300 mt-2">
+              Session length
+            </label>
+            <select
+              id="duration-select"
+              value={durationMinutes}
+              onChange={(e) => setDurationMinutes(Number(e.target.value))}
+              disabled={busy}
+              className="w-full bg-slate-800/60 border border-slate-700/60 rounded-xl px-4 py-3 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/70 focus:border-transparent transition-all disabled:opacity-50"
+            >
+              {[3, 5, 7, 10].map((minutes) => (
+                <option key={minutes} value={minutes}>
+                  {minutes} minutes
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              The session ends automatically after this long. Production sessions use avatar credits.
+            </p>
+          </div>
+        )}
+
         <button
           onClick={() => begin('avatar')}
-          disabled={busy}
+          disabled={busy || intakeIncomplete || (TIER === 'prod' && !passcode)}
           className="w-full flex items-center justify-center gap-3 bg-gradient-to-r from-indigo-500 via-sky-500 to-indigo-500 bg-[length:200%_auto] hover:bg-[position:right_center] text-white px-8 py-4 rounded-2xl font-bold transition-all duration-500 shadow-[0_0_40px_-10px_rgba(99,102,241,0.5)] hover:shadow-[0_0_60px_-15px_rgba(99,102,241,0.7)] hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 text-lg"
         >
           {pending === 'avatar' ? <Loader2 className="w-6 h-6 animate-spin" /> : <Video className="w-6 h-6" />}
-          Start Interview
+          {pending === 'avatar' ? 'Preparing your interview…' : 'Start Interview'}
         </button>
 
         <button
           onClick={() => begin('chat')}
-          disabled={busy}
+          disabled={busy || intakeIncomplete || (TIER === 'prod' && !passcode)}
           className="w-full flex items-center justify-center gap-2.5 bg-slate-800/60 hover:bg-slate-800 text-slate-200 px-8 py-3.5 rounded-2xl font-semibold border border-slate-700/60 transition-all disabled:opacity-50 text-sm"
         >
           {pending === 'chat' ? <Loader2 className="w-5 h-5 animate-spin" /> : <MessageSquareText className="w-5 h-5" />}
-          Use text chat instead
+          {pending === 'chat' ? 'Preparing your interview…' : 'Use text chat instead'}
         </button>
 
         <p className="text-xs text-slate-500 text-center px-4 leading-relaxed">
           Text chat is a low-bandwidth fallback — no camera or microphone needed.
         </p>
+
+        {notices.length > 0 && (
+          <div className="flex flex-col gap-1.5 text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+            {notices.map((notice) => (
+              <div key={notice} className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span className="text-sm">{notice}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {error && (
           <div className="flex items-start gap-2 text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">

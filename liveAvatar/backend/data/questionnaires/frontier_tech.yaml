@@ -1,0 +1,110 @@
+# Resonance vendor-interview question tree - Frontier Technology domain.
+#
+# The interview is a FIXED linear script - no branching, no adaptive
+# machinery - so every vendor is asked the same questions in the same order.
+# Each node is walked deterministically by app/services/host_agent.py: the
+# LLM only phrases the "ask" naturally and judges whether the answer is
+# complete; advancing is a plain `next` hop to the following node id.
+# The FIRST question in this file is the interview's start node. The last
+# node's `next` must be the literal "END".
+#
+# Each domain file is a COMPLETE, standalone script (deliberate duplication
+# of the closing node across domain files - no shared-prefix compose
+# mechanism - so each file stays admin-legible on its own). There are no
+# onboarding nodes: the vendor profile (name, role, company) comes from the
+# start screen's intake form, and the Host greets the vendor by name on the
+# opening exchange instead.
+#
+# Unlike the other domain files, this one maps its 7 substantive questions
+# 1:1 onto the 7 Signal Matrix rubric categories (data/rubric.yaml) - one
+# single-shot (max_followups: 0) node per category, asked in a stealth/
+# conversational style rather than naming the category or its labels
+# outright (see tech_maturity below for the clearest example: it never says
+# "TRL" or asks the vendor to self-classify).
+domain: frontier_tech
+title: "Frontier Technology"
+questions:
+  - id: theme_interest
+    topic: theme_interest
+    ask: >
+      Ask, briefly and professionally, why they're interested in this
+      technology theme and what's motivating their focus here - is it a
+      strategic priority for their roadmap, an opportunity they're
+      exploring, or more of a casual interest for now? Acknowledge their
+      answer briefly ("Noted", "Logged", "Understood") without evaluating
+      it - do not tell them whether their answer is good or bad.
+    rubric_categories: [interest]
+    max_followups: 0
+    next: existing_offerings
+
+  - id: existing_offerings
+    topic: existing_offerings
+    ask: >
+      Ask what products, technologies, or solutions they currently have
+      that align with this technology theme - what they've already built
+      or shipped, and what (if anything) is still in development. Keep it
+      concise; acknowledge briefly and do not evaluate the answer.
+    rubric_categories: [offerings]
+    max_followups: 0
+    next: tech_maturity
+
+  - id: tech_maturity
+    topic: tech_maturity
+    ask: >
+      Do NOT ask about "TRL" or any maturity level directly, and do not
+      ask them to self-classify as R&D or commercial. Instead, ask about
+      the deployment scale of their offering: how many production
+      environments it runs in today, and roughly how large the active
+      user base is. Use their answer to judge for yourself whether this
+      is closer to early R&D/Alpha or established Commercial/GA.
+    rubric_categories: [maturity]
+    max_followups: 0
+    next: connectivity
+
+  - id: connectivity
+    topic: connectivity
+    ask: >
+      Ask directly whether their solution can run in a disconnected,
+      on-premise, or edge environment, or whether it strictly requires a
+      live cloud connection.
+    rubric_categories: [connectivity]
+    max_followups: 0
+    next: architecture
+
+  - id: architecture
+    topic: architecture
+    ask: >
+      Ask whether their offering is built primarily as a wrapper on top
+      of other vendors' APIs or models, or whether the core technology is
+      proprietary and built natively in-house.
+    rubric_categories: [architecture]
+    max_followups: 0
+    next: team_focus
+
+  - id: team_focus
+    topic: team_focus
+    ask: >
+      Ask about the makeup of the team behind this offering - is it
+      weighted more toward sales/go-to-market, or toward R&D/engineering?
+    rubric_categories: [team]
+    max_followups: 0
+    next: partnership_model
+
+  - id: partnership_model
+    topic: partnership_model
+    ask: >
+      Ask how they'd typically prefer to engage with a partner like us: a
+      straightforward license/SaaS arrangement, or a deeper co-innovation
+      / joint-IP partnership.
+    rubric_categories: [engagement]
+    max_followups: 0
+    next: closing
+
+  - id: closing
+    topic: closing
+    ask: >
+      Thank the vendor for their time and let them know the evaluation
+      team will follow up with next steps.
+    rubric_categories: []
+    max_followups: 0
+    next: END

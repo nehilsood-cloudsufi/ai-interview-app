@@ -78,7 +78,19 @@ def _skip_value(raw: str, i: int) -> int | None:
 
 
 class ReplyStreamExtractor:
+    """Streaming JSON `reply`-string extractor for one Host turn.
+
+    Fed the raw content deltas of a streamed Gemini completion via `feed`, it
+    incrementally decodes and returns the characters of the leading `reply`
+    string as soon as they can be decoded unambiguously (so the avatar can
+    start speaking mid-stream), while buffering the full raw text so `finalize`
+    can parse the trailing `answer_complete`/`profile_updates` once the object
+    is complete. It never advances past a fragment it can't fully decode (e.g. a
+    `\\uXXXX` escape split across a delta boundary) - it just waits for the next
+    feed. One instance handles exactly one turn; do not reuse."""
+
     def __init__(self) -> None:
+        """Initialize per-turn scan state; nothing decoded yet."""
         self._raw: list[str] = []
         self._buf = ""
         self._value_start: int | None = None  # index inside the reply string

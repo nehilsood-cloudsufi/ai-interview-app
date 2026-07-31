@@ -33,13 +33,33 @@ _SETTINGS_IMPORTERS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _zero_utterance_settle(monkeypatch):
+    """Zero the gateway's utterance-settle sleep for the whole suite - the
+    real default (~1.2s per processed turn) would slow every gateway test to
+    a crawl. Also pin host_streaming_enabled to its documented default (off)
+    so a developer's local .env (loaded with override=True) can't flip the
+    suite onto the streaming path. Tests that verify either behavior opt back
+    in via patch_settings(...)."""
+    fast = dataclasses.replace(
+        _original_settings, host_utterance_settle_seconds=0.0, host_streaming_enabled=False
+    )
+    for mod_name in _SETTINGS_IMPORTERS:
+        mod = importlib.import_module(mod_name)
+        monkeypatch.setattr(mod, "settings", fast, raising=True)
+
+
 @pytest.fixture
 def patch_settings(monkeypatch):
     """Returns a helper that builds a new Settings instance (based on the
     real, process-start settings) with the given overrides applied, and
-    monkeypatches it into every module that imported `settings` by value."""
+    monkeypatches it into every module that imported `settings` by value.
+    Keeps the suite-wide zero utterance-settle (see _zero_utterance_settle)
+    unless a test overrides it explicitly."""
 
     def _patch(**overrides) -> Settings:
+        overrides.setdefault("host_utterance_settle_seconds", 0.0)
+        overrides.setdefault("host_streaming_enabled", False)
         new_settings = dataclasses.replace(_original_settings, **overrides)
         for mod_name in _SETTINGS_IMPORTERS:
             mod = importlib.import_module(mod_name)
@@ -63,9 +83,9 @@ async def async_client():
 
 @pytest.fixture(autouse=True)
 def reset_session_counter():
-    session_state.active_sessions._count = 0
+    session_state.active_sessions._deadlines.clear()
     yield
-    session_state.active_sessions._count = 0
+    session_state.active_sessions._deadlines.clear()
 
 
 @pytest.fixture(autouse=True)

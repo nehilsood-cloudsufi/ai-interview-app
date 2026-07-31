@@ -12,6 +12,13 @@ interface SessionControlsProps {
   onToggleCamera: () => void;
 }
 
+/**
+ * The avatar-mode control bar under the video area. Before the session starts
+ * (status 'disconnected') it's a single Start Interview button; once running it
+ * shows a mic toggle, a camera toggle (only when SHOW_SELF_VIEW), and a red End
+ * button. App mounts it and wires the callbacks to useLiveAvatarSession; purely
+ * presentational.
+ */
 export function SessionControls({ status, micEnabled, cameraEnabled, onStart, onStop, onToggleMic, onToggleCamera }: SessionControlsProps) {
   if (status === 'disconnected') {
     return (

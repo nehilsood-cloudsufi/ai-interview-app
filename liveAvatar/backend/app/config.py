@@ -1,17 +1,90 @@
+"""Central configuration: every env var, secret, and tuning constant the app
+reads lives on the frozen `Settings` dataclass instantiated as the module-level
+`settings` singleton, so nothing elsewhere calls `os.getenv` directly.
+
+`backend/.env` is loaded first with override=True, so values committed to
+`.env` win over anything already exported in the shell (this avoids a stale
+`GEMINI_API_KEY` in the environment silently shadowing the intended one). Each
+field's `default_factory` reads its env var at construction time; fields
+without a factory are fixed constants (not env-overridable). Secrets/URLs
+(API keys, `PUBLIC_BASE_URL`, avatar ids, `GCS_BUCKET`) come from the
+environment, while the long prompt strings and timing thresholds are defaults
+here that can still be overridden where a factory exposes them. See
+`backend/.env.example` for the env vars and CLAUDE.md for how each is used.
+"""
+
 import os
 from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# override=True makes backend/.env authoritative over any pre-set shell
+# environment variables (e.g. a stale GEMINI_API_KEY exported in the shell),
+# so the app always uses the keys/config committed to .env.
+load_dotenv(override=True)
+
+# HeyGen's free sandbox avatar ("Wayne"), used by dev-tier interviews. Only
+# valid with is_sandbox=True - pairing it with is_sandbox=False makes LiveKit
+# time out silently (see docs/KT.md).
+SANDBOX_AVATAR_ID = "dd73ea75-1218-4ef3-92ce-606d5f7fbc0a"
 
 
 @dataclass(frozen=True)
 class Settings:
+    """All application configuration in one immutable place; the module
+    exposes a single instance as `settings`. Grouped by concern via the
+    section comments below: core LiveAvatar/Gemini credentials and URLs, the
+    production-tier avatar knobs, the time-aware wrap-up thresholds, the Host
+    and Evaluator system prompts, and the transcript/summary/Scout settings.
+    Frozen so config is read-only at runtime; each `field(default_factory=...)`
+    pulls from the environment at startup (env-overridable), while plain
+    defaults are fixed constants."""
+
     liveavatar_api_key: str | None = field(default_factory=lambda: os.getenv("LIVEAVATAR_API_KEY"))
     gemini_api_key: str | None = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     liveavatar_base_url: str = "https://api.liveavatar.com/v1"
-    avatar_id: str = "dd73ea75-1218-4ef3-92ce-606d5f7fbc0a"
+    avatar_id: str = SANDBOX_AVATAR_ID
+
+    # --- Production tier (/prod URL; interviews with tier="prod") ---
+    # Sandbox (dev-tier) sessions are free but auto-terminate after ~1 minute;
+    # prod-tier sessions use this avatar with is_sandbox=false and burn
+    # credits (2/minute). Both PROD_AVATAR_ID and DEMO_PASSCODE must be set or
+    # prod-tier interview creation is rejected.
+    prod_avatar_id: str | None = field(default_factory=lambda: os.getenv("PROD_AVATAR_ID"))
+    # Optional voice override; public video avatars come with a default voice.
+    prod_voice_id: str | None = field(default_factory=lambda: os.getenv("PROD_VOICE_ID"))
+    # Shared passcode required to create a prod-tier interview, so a leaked
+    # URL can't burn credits.
+    demo_passcode: str | None = field(default_factory=lambda: os.getenv("DEMO_PASSCODE"))
+    # Hard cap per prod-tier session (HeyGen's max_session_duration), bounding
+    # the worst-case credit spend of a single session.
+    prod_max_session_seconds: int = field(
+        default_factory=lambda: int(os.getenv("PROD_MAX_SESSION_SECONDS", "600"))
+    )
+
+    # --- Time-aware wrap-up (avatar sessions with a clock, i.e. prod tier) ---
+    # The Host paces the interview against state.max_session_seconds so the
+    # session never ends mid-sentence; HeyGen's hard cap gets this much grace
+    # beyond the picked duration and acts purely as a safety net.
+    prod_session_grace_seconds: int = 60
+    # Under this many remaining seconds: no more follow-ups (answers are
+    # accepted as complete) and replies are kept short via the prompt below.
+    host_time_pressure_seconds: int = 120
+    # Under this many remaining seconds: skip whatever questions remain and
+    # deliver the canned closing while the stream is still alive.
+    host_wrapup_seconds: int = 60
+    # Appended to the system prompt during the time-pressure window.
+    host_time_pressure_prompt: str = (
+        "The session is nearly out of time. Keep your reply to one or two "
+        "short sentences, accept the vendor's answer as complete rather than "
+        "asking follow-ups, and move briskly to the next question."
+    )
+    # Spoken (without an LLM call) when the wrap-up threshold is reached.
+    host_timeup_reply: str = (
+        "I'm afraid we're right at time for today, so let's pause here. "
+        "Thank you for walking me through everything - our evaluation team "
+        "will review the conversation and follow up with next steps."
+    )
 
     # --- Resonance multi-agent interview ---
     # Externally reachable base URL of this backend (Cloud Run URL or a dev
@@ -25,7 +98,7 @@ class Settings:
     questionnaires_dir: str = field(
         default_factory=lambda: os.getenv("QUESTIONNAIRES_DIR", "data/questionnaires")
     )
-    default_domain: str = field(default_factory=lambda: os.getenv("DEFAULT_DOMAIN", "ai_ml"))
+    default_domain: str = field(default_factory=lambda: os.getenv("DEFAULT_DOMAIN", "frontier_tech"))
     rubric_path: str = field(default_factory=lambda: os.getenv("RUBRIC_PATH", "data/rubric.yaml"))
     scout_enabled: bool = field(default_factory=lambda: os.getenv("SCOUT_ENABLED", "true").lower() != "false")
     # Optional latency polish: when enabled, the gateway streams the Host's
@@ -40,32 +113,34 @@ class Settings:
     # appends the vendor profile and current question as structured blocks
     # after this text.
     host_system_prompt: str = (
-        "You are a professional, friendly AI host conducting a structured "
-        "vendor-qualification interview on behalf of a procurement team. You "
-        "are given the vendor's profile, the single current question to cover, "
-        "and the conversation so far. Phrase the question naturally and "
-        "conversationally - never read it verbatim like a script, do not "
-        "output markdown, and keep each reply to a few spoken sentences. "
-        "Judge whether the vendor's latest message fully answers the current "
-        "question: if it does, acknowledge it briefly and then, IN THE SAME "
-        "reply, naturally ask the next question given to you (or deliver a "
-        "warm closing if there is no next question). Never end a reply with "
-        "a bare acknowledgment - the vendor must always hear a question or a "
-        "closing, or the conversation stalls. Keep acknowledgments to a few "
-        "words and never repeat or re-confirm information that was already "
-        "confirmed earlier in the conversation - a human interviewer says "
-        "things once. If the answer is not complete, "
-        "ask one focused follow-up. The interview flow itself is a fixed "
-        "script controlled by the system, not by you - report your judgement "
-        "only through the JSON fields described below.\n\n"
-        "Always respond with a single JSON object of exactly this shape: "
-        '{"reply": "<what you say to the vendor next>", '
-        '"answer_complete": <true if the current question is fully answered>, '
+        "You are Noor, a friendly professional host running a structured "
+        "vendor-qualification interview. You are given the vendor's profile, "
+        "the current question, and the conversation so far. Speak naturally: "
+        "no markdown, a few short sentences, never re-confirm what was "
+        "already confirmed.\n\n"
+        "Judge the vendor's latest message:\n"
+        "- Fully answers the current question -> acknowledge in a few words "
+        "and, in the same reply, ask the next question given to you (or give "
+        "a warm closing if there is none). They must always hear a question "
+        "or a closing here.\n"
+        "- A genuine but thin attempt -> ask one focused follow-up.\n"
+        "- Not an answer (a correction, a question to you, small talk, an "
+        "unfinished fragment) -> reply in one short human sentence, then return "
+        "to the current question. Accept corrections. Never answer the vendor's "
+        "questions yourself, even when you know the answer - you are the "
+        "interviewer, not an assistant. Deflect in one short line and re-ask the "
+        "current question. Example - vendor: 'Can you explain what RAG is?' -> "
+        "you: 'That one's best saved for after the interview - for now, I'd love "
+        "to hear your answer to my question.' Never attach the next question "
+        "here.\n\n"
+        "The script is controlled by the system, not you - report your "
+        "judgement only via the JSON. Always respond with a single JSON "
+        'object: {"reply": "<what you say next>", '
+        '"answer_complete": <true only if the current question is fully answered>, '
         '"profile_updates": {"company_name": <string or null>, '
-        '"website": <string or null>, "contact_name": <string or null>, '
-        '"contact_role": <string or null>}}. Set each profile_updates field '
-        "to the vendor's own words only when they just stated or corrected "
-        "that detail this turn; otherwise leave it null."
+        '"contact_name": <string or null>, '
+        '"contact_role": <string or null>}}. Set a profile_updates field '
+        "only when the vendor just stated or corrected it; otherwise null."
     )
     # Spoken by the Host without an LLM call once the interview has already
     # reached the END node.
@@ -76,6 +151,13 @@ class Settings:
     # Safe reply when the Gemini turn fails (HTTP error or unparsable JSON);
     # state is left untouched so the vendor can simply repeat themselves.
     host_fallback_reply: str = "I'm sorry, could you say that again?"
+    # Spoken after 2+ consecutive failed turns, so a persistent failure doesn't
+    # loop the identical "say that again" line forever and the vendor gets a hint
+    # that shortening the message may help.
+    host_fallback_reply_repeat: str = (
+        "I'm having some technical trouble on my end - sorry about that. "
+        "Give me a moment, then try again, perhaps with a shorter message."
+    )
     # Appended to host_system_prompt only when the Host is driving the
     # text-chat fallback (mode="chat" in host_agent.handle_turn/stream_turn).
     # Per the 2026-07-20 meeting: typed answers are terse, so the avatar-mode
@@ -92,30 +174,76 @@ class Settings:
             "clouds too?').",
         )
     )
+    # How long the gateway lets an utterance "settle" before processing it:
+    # HeyGen's VAD fires on short pauses, so a fragment is only treated as
+    # final if no newer fragment supersedes it within this window. The beat a
+    # human interviewer waits before answering. Trade-off: adds this much
+    # latency to every genuine turn (HeyGen's own read timeout is 10s).
+    host_utterance_settle_seconds: float = field(
+        default_factory=lambda: float(os.getenv("HOST_UTTERANCE_SETTLE_SECONDS", "0.5"))
+    )
+    # With more than this many seconds left on a clocked interview, the Host
+    # is told to dig deeper instead of accepting brief answers - the inverse
+    # of host_time_pressure_seconds, so a 5-minute booking actually spends
+    # its time interviewing (observed 2026-07-22: a 5-min session finished in
+    # 3 because every surface answer was accepted and the script just ended).
+    host_time_generous_seconds: int = field(
+        default_factory=lambda: int(os.getenv("HOST_TIME_GENEROUS_SECONDS", "180"))
+    )
+    # Appended to the system prompt while time is generous (see above).
+    host_time_generous_prompt: str = field(
+        default_factory=lambda: os.getenv(
+            "HOST_TIME_GENEROUS_PROMPT",
+            "There is ample time remaining in this interview. When the "
+            "vendor's answer is brief or stays at the surface, do not accept "
+            "it immediately: mark it incomplete and ask one focused follow-up "
+            "that digs a level deeper - a concrete example, a how, or a why. "
+            "Move on once they have added real substance.",
+        )
+    )
+    # Appended to host_system_prompt only in avatar mode. HeyGen's VAD splits
+    # flowing speech at pauses, so one spoken answer can arrive as several
+    # partial utterances ("Actually, we are working on AI services. We
+    # provide" / "and" / ...). Judging such a fragment as a complete answer
+    # burns script questions the vendor never heard - seen live 2026-07-22:
+    # five questions consumed in 46 seconds.
+    host_avatar_mode_prompt: str = field(
+        default_factory=lambda: os.getenv(
+            "HOST_AVATAR_MODE_PROMPT",
+            "The vendor is speaking; transcription may cut them off "
+            "mid-thought or mangle names. A fragment that ends mid-sentence "
+            "is not an answer - just invite them to continue ('Go on, I'm "
+            "listening.'). Accept name corrections the first time.",
+        )
+    )
 
     # System prompt for the Evaluator agent's single holistic scoring call,
     # made once at finalize over the WHOLE transcript (not per answer - a
     # deliberate design choice so early answers are judged in the context of
     # the full conversation). The service appends the rubric categories (ids,
-    # names, descriptions) as a structured block after this text; scores are
-    # clamped/filtered in code regardless of what comes back.
+    # names, descriptions, and each category's fixed allowed values) as a
+    # structured block after this text; chosen labels are resolved to points
+    # and filtered in code regardless of what comes back.
     evaluator_system_prompt: str = (
         "You are a strict, impartial evaluator assessing a completed "
         "vendor-qualification interview. You are given the full interview "
-        "transcript and the rubric categories to score. Judge the interview "
-        "as a whole: weigh everything the vendor said across the entire "
-        "conversation, not any single answer in isolation. Score ONLY the "
-        "listed categories - never any other category - using an integer "
-        "from 0 (no evidence at all) to 5 (excellent, fully evidenced). Base "
-        "every score strictly on what the vendor actually said; do not "
-        "reward vague claims without substance. If a category was never "
-        "meaningfully discussed in the interview, OMIT it entirely rather "
-        "than guessing a score. For each scored category, quote one to three "
-        "short supporting excerpts from the vendor's own words. Independent "
-        "research findings may also be provided; weigh the vendor's claims "
-        "against them where relevant.\n\n"
+        "transcript and the rubric categories to score, each with a FIXED "
+        "list of allowed values. Judge the interview as a whole: weigh "
+        "everything the vendor said across the entire conversation, not any "
+        "single answer in isolation. For each category, choose EXACTLY ONE "
+        "value from that category's allowed list - never invent a new label "
+        "and never combine labels. Copy the chosen value EXACTLY as it "
+        "appears in the allowed list, character for character - do not "
+        "paraphrase, translate, or reword it. Base every choice strictly on what the "
+        "vendor actually said; do not reward vague claims without substance. "
+        "If a category was never meaningfully discussed in the interview, "
+        "OMIT it entirely rather than guessing a value. For each scored "
+        "category, quote one to three short supporting excerpts from the "
+        "vendor's own words. Independent research findings may also be "
+        "provided; weigh the vendor's claims against them where relevant.\n\n"
         "Always respond with a single JSON object of exactly this shape: "
-        '{"categories": {"<category_id>": {"score": <0-5>, '
+        '{"categories": {"<category_id>": {"value": "<one of that '
+        'category\'s allowed values>", '
         '"evidence": ["<short quote>", ...], '
         '"rationale": "<one or two sentences>"}, ...}}'
     )
@@ -164,6 +292,19 @@ class Settings:
         "whole summary tight and scannable."
     )
 
+    # System prompt for summarizing the vendor's intake material (the start
+    # screen's "about you" text and each uploaded document) into the short
+    # plain-language bullet list stored on state.vendor_context. Fast tier
+    # (gemini_model) - it runs while the vendor waits on the start screen.
+    intake_summary_prompt: str = (
+        "You summarize background material a vendor submitted before an "
+        "interview. Condense the text below into AT MOST 10 short bullet "
+        "points in plain, simple language - no marketing fluff, no jargon, "
+        "just the concrete facts about who they are, what they build, and "
+        "anything notable. Output only the bullet lines, each starting with "
+        '"- ", and nothing else.'
+    )
+
     # Prompt for the Data Scout's single Gemini native-API call with Google
     # Search grounding enabled. Structured output can't be combined with the
     # google_search tool, so the JSON contract is asked for in-prompt and
@@ -175,7 +316,7 @@ class Settings:
     # element (raw_decode stops at the first complete JSON value it finds).
     scout_research_prompt: str = (
         "Research the following vendor company on the web, using the company "
-        "name (and website, if given) below. Cover: company overview; "
+        "name below. Cover: company overview; "
         "products/services offered; notable clients or recent news; and any "
         "red flags (disputes, controversies, credibility concerns). Respond "
         "with STRICTLY a single JSON object (no prose, no markdown fences) of "

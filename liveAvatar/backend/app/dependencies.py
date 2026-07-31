@@ -1,3 +1,10 @@
+"""Shared request-time helpers for the routers.
+
+Currently just `resolve_api_key`, the single place that reads the server's
+LiveAvatar API key and turns a missing key into a clean HTTP error. The
+sessions router calls it before every LiveAvatar API interaction.
+"""
+
 from fastapi import HTTPException
 
 from app.config import settings

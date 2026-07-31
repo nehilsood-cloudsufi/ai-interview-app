@@ -10,6 +10,13 @@ interface LocalVideoPanelProps {
   localVideoRef: RefObject<HTMLVideoElement | null>;
 }
 
+/**
+ * The vendor's self-view camera tile, shown beside AvatarVideoPanel in avatar
+ * mode. Mirrors the local <video> (via `localVideoRef`) once connected, with a
+ * "Camera is off" fallback when `cameraEnabled` is false and a sky glow ring
+ * while the user speaks; the corner label carries a mic on/off icon. App mounts
+ * it only when the SHOW_SELF_VIEW build flag is on; purely presentational.
+ */
 export function LocalVideoPanel({ status, speakingState, cameraEnabled, micEnabled, localVideoRef }: LocalVideoPanelProps) {
   return (
       <div className={`flex-1 relative flex items-center justify-center rounded-3xl overflow-hidden shadow-2xl transition-all duration-300 ${

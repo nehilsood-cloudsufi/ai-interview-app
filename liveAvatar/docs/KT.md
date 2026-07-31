@@ -11,7 +11,7 @@ This document has two parts:
 
 ## 1.1 What is Resonance?
 
-The project started as a POC where an AI avatar interviews a job candidate about their resume (that system's plumbing — sessions, transcripts, GCS persistence, deployment — is documented in Part 2 and is fully reused). It has now evolved into **Resonance**: a vendor-evaluation platform. A vendor representative starts an interview straight from a start screen (no intake form), then has a live video conversation with an AI avatar that runs a structured, unbiased evaluation interview — and once the interview ends, a team of background AI agents scores the transcript, researches the company, and recommends whether to book a follow-up meeting.
+The project started as a POC where an AI avatar interviews a job candidate about their resume (that system's plumbing — sessions, transcripts, GCS persistence, deployment — is documented in Part 2 and is fully reused). It has now evolved into **Resonance**: a vendor-evaluation platform. A vendor representative fills in a short pre-interview intake form on the start screen (name and company required, role and free-text context optional, plus up to 3 context documents), then has a live video conversation with an AI avatar that greets them by name and runs a structured, unbiased evaluation interview — and once the interview ends, a team of background AI agents scores the transcript, researches the company, and recommends whether to book a follow-up meeting.
 
 ## 1.2 The one big architectural idea
 
@@ -22,13 +22,13 @@ Two design rules worth mentioning to anyone reviewing this:
 - **Code decides, the LLM phrases.** Which question comes next, when to stop following up, how scores are averaged and weighted — all of that is deterministic code we can unit-test. Gemini is only asked to phrase the reply and judge the answer, always returning structured JSON.
 - **The avatar never goes silent, and we never lose data.** Any failure in an agent turns into a polite canned reply, not an error. A summary, scoring, or follow-up failure never loses the transcript.
 
-`PUBLIC_BASE_URL` is required and must resolve to a URL HeyGen can reach — it's how HeyGen calls back into our `/llm/{interview_id}/v1` gateway. Gateway mode is now the only mode; the legacy path (HeyGen as its own brain, intake form, per-answer live scoring) has been fully removed, not just made optional.
+`PUBLIC_BASE_URL` is required and must resolve to a URL HeyGen can reach — it's how HeyGen calls back into our `/llm/{interview_id}/v1` gateway. Gateway mode is now the only mode; the legacy path (HeyGen as its own brain, resume upload/intake form, per-answer live scoring) has been fully removed, not just made optional.
 
 ## 1.3 The four agents
 
 | Agent | What it does | Status |
 |---|---|---|
-| **Host** | Runs the live interview: walks a fixed linear question script, one complete script per domain (`data/questionnaires/{domain}.yaml`), and decides when an answer is complete vs. needs a follow-up — deliberately no adaptive branching, so every vendor gets the same questions. Also captures the vendor's profile (name, role, company, website) conversationally at the start — there's no intake form. | ✅ Done, verified in live sessions |
+| **Host** | Runs the live interview: walks a fixed linear question script, one complete script per domain (`data/questionnaires/{domain}.yaml`), and decides when an answer is complete vs. needs a follow-up — deliberately no adaptive branching, so every vendor gets the same questions. The vendor's profile (name, role, company) is captured up front by the start screen's intake form, plus an optional free-text note and up to 3 context documents — the Host greets the vendor by name and goes straight into question one, with no conversational onboarding step. | ✅ Done, verified in live sessions |
 | **Evaluator** | Scores the interview 0–5 against a weighted rubric (`data/rubric.yaml`) in **one holistic pass after the interview ends**, using a stronger Gemini Pro model, with supporting quotes per category. The scorecard is revealed in the results view — deliberately not live, so the vendor never watches their own scores move mid-interview and every answer is judged in the context of the whole conversation. | ✅ Done |
 | **Coordinator** | After the interview, applies transparent, deterministic threshold rules (no LLM) to the final scorecard (strong → advance, middling with weak spots → clarify) to produce a recommendation for the human evaluator to act on — shown as a card in the UI. | ✅ Done |
 | **Data Scout** | Researches the vendor company on the web (Gemini native API + Google Search grounding) **strictly after the interview ends**, as a pipeline step — it never sees the interview and never informs the Host's questions, by design: the interview must stay unbiased. Soft-fails to no findings on any error. | ✅ Done |
@@ -38,7 +38,7 @@ Two design rules worth mentioning to anyone reviewing this:
 Following the master plan (`docs/plans/2026-07-17-resonance-multi-agent-plan.md`):
 
 1. **Phase 0 — Gateway spike ✅.** Proved with a real session that HeyGen will call our endpoint as its LLM, and documented the exact contract (request shape, streaming, its 10-second timeout) in `docs/llm-gateway-notes.md` before betting the plan on it.
-2. **Phase 1 — Foundation + Host agent ✅.** Interview state store, questionnaire/rubric configs with validation, `POST /api/interview` to mint an interview before any UI is shown, per-interview LLM registration with HeyGen (including a per-interview secret token so only HeyGen can call our gateway), and the Host state machine. The avatar greets the vendor conversationally and captures their profile (name, role, company, website) as part of the interview itself — there's no separate intake form.
+2. **Phase 1 — Foundation + Host agent ✅.** Interview state store, questionnaire/rubric configs with validation, `POST /api/interview` to mint an interview before any UI is shown, per-interview LLM registration with HeyGen (including a per-interview secret token so only HeyGen can call our gateway), and the Host state machine. The vendor's profile (name, role, company) is captured by the start screen's intake form before the interview starts; the avatar greets the vendor by name and goes straight into the question script.
 3. **Phase 2 — Evaluator scoring ✅ (revised).** Originally scoring fired per answer with a live-updating scorecard panel. We deliberately changed this: scoring now happens **once, after the interview ends**, as a single holistic pass over the whole transcript using a stronger model (Gemini Pro — latency doesn't matter after the session ends). Why: the vendor was seeing their own scores change mid-interview (bias risk), and judging the whole conversation at once is fairer than judging each answer in isolation. The scorecard (category bars, evidence quotes, overall) now appears in the results view alongside the summary.
 4. **Phase 3 — Data Scout ✅.** Post-interview-only company research (Gemini native API + `google_search` grounding), deliberately wired to run strictly after the interview so it can never bias the Host's questions. Soft-fails to no findings on any error.
 5. **Phase 4 — Coordinator + pipeline + enriched record ✅.** `app/services/pipeline.py` sequences Scout → Evaluator → Coordinator as an in-process background task after finalize, tracking `pipeline_status` (`interviewed → scouting → evaluating → ready`/`failed`) that the frontend polls via `GET /api/interview/{id}/state`. The saved interview record carries the vendor profile, full transcript, scorecard, scout findings, summary, and follow-up recommendation. A plain recommendation card (advance/clarify, reason, weak categories — no email drafting, that was removed with the Coordinator simplification) appears when the rules recommend a next step. *(Deployment and demo hardening are still open — see 1.5.)*
@@ -55,7 +55,7 @@ In rough priority order:
 1. **Deployment (E2, Nehil).** Gateway mode currently runs locally through a tunnel. To deploy: make the Docker image include the questionnaire/rubric YAML files, set `PUBLIC_BASE_URL` to the Cloud Run URL, and verify orphan cleanup also removes per-interview LLM configs/secrets on HeyGen's side. Docs update (this file) is part of it.
 2. **Demo hardening (E3, Nehil).** Three full rehearsals with deliberately different vendor personalities (terse / rambling / off-topic) to tune prompts and follow-up limits; failure drills (kill the Gemini key mid-session — avatar must keep talking; state endpoint down — UI must cope); final latency check.
 3. **Optional latency polish.** If the demo still feels slow, stream the Host's reply token-by-token so the avatar starts speaking sooner. Deferred deliberately — the timing logs we added will tell us if it's needed.
-4. **Post-POC (first items of a next phase, not this one).** Interview state is in-memory today — a server restart loses an in-flight interview. Accepted for the POC; a database is the first follow-up. Same for a small known session-counter drift (see `session_state.py` in `CLAUDE.md`).
+4. **Post-POC (first items of a next phase, not this one).** Interview state is in-memory today — a server restart loses an in-flight interview. Accepted for the POC; a database is the first follow-up. The session counter is now TTL-tracked and self-corrects (the frontend POSTs `/api/session/stop` on server-side disconnect, and any tracked session still expires on its own once its TTL elapses — see `session_state.py` in `CLAUDE.md`), so it no longer needs a restart to reset.
 
 ## 1.6 Known limitations (worth stating upfront)
 
@@ -105,11 +105,11 @@ You might wonder, *"Why can't the React app just talk to LiveAvatar directly?"*
 Let's follow the data flow when a user actually uses the app today (gateway mode — the only mode).
 
 1. **Loading the App**: The user navigates to our Cloud Run URL. The FastAPI backend receives the request and, because it's configured to serve static files, it sends the compiled React app (`index.html`, JavaScript, CSS) to the browser.
-2. **Starting the Interview**: `StartScreen` `POST`s `/api/interview` (no intake form, no resume upload — that flow was removed). The backend creates an in-memory `InterviewState` with an empty vendor profile and returns an `interview_id`.
+2. **Starting the Interview**: `StartScreen` collects the pre-interview intake form (name and company required, role and an "about you" note optional, up to 3 context documents — no resume upload, that flow was removed) and `POST`s `/api/interview` with those fields. The backend creates an in-memory `InterviewState` pre-filled from the intake fields and returns an `interview_id`; any uploaded documents are then sent to `/api/interview/{id}/document`, summarized, and folded into the interview's vendor context.
 3. **Starting the Session**: The React app calls the backend's `/api/session` endpoint with that `interview_id`. The backend registers a per-interview Custom LLM with HeyGen (a secret + LLM config pointing back at our own `/llm/{interview_id}/v1` gateway) plus a minimal, generic context (no resume text — there's nothing candidate-specific to embed anymore).
-4. **Token Generation**: The backend uses our secure `LIVEAVATAR_API_KEY` to ask LiveAvatar for a `session_token`. We hardcode `is_sandbox: True` here to save money during testing, and we use a specific Sandbox Avatar ID (`dd73ea75...`).
+4. **Token Generation**: The backend uses our secure `LIVEAVATAR_API_KEY` to ask LiveAvatar for a `session_token`. The avatar and `is_sandbox` flag come from the interview's tier: dev-tier interviews use the free sandbox avatar (`dd73ea75...`) with `is_sandbox: true`; prod-tier interviews (`/prod` URL, passcode-gated) use `PROD_AVATAR_ID` with `is_sandbox: false` and a `max_session_duration` cap (see §6).
 5. **WebRTC Connection**: The backend gives the `session_token` back to React. React passes it to the `LiveAvatarSession` SDK. The SDK reaches out to LiveKit (the underlying infrastructure) and establishes a direct video/audio peer-to-peer connection. The avatar appears on screen!
-6. **The Interview Itself**: Every time the vendor finishes speaking, HeyGen calls our `/llm/{interview_id}/v1/chat/completions` gateway, which drives the Host agent — a fixed question tree, phrased naturally by Gemini, that also captures the vendor's profile (name, role, company, website) conversationally as the first questions are answered.
+6. **The Interview Itself**: Every time the vendor finishes speaking, HeyGen calls our `/llm/{interview_id}/v1/chat/completions` gateway, which drives the Host agent — a fixed question tree, phrased naturally by Gemini, over the questions the intake-derived `question_plan` selected (every node normally, or the top-K by rubric weight on a clocked prod interview).
 7. **Live Transcript**: During the interview, the SDK emits `USER_TRANSCRIPTION` (vendor) and `AVATAR_TRANSCRIPTION` (interviewer) events, one per completed turn. React accumulates these into a transcript, shown live in the transcript panel.
 8. **Finalizing the Interview**: When the session ends — whether the vendor stops it or LiveAvatar's server ends it (e.g. max duration) — React POSTs the captured turns to `/api/transcript/finalize`. The backend asks Gemini to write a structured Markdown summary, persists the record (summary + all turns + vendor profile + timestamp) to Google Cloud Storage (or a local JSON file), and — because this is a live interview, not a legacy/no-`interview_id` finalize — hands the interview off to the background pipeline (Scout → Evaluator → Coordinator). The summary appears on screen immediately; the scorecard, research insights, and follow-up recommendation fill in progressively as the frontend polls `GET /api/interview/{interview_id}/state` every 3 seconds until the pipeline reaches `ready` (or `failed`). The vendor can download the whole record as Markdown.
 
@@ -130,7 +130,7 @@ If you look inside `/liveAvatar/frontend/src/App.tsx`, here are the key concepts
 
 Inside `/liveAvatar/backend/app/` (routers + services, see `CLAUDE.md` for the module layout), the logic is designed for resilience:
 
-- **Resonance modules (see Part 1 for the concepts):** `routers/interview.py` (create interview, the live state endpoint `SummaryPanel` polls, and the text-chat fallback), `routers/llm_gateway.py` (the OpenAI-compatible endpoint HeyGen calls, with per-interview bearer-token auth and a "never return an error after auth" rule), and `services/interview_state.py`, `interview_config.py`, `host_agent.py` (live interview + onboarding), `scout_agent.py` (post-interview research), `evaluator_agent.py` (holistic scoring), `coordinator_agent.py` (threshold recommendation), `pipeline.py` (the one orchestrator sequencing Scout → Evaluator → Coordinator in the background after finalize), `llm_json.py` (shared tolerant JSON parser for all Gemini calls). Question trees and rubric live in `data/questionnaires/{domain}.yaml` / `data/rubric.yaml`.
+- **Resonance modules (see Part 1 for the concepts):** `routers/interview.py` (create interview from the intake form fields, the document-upload endpoint, the live state endpoint `SummaryPanel` polls, and the text-chat fallback), `routers/llm_gateway.py` (the OpenAI-compatible endpoint HeyGen calls, with per-interview bearer-token auth and a "never return an error after auth" rule), and `services/interview_state.py`, `interview_config.py`, `host_agent.py` (the live interview state machine), `scout_agent.py` (post-interview research), `evaluator_agent.py` (holistic scoring), `coordinator_agent.py` (threshold recommendation), `pipeline.py` (the one orchestrator sequencing Scout → Evaluator → Coordinator in the background after finalize), `llm_json.py` (shared tolerant JSON parser for all Gemini calls). Question trees and rubric live in `data/questionnaires/{domain}.yaml` / `data/rubric.yaml`.
 
 - **Concurrency Tracking**: We maintain a simple `active_sessions_count` variable. This helps us monitor if we are hitting LiveKit's concurrency limits.
 - **Garbage Collection (Contexts + LLM Configs)**: When a session stops (in `/api/session/stop`), we don't just stop the video. We also best-effort `DELETE` the per-interview context, Custom LLM configuration, and secret we created on HeyGen's side for that interview. If we didn't do this, our LiveAvatar workspace would eventually fill up with orphaned per-interview resources.
@@ -150,6 +150,43 @@ We deploy both the frontend and backend together as a single container on Google
   2. **Stage 2 (Python)**: It starts fresh with a lightweight Python image. It installs FastAPI, copies the Python backend code, and finally copies just the compiled `/dist` folder from Stage 1. It then starts `uvicorn` on port 8080.
 - **The `.gcloudignore` File**: This is critical. It tells Google Cloud "Do NOT upload my local `node_modules` or `.venv` folders to the cloud builder." If you upload a Mac's `.venv` folder to a Linux cloud builder, the build will fail because the binaries are incompatible.
 - **Secret Manager**: The `deploy_setup.sh` script automates creating a secure vault (Google Cloud Secret Manager) for our `LIVEAVATAR_API_KEY` and giving Cloud Run permission to read it. When the container boots, Cloud Run injects the secret securely as an environment variable.
+
+### Avatar tiers: /dev vs /prod (one deployment, both modes)
+
+The avatar tier is chosen **per interview by URL path**, not per deployment: `/` (or anything except `/prod`) → **dev tier** — free sandbox avatar ("Wayne", `dd73ea75-…`), `is_sandbox: true`, HeyGen force-terminates at ~1 minute; `/prod` → **prod tier** — `PROD_AVATAR_ID` with `is_sandbox: false`, burning credits (2/minute). The prod start screen has a **session-length picker** (3/5/7/10 minutes, default 5); `PROD_MAX_SESSION_SECONDS` (default 600 s) is the hard ceiling the backend enforces (400 above it).
+
+**Time-aware wrap-up:** the Host paces clocked (prod-tier avatar) interviews against the picked duration so the session never cuts off mid-sentence. The clock starts on the interview's first gateway turn; under 120 s remaining the Host stops asking follow-ups and keeps replies short (prompt suffix + code-forced advancement); under 60 s it skips whatever questions remain and speaks a canned closing (`host_timeup_reply`, no LLM call) — so the goodbye lands in the session's final minute. HeyGen's `max_session_duration` is set to the picked duration **plus 60 s grace** (`prod_session_grace_seconds`) and acts purely as a safety net. The frontend timer badge counts **down** on prod sessions (amber in the last minute). Dev tier and chat mode have no clock and are unaffected.
+
+Prod tier is opt-in and passcode-gated: `POST /api/interview` with `tier: "prod"` requires the `DEMO_PASSCODE` value (403 on mismatch) and 503s unless both `PROD_AVATAR_ID` and `DEMO_PASSCODE` are configured — so a leaked URL can't burn credits. Session creation re-checks `PROD_AVATAR_ID` so a prod interview can never silently fall back to the sandbox avatar (which would also time out on LiveKit with `is_sandbox: false`). Pick a public avatar from `GET /v1/avatars/public` (no auth needed); `PROD_VOICE_ID` is optional since public video avatars carry a default voice.
+
+Branches: `main` = stable/released, `dev` = integration. Both tiers exist in every deployment; branches no longer imply an avatar mode.
+
+### Production deploy recipe
+
+One-time setup: `./deploy_setup.sh` (creates the `LIVEAVATAR_API_KEY` secret in Secret Manager and binds IAM); create `GEMINI_API_KEY` and `DEMO_PASSCODE` secrets the same way (all keys travel via Secret Manager, not plain env vars), and a transcripts bucket with `roles/storage.objectAdmin` for the Cloud Run runtime SA. Then, from the repo root on the branch being released (the live 2026-07-23 deployment: service `liveavatar-demo`, project `dc-un-499210`, region `us-central1`, branch `dev`):
+
+```bash
+gcloud run deploy <service> \
+  --source liveAvatar \
+  --region <region> \
+  --allow-unauthenticated \
+  --no-cpu-throttling \
+  --update-secrets "LIVEAVATAR_API_KEY=LIVEAVATAR_API_KEY:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,DEMO_PASSCODE=DEMO_PASSCODE:latest" \
+  --update-env-vars "PROD_AVATAR_ID=<public-avatar-id>,PROD_VOICE_ID=<voice-id>,DEFAULT_DOMAIN=frontier_tech,GCS_BUCKET=<bucket>,HOST_STREAMING_ENABLED=true"
+```
+
+`PUBLIC_BASE_URL` is a chicken-and-egg on the FIRST deploy only: HeyGen needs the service URL, which doesn't exist until the first deploy. So deploy once without it (session creation 503s until it's set), grab the URL from the deploy output, then:
+
+```bash
+gcloud run services update <service> --region <region> \
+  --update-env-vars PUBLIC_BASE_URL=<service-url>
+```
+
+On later deploys the URL already exists — include `PUBLIC_BASE_URL=<service-url>` in the deploy's `--update-env-vars` directly.
+
+Then `https://<service-url>/` is the free dev-tier experience and `https://<service-url>/prod` is the credit-burning demo tier (needs the passcode).
+
+Production prerequisites: LiveAvatar credits on the account (FULL mode is 2 credits/minute) and a public (or custom) avatar ID — only if that avatar is an *image* avatar does it also need a `PROD_VOICE_ID` (video avatars have a built-in voice).
 
 ### CPU throttling and the post-interview pipeline
 
@@ -173,8 +210,11 @@ Mitigations:
 **Q: Cloud Build is failing with an error about missing modules or incompatible binaries.**
 **A:** You likely accidentally uploaded your local environments. Ensure `.gcloudignore` is present in the root of the project and contains `node_modules`, `.venv`, and `.env`.
 
-**Q: Why is `is_sandbox: True` hardcoded?**
-**A:** We are currently using the default Sandbox Avatar ID. If you try to use a sandbox avatar with `is_sandbox: False`, LiveKit will inexplicably time out and the connection will fail. When we move to production with a custom avatar, this flag must be changed.
+**Q: How do I switch between sandbox and production avatar mode?**
+**A:** By URL: open `/` for the free sandbox tier, `/prod` for the production avatar (see "Avatar tiers" in §6). Prod needs `PROD_AVATAR_ID` + `DEMO_PASSCODE` env vars and account credits; the passcode is entered on the start screen. There is no env var that flips the whole deployment's mode — one deployment serves both tiers. (Background: pairing the sandbox avatar with `is_sandbox: false` makes LiveKit inexplicably time out, which is why the sandbox avatar is pinned to the dev tier.)
+
+**Q: Which tunnel should I use locally?**
+**A:** **ngrok with a free static domain** — the only provider that proved reliable (trycloudflare and localhost.run are SNI-blocked/reset on our network, and localtunnel's links rot within ~30 minutes, which freezes avatar sessions after the opening line). One-time: sign up at dashboard.ngrok.com, claim the free static domain, `brew install ngrok`, `ngrok config add-authtoken <token>`. Then `ngrok http 3001 --url=https://<your-domain>.ngrok-free.dev` and pin `PUBLIC_BASE_URL=https://<your-domain>.ngrok-free.dev` in `backend/.env` once — the domain never changes, so tunnel and backend restarts are fully independent. Health check: `curl -X POST <domain>/llm/test/v1/chat/completions` → **404 means healthy** (the request reached the app); 502 means the tunnel is down. Also remember: most backend iteration doesn't need a tunnel at all — text-chat mode exercises the full Host/pipeline path same-origin.
 
 **Q: The interview ended but the summary says it couldn't be generated. Was the transcript lost?**
 **A:** No. Summary generation is best-effort — if Gemini is unavailable or `GEMINI_API_KEY` is missing, the backend sets `summary_ok=False` but still saves the full transcript, and the UI still lets you download it. Check the backend logs for the summary warning. If the transcript itself failed to save (a 500), that's a real error — check `GCS_BUCKET` / credentials, or the local `transcripts/` folder's write permissions.
