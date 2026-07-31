@@ -203,6 +203,28 @@ async def _derive_company_website(
     return None
 
 
+async def _gather_aramco_search(company_name: str) -> list[dict[str, Any]]:
+    """One dedicated search for any prior publicly known relationship,
+    partnership, contract, or project between the company and Saudi Aramco -
+    explicitly required by the client's evaluation rubric, so it runs as its
+    own named query rather than being folded into the generic
+    _BLIND_SEARCH_QUERY_TEMPLATES loop (that set stays untouched). No
+    recency bias is applied - unlike revenue/employees/leadership, an old
+    Aramco partnership is still relevant however long ago it happened.
+    Returns a single {"query", "results"} entry (same shape as a
+    blind_search/representative_search entry) or [] if nothing came back or
+    survives relevance filtering - never raises, same as every other search
+    in this module."""
+    query = f"{company_name} Saudi Aramco"
+    hits = await web_search_client.search(query)
+    if not hits:
+        return []
+    relevant_hits = scout_utils._filter_relevant(hits, company_name)
+    if not relevant_hits:
+        return []
+    return [{"query": query, "results": await _enrich_with_full_text(relevant_hits)}]
+
+
 async def _gather_representative_search(representative_name: str, company_name: str) -> list[dict[str, Any]]:
     """One search for public info about the interviewed company
     representative (LinkedIn, bio, background) alongside the company name,
@@ -376,6 +398,7 @@ class _GatherState:
         self.pages: list[dict[str, Any]] = []
         self.blind_search: list[dict[str, Any]] = []
         self.representative_search: list[dict[str, Any]] = []
+        self.aramco_search: list[dict[str, Any]] = []
         self.link_lookups: list[dict[str, Any]] = []
         self.claims: list[str] = []
         self.targeted_search: list[dict[str, Any]] = []
@@ -392,16 +415,19 @@ async def _run_pass_a(
     """Pass A: blind gathering, transcript NOT used for any search/fetch
     decision here. There is no dedicated website field on the intake form -
     the company website is derived first (see _derive_company_website), then
-    its fetch, the 8 blind-search queries, and the representative search all
-    run concurrently - they're independent of each other. Writes results
-    into `state`; returns nothing."""
+    its fetch, the 8 blind-search queries, the representative search, and
+    the dedicated Saudi Aramco relationship search (see
+    _gather_aramco_search - client-rubric-required, always run, no recency
+    bias) all run concurrently - they're independent of each other. Writes
+    results into `state`; returns nothing."""
     company_website = await _derive_company_website(company_name, extra_context, documents)
     state.company_website = company_website
 
-    page_data, blind_search, representative_search = await asyncio.gather(
+    page_data, blind_search, representative_search, aramco_search = await asyncio.gather(
         _maybe_fetch_website(company_website),
         _gather_blind_search(company_name),
         _gather_representative_search(representative_name, company_name),
+        _gather_aramco_search(company_name),
     )
 
     if page_data:
@@ -430,6 +456,10 @@ async def _run_pass_a(
 
     state.representative_search = representative_search
     for entry in representative_search:
+        state.already_fetched_urls.update(result["url"] for result in entry["results"])
+
+    state.aramco_search = aramco_search
+    for entry in aramco_search:
         state.already_fetched_urls.update(result["url"] for result in entry["results"])
 
     # extra_context/documents/website text are scanned here only for literal

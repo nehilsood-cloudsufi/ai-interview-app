@@ -172,6 +172,8 @@ async def run_scout(
         sources["blind_search"] = state.blind_search
     if state.representative_search:
         sources["representative_search"] = state.representative_search
+    if state.aramco_search:
+        sources["aramco_search"] = state.aramco_search
     if state.link_lookups:
         sources["link_lookups"] = state.link_lookups
     if state.targeted_search:

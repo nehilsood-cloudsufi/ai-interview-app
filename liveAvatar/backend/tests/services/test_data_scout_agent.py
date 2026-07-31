@@ -487,6 +487,63 @@ async def test_gather_representative_search_returns_empty_without_name():
     assert await scout_gather._gather_representative_search("", "Acme Corp") == []
 
 
+# --- Aramco relationship search (Pass A) ------------------------------------
+
+
+async def test_gather_aramco_search_runs_query_and_returns_entry(monkeypatch):
+    async def fake_search(query, **kwargs):
+        assert query == "Acme Corp Saudi Aramco"
+        return [{"title": "Acme Corp - Aramco partnership", "url": "https://news.example.com/acme-aramco", "snippet": "Acme signed a deal with Saudi Aramco."}]
+
+    async def fake_fetch_page_text(url):
+        return None
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
+
+    result = await scout_gather._gather_aramco_search("Acme Corp")
+
+    assert result == [
+        {
+            "query": "Acme Corp Saudi Aramco",
+            "results": [
+                {
+                    "title": "Acme Corp - Aramco partnership",
+                    "url": "https://news.example.com/acme-aramco",
+                    "snippet": "Acme signed a deal with Saudi Aramco.",
+                    "text": None,
+                }
+            ],
+        }
+    ]
+
+
+async def test_gather_aramco_search_returns_empty_without_hits(monkeypatch):
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+
+    assert await scout_gather._gather_aramco_search("Acme Corp") == []
+
+
+async def test_gather_aramco_search_does_not_apply_recency_bias(monkeypatch):
+    # Unlike revenue/employees/leadership blind-search queries, an old Aramco
+    # partnership is still relevant - no time_range should be passed.
+    seen_time_range = "not called"
+
+    async def fake_search(query, time_range=None):
+        nonlocal seen_time_range
+        seen_time_range = time_range
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+
+    await scout_gather._gather_aramco_search("Acme Corp")
+
+    assert seen_time_range is None
+
+
 # --- Claim extraction (transcript + extra_context + documents) -------------
 
 
@@ -782,6 +839,94 @@ async def test_run_scout_gathers_representative_search(patch_settings, monkeypat
 
 
 @respx.mock
+async def test_run_scout_gathers_aramco_search_and_flows_to_synthesis_payload(patch_settings, monkeypatch):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        if query == "Acme Corp Saudi Aramco":
+            return [{"title": "Acme Corp - Aramco partnership", "url": "https://news.example.com/acme-aramco", "snippet": "Acme signed a deal with Saudi Aramco."}]
+        return []
+
+    async def fake_fetch_page_text(url):
+        return None
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
+    route = respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]})
+    )
+
+    result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    assert result["sources"]["aramco_search"] == [
+        {
+            "query": "Acme Corp Saudi Aramco",
+            "results": [
+                {
+                    "title": "Acme Corp - Aramco partnership",
+                    "url": "https://news.example.com/acme-aramco",
+                    "snippet": "Acme signed a deal with Saudi Aramco.",
+                    "text": None,
+                }
+            ],
+        }
+    ]
+    # Confirm it actually reaches the synthesis call's payload, not just state.
+    synthesis_user_message = json.loads(route.calls[0].request.content)["messages"][1]["content"]
+    assert "aramco_search" in synthesis_user_message
+    assert "Saudi Aramco" in synthesis_user_message
+
+
+@respx.mock
+async def test_run_scout_completes_normally_when_aramco_search_returns_nothing(patch_settings, monkeypatch):
+    # Graceful degradation: Tavily returning nothing for the Aramco query
+    # must never block or fail the rest of the Scout run.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]})
+    )
+
+    result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    assert "aramco_search" not in result["sources"]
+    assert result["internet_findings"] == "report"
+    assert result["findings_ok"] is True
+
+
+@respx.mock
+async def test_run_scout_aramco_search_applies_relevance_filter(patch_settings, monkeypatch):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        if query == "Acme Corp Saudi Aramco":
+            return [
+                {"title": "Acme Corp signs Aramco deal", "url": "https://news.example.com/acme-aramco", "snippet": "Acme Corp partnership."},
+                {"title": "Other Company wins award", "url": "https://news.example.com/other", "snippet": "Recognized for community service."},
+            ]
+        return []
+
+    async def fake_fetch_page_text(url):
+        return None
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]})
+    )
+
+    result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    urls = [r["url"] for r in result["sources"]["aramco_search"][0]["results"]]
+    assert "https://news.example.com/acme-aramco" in urls
+    assert "https://news.example.com/other" not in urls
+
+
+@respx.mock
 async def test_run_scout_gathers_link_lookups_for_no_scrape_domains_discovered(patch_settings, monkeypatch):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
 
@@ -1047,6 +1192,52 @@ async def test_gather_blind_search_runs_all_eight_queries_concurrently(patch_set
 
 
 @respx.mock
+async def test_run_pass_a_runs_aramco_search_concurrently_with_blind_search(patch_settings, monkeypatch):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    delay = 0.05
+
+    async def fake_search(query, **kwargs):
+        await asyncio.sleep(delay)
+        if query == "Acme Corp Saudi Aramco":
+            return [{"title": "Acme Corp - Aramco partnership", "url": "https://news.example.com/acme-aramco", "snippet": "Acme signed a deal with Saudi Aramco."}]
+        return []
+
+    async def fake_fetch_page_text(url):
+        return None
+
+    async def fake_fetch_page_with_subpages(url):
+        return {"text": "Acme Corp site text", "subpages": []}
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
+    monkeypatch.setattr("app.services.page_fetcher.fetch_page_with_subpages", fake_fetch_page_with_subpages)
+
+    state = scout_gather._GatherState()
+    start = time.monotonic()
+    # extra_context carries a literal URL so _derive_company_website resolves
+    # without its own search call, isolating timing to the concurrent gather.
+    await scout_gather._run_pass_a(state, "Acme Corp", "Jane Doe", "Visit us at https://acme.example.com", None)
+    elapsed = time.monotonic() - start
+
+    # 8 blind-search queries + representative_search + aramco_search all fire
+    # concurrently - sequential would take ~10 * delay, concurrent ~1 * delay.
+    assert elapsed < delay * 4
+    assert state.aramco_search == [
+        {
+            "query": "Acme Corp Saudi Aramco",
+            "results": [
+                {
+                    "title": "Acme Corp - Aramco partnership",
+                    "url": "https://news.example.com/acme-aramco",
+                    "snippet": "Acme signed a deal with Saudi Aramco.",
+                    "text": None,
+                }
+            ],
+        }
+    ]
+
+
+@respx.mock
 async def test_gather_blind_search_biases_only_revenue_employees_leadership_queries(
     patch_settings, monkeypatch
 ):
@@ -1203,6 +1394,37 @@ async def test_run_scout_redacts_pii_from_enriched_search_result_text(patch_sett
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
     entry = result["sources"]["blind_search"][0]
+    assert "555-123-4567" not in entry["results"][0]["snippet"]
+    assert "jane.doe@acme.example" not in entry["results"][0]["text"]
+
+
+@respx.mock
+async def test_run_scout_redacts_pii_from_aramco_search_results(patch_settings, monkeypatch):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        if query == "Acme Corp Saudi Aramco":
+            return [
+                {
+                    "title": "Acme Corp - Aramco partnership",
+                    "url": "https://news.example.com/acme-aramco",
+                    "snippet": "Contact the deal lead at 555-123-4567.",
+                }
+            ]
+        return []
+
+    async def fake_fetch_page_text(url):
+        return "Reach out to jane.doe@acme.example for details on the Aramco contract."
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]})
+    )
+
+    result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    entry = result["sources"]["aramco_search"][0]
     assert "555-123-4567" not in entry["results"][0]["snippet"]
     assert "jane.doe@acme.example" not in entry["results"][0]["text"]
 

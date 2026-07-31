@@ -245,6 +245,22 @@ def _truncate_sources(sources: dict[str, Any]) -> dict[str, Any]:
             for entry in sources["representative_search"]
         ]
 
+    if "aramco_search" in sources:
+        # Same {"query", "results"} shape as blind_search/representative_search -
+        # one dedicated, always-run search for a prior Saudi Aramco
+        # relationship, required by the client's evaluation rubric (see
+        # scout_system_prompt's mandatory Additional Findings bullet).
+        truncated["aramco_search"] = [
+            {
+                **entry,
+                "results": [
+                    {**result, "text": _trunc(result.get("text"), _MAX_SEARCH_RESULT_CHARS)}
+                    for result in (entry.get("results") or [])
+                ],
+            }
+            for entry in sources["aramco_search"]
+        ]
+
     if "targeted_search" in sources:
         truncated["targeted_search"] = [
             {
