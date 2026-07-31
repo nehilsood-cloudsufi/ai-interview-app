@@ -94,7 +94,7 @@ function renderLine(line: string, key: number): ReactNode {
       </p>
     );
   }
-  if (trimmed.startsWith('- ')) {
+  if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
     return (
       <p key={key} className="pl-4 relative before:content-['•'] before:absolute before:left-1 before:text-slate-500">
         {renderInline(trimmed.slice(2))}
