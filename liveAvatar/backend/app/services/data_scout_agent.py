@@ -6,12 +6,13 @@ the only function other modules (app.services.pipeline) call.
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
 
 from app.config import settings
-from app.services import gemini_client, scout_gather, scout_utils
+from app.services import gemini_client, representative_verification, scout_gather, scout_utils
 
 logger = logging.getLogger(__name__)
 
@@ -129,10 +130,20 @@ async def run_scout(
     extra_context: str | None,
     documents: list[str] | None,
     transcript: str | None,
+    email: str = "",
 ) -> dict[str, Any]:
     """Orchestrates the two-pass Data Scout Agent pipeline. Returns
     {"internet_findings": str, "interview_claims": list[str],
-    "sources": dict, "findings_ok": bool, "company_website": str | None}.
+    "sources": dict, "findings_ok": bool, "company_website": str | None,
+    "representative_verification": RepresentativeVerification}.
+
+    `email` is the interviewed representative's email address, used by
+    Representative Identity Verification (see
+    app.services.representative_verification) to cross-check their stated
+    company. Not yet on the intake form - the production caller
+    (app.services.pipeline) passes whatever VendorProfile.email holds, which
+    is "" until a form field exists; verification degrades gracefully to
+    web-evidence-only in that case, never crashing.
 
     There is no dedicated website field on the intake form anymore - Pass A
     derives it itself (see scout_gather._derive_company_website) from any URL
@@ -154,24 +165,44 @@ async def run_scout(
     extra_context, or any document was provided: it extracts factual claims
     from all three (equally weighted) and runs one targeted search per
     selected claim's own search query, deduplicated against everything Pass A
-    already found. This ordering (blind first, candidate-input second) is
-    what avoids transcript-anchoring bias in *what gets searched for* - it
-    does not mean the two are kept apart at synthesis time; the report's
-    Interview Claims section deliberately maps each claim to what Pass A/B
-    found about it, in neutral (non-verification) language.
+    already found. Claim extraction (Pass B's first step) has no actual
+    dependency on Pass A's results, so scout_gather._gather_all runs it
+    CONCURRENTLY with Pass A (measured 2026-08-01: this was previously
+    serialized after Pass A for no reason, costing the extraction call's
+    full duration off the critical path) - only the subsequent targeted
+    search genuinely waits on Pass A's already-fetched-URL set, for dedup.
+    Neither pass's SEARCH DECISIONS depend on the other regardless of
+    timing - Pass A's blind-search queries are fixed templates independent
+    of any claim, and Pass B's claim extraction reads only the transcript/
+    context/documents - so this concurrency doesn't reintroduce
+    transcript-anchoring bias; it does not mean the two are kept apart at
+    synthesis time either, the report's Interview Claims section
+    deliberately maps each claim to what Pass A/B found about it, in
+    neutral (non-verification) language.
 
     Gathering (Pass A + Pass B combined) is capped at _GATHER_TIMEOUT_SECONDS
     wall-clock - if it doesn't finish in time, synthesis proceeds with
     whatever was gathered so far rather than blocking the request further.
 
-    Scout only gathers and presents data - it never scores, verifies, flags,
-    or compares. That is the Evaluator's job entirely.
+    Scout gathers and presents company-CLAIM data neutrally - it never
+    scores, verifies, flags, or compares those. That is the Evaluator's job
+    entirely. The one exception is Representative Identity Verification:
+    confirming whether the interviewed representative genuinely works where
+    they said is squarely a pre-check Scout's own job (not a judgment about
+    the company itself), so it computes its own VERIFIED/NOT_FOUND/NO_DATA
+    verdict - driven entirely by web evidence, never by the representative's
+    email (see representative_verification's module docstring) - in plain
+    Python, never via the LLM, and renders its own section at the top of the
+    report.
 
     Synthesis failure only zeroes out `internet_findings` - sources already
     gathered (and any extracted interview_claims) are always returned, since
     they cost real API/HTTP calls and are useful even without a synthesized
-    report."""
+    report. Representative verification runs independently after synthesis
+    and is never skipped by a synthesis failure - only by its own errors,
+    which it degrades gracefully rather than raising."""
     state = scout_gather._GatherState()
+    gather_start = time.monotonic()
     try:
         await asyncio.wait_for(
             scout_gather._gather_all(state, company_name, representative_name, extra_context, documents, transcript),
@@ -192,6 +223,7 @@ async def run_scout(
             "Scout gathering failed (%s: %s) - proceeding to synthesis with partial data.",
             type(exc).__name__, exc,
         )
+    logger.info("[scout-timing] Pass A + Pass B gather (total): %.2fs", time.monotonic() - gather_start)
 
     # Only include keys that actually have data - an empty "targeted_search"
     # list must never appear as a biasing empty section.
@@ -221,13 +253,59 @@ async def run_scout(
             for detail in state.claim_details
         ] or state.claims
 
-    try:
-        internet_findings = await _synthesize_internet_findings(company_name, state.company_website, sources)
-        findings_ok = True
-    except Exception as exc:
-        logger.warning("Scout internet-findings synthesis failed: %s: %s", type(exc).__name__, exc)
-        internet_findings = ""
-        findings_ok = False
+    # Synthesis and representative verification are independent Gemini calls
+    # (neither's input depends on the other's output) - run them
+    # CONCURRENTLY (measured 2026-08-01: verification, ~7s, was previously
+    # serialized strictly after synthesis, ~39s, for no reason - it's now
+    # hidden entirely behind synthesis's longer duration). return_exceptions
+    # =True: each already has its own internal never-raises contract
+    # (verify_representative) or its own try/except below (synthesis), but
+    # this is a second line of defense so one piece's unexpected failure
+    # can never cancel or lose the other's already-in-flight result.
+    async def _run_synthesis() -> tuple[str, bool]:
+        start = time.monotonic()
+        try:
+            findings = await _synthesize_internet_findings(company_name, state.company_website, sources)
+            ok = True
+        except Exception as exc:
+            logger.warning("Scout internet-findings synthesis failed: %s: %s", type(exc).__name__, exc)
+            findings, ok = "", False
+        logger.info("[scout-timing] synthesis (Gemini): %.2fs", time.monotonic() - start)
+        return findings, ok
+
+    async def _run_verification():
+        # Timed here, inside its own coroutine, rather than around the
+        # asyncio.gather call below - each task's own start/stop keeps this
+        # an accurate measure of verification's OWN duration, not however
+        # long it happened to sit waiting on the (typically much longer)
+        # synthesis call to also finish.
+        start = time.monotonic()
+        result = await representative_verification.verify_representative(
+            representative_name, company_name, email, state.representative_search
+        )
+        logger.info("[scout-timing] representative verification (total): %.2fs", time.monotonic() - start)
+        return result
+
+    synthesis_result, verification_result = await asyncio.gather(
+        _run_synthesis(), _run_verification(), return_exceptions=True
+    )
+
+    if isinstance(synthesis_result, BaseException):
+        logger.warning("Scout internet-findings synthesis failed unexpectedly: %s: %s", type(synthesis_result).__name__, synthesis_result)
+        internet_findings, findings_ok = "", False
+    else:
+        internet_findings, findings_ok = synthesis_result
+
+    if isinstance(verification_result, BaseException):
+        logger.warning("Representative verification failed unexpectedly: %s: %s", type(verification_result).__name__, verification_result)
+        verification = representative_verification._no_data(scout_utils._check_email(email), company_name)
+    else:
+        verification = verification_result
+
+    verification_section = representative_verification.render_representative_verification(
+        representative_name, company_name, email, verification
+    )
+    internet_findings = f"{verification_section}\n\n{internet_findings}" if internet_findings else verification_section
 
     return {
         "internet_findings": internet_findings,
@@ -235,4 +313,5 @@ async def run_scout(
         "sources": sources,
         "findings_ok": findings_ok,
         "company_website": state.company_website,
+        "representative_verification": verification,
     }

@@ -26,14 +26,23 @@ _MAX_LINK_LOOKUPS = 5  # cap on no-scrape link lookups per run - footer link far
 _FetchCache = dict[str, "asyncio.Future[str | None]"]
 
 
+async def _fetch_page_text_timed(url: str) -> str | None:
+    """page_fetcher.fetch_page_text with a per-URL timing log - split out of
+    _fetch_text_cached so a cache HIT (a concurrent enrichment task awaiting
+    a fetch some other task already kicked off) never logs a duplicate
+    timing line for the same URL."""
+    with scout_utils._timed(f"page fetch: {url}"):
+        return await page_fetcher.fetch_page_text(url)
+
+
 async def _fetch_text_cached(url: str, cache: _FetchCache | None) -> str | None:
     """page_fetcher.fetch_page_text with per-run dedup (see _FetchCache).
     cache=None (direct test calls) degrades to an uncached fetch."""
     if cache is None:
-        return await page_fetcher.fetch_page_text(url)
+        return await _fetch_page_text_timed(url)
     future = cache.get(url)
     if future is None:
-        future = asyncio.ensure_future(page_fetcher.fetch_page_text(url))
+        future = asyncio.ensure_future(_fetch_page_text_timed(url))
         cache[url] = future
     return await future
 
@@ -499,7 +508,8 @@ async def _run_pass_a(
     deadline firing mid-run and one source blowing up preserve everything
     the other sources already finished, honoring _GatherState's
     partial-progress contract for timeouts AND exceptions alike."""
-    company_website = await _derive_company_website(company_name, extra_context, documents)
+    with scout_utils._timed("website derivation search"):
+        company_website = await _derive_company_website(company_name, extra_context, documents)
     state.company_website = company_website
 
     async def _fill_website() -> None:
@@ -538,10 +548,11 @@ async def _run_pass_a(
             state.already_fetched_urls.update(result["url"] for result in entry["results"])
 
     async def _guarded(name: str, coro: Any) -> None:
-        try:
-            await coro
-        except Exception as exc:
-            logger.warning("Pass A %s failed: %s: %s", name, type(exc).__name__, exc)
+        with scout_utils._timed(name):
+            try:
+                await coro
+            except Exception as exc:
+                logger.warning("Pass A %s failed: %s: %s", name, type(exc).__name__, exc)
 
     await asyncio.gather(
         _guarded("website fetch", _fill_website()),
@@ -564,34 +575,28 @@ async def _run_pass_a(
     await _guarded("link lookups", _fill_link_lookups(state, discovered_urls, cache=cache))
 
 
-async def _run_pass_b(
-    state: _GatherState,
-    company_name: str,
-    transcript: str | None,
-    extra_context: str | None,
-    documents: list[str] | None,
-    cache: _FetchCache | None = None,
-) -> None:
-    """Pass B: enrichment from candidate-provided inputs - the transcript,
-    the intake form's free-text context, and any attached documents - all
-    treated as equally-weighted sources of claims to check. Runs only if at
-    least one of the three was actually provided. Writes results into
-    `state` (both the plain claim strings and the full tagged claim objects
-    - see _GatherState.claim_details); returns nothing."""
+async def _extract_claims_step(
+    transcript: str | None, extra_context: str | None, documents: list[str] | None
+) -> list[dict[str, Any]]:
+    """Pass B, step 1 (claim extraction) - split out of the old _run_pass_b
+    so _gather_all can run this CONCURRENTLY with Pass A (see _gather_all):
+    extraction is a Gemini call over the transcript/extra_context/documents
+    alone - none of which come from Pass A - so serializing it strictly
+    after Pass A (the pre-2026-08-01 behavior) wasted whichever of the two
+    finished first entirely off the critical path. Only the
+    targeted-search step below genuinely needs Pass A's already_fetched_urls
+    (for dedup), so that part still waits for Pass A to finish. Runs only if
+    at least one of the three candidate inputs was actually provided;
+    returns [] otherwise."""
     has_input = (
         (transcript and transcript.strip())
         or (extra_context and extra_context.strip())
         or any(doc and doc.strip() for doc in (documents or []))
     )
     if not has_input:
-        return
-    extracted = await _extract_claims(transcript, extra_context, documents)
-    state.claims = [claim_obj["claim"] for claim_obj in extracted]
-    state.claim_details = extracted
-    if extracted:
-        state.targeted_search = await _gather_targeted(
-            extracted, state.already_fetched_urls, company_name, cache=cache
-        )
+        return []
+    with scout_utils._timed("claim extraction (Gemini)"):
+        return await _extract_claims(transcript, extra_context, documents)
 
 
 async def _gather_all(
@@ -602,10 +607,40 @@ async def _gather_all(
     documents: list[str] | None,
     transcript: str | None,
 ) -> None:
-    """Runs Pass A then Pass B sequentially, writing results into `state` as
-    it goes (Pass B needs Pass A's already_fetched_urls for dedup). One
-    page-text fetch cache spans both passes so the same URL is never fetched
-    and parsed twice in a run. Returns nothing."""
+    """Runs Pass A and Pass B's claim extraction CONCURRENTLY - measured
+    2026-08-01: claim extraction has no actual dependency on Pass A's
+    output, so running it after Pass A finished (the old sequential design)
+    cost the extraction call's full duration (~8s in a representative run)
+    for nothing. Only Pass B's SECOND step (the per-claim targeted search)
+    genuinely needs Pass A's already_fetched_urls (for dedup), so that part
+    still runs strictly after both of the above finish. One page-text fetch
+    cache spans the whole run so the same URL is never fetched and parsed
+    twice.
+
+    return_exceptions=True (matching every other concurrent gather in this
+    module - see _guarded, _gather_targeted): Pass A already swallows its
+    own per-source failures internally, but the one call inside it that
+    isn't individually guarded (_derive_company_website) can still raise:
+    if it does, the exception is logged here rather than also discarding
+    claim extraction's independently-obtained result, consistent with
+    _GatherState's partial-progress philosophy (one piece failing must not
+    lose what another, unrelated piece already produced)."""
     cache: _FetchCache = {}
-    await _run_pass_a(state, company_name, representative_name, extra_context, documents, cache=cache)
-    await _run_pass_b(state, company_name, transcript, extra_context, documents, cache=cache)
+    pass_a_result, extracted_result = await asyncio.gather(
+        _run_pass_a(state, company_name, representative_name, extra_context, documents, cache=cache),
+        _extract_claims_step(transcript, extra_context, documents),
+        return_exceptions=True,
+    )
+    if isinstance(pass_a_result, BaseException):
+        logger.warning("Pass A failed: %s: %s", type(pass_a_result).__name__, pass_a_result)
+    if isinstance(extracted_result, BaseException):
+        logger.warning("Claim extraction step failed: %s: %s", type(extracted_result).__name__, extracted_result)
+        extracted_result = []
+
+    state.claims = [claim_obj["claim"] for claim_obj in extracted_result]
+    state.claim_details = extracted_result
+    if extracted_result:
+        with scout_utils._timed("targeted per-claim search"):
+            state.targeted_search = await _gather_targeted(
+                extracted_result, state.already_fetched_urls, company_name, cache=cache
+            )

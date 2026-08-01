@@ -10,6 +10,41 @@ from app.services import data_scout_agent, scout_gather, scout_utils
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
+_DEFAULT_VERIFICATION_JSON = {
+    "tied_to_stated_company": False,
+    "role": "unknown",
+    "background": {"tenure": "not found", "projects": [], "focus_areas": []},
+    "summary": "no data",
+    "citations": [],
+}
+
+
+def _gemini_dispatch(*, claims_json=None, verification_json=None, synthesis_content="report"):
+    """Builds a respx side_effect callable that routes one chat/completions
+    request to the right canned response by CONTENT (the response_format's
+    json_schema name, or the system prompt's own wording) rather than by
+    call order. Needed since 2026-08-01: representative verification's
+    extraction call and the main synthesis call are independent, CONCURRENT
+    Gemini calls, so a fixed positional side_effect list can no longer
+    assume which one lands in which slot (claim extraction, meanwhile, runs
+    concurrently with Pass A - which makes no Gemini calls of its own - so
+    it remains reliably the first chat/completions call chronologically,
+    but is routed by content here too for one consistent dispatcher)."""
+
+    def _dispatch(request):
+        body = json.loads(request.content)
+        schema_name = (body.get("response_format") or {}).get("json_schema", {}).get("name")
+        if schema_name == "representative_verification":
+            content = json.dumps(verification_json if verification_json is not None else _DEFAULT_VERIFICATION_JSON)
+            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+        system_content = body["messages"][0]["content"]
+        if "Extract a JSON list of EVERY factual statement" in system_content:
+            content = json.dumps(claims_json if claims_json is not None else {"claims": []})
+            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": synthesis_content}}]})
+
+    return _dispatch
+
 
 def test_trunc_leaves_short_text_unchanged():
     assert scout_utils._trunc("short", 100) == "short"
@@ -836,6 +871,16 @@ async def test_run_scout_gathers_representative_search(patch_settings, monkeypat
             "results": [{"title": "Jane Doe - LinkedIn", "url": "https://linkedin.com/in/janedoe", "snippet": "VP Sales at Acme", "text": None}],
         }
     ]
+    # Representative Identity Verification: the structured result is
+    # returned, and its rendered markdown is prepended ahead of the
+    # synthesized report (the mocked Gemini response "report" isn't valid
+    # JSON, so the verification LLM call itself soft-fails to NO_DATA - a
+    # technical failure, distinct from NOT_FOUND - dedicated VERIFIED/
+    # NOT_FOUND/NO_DATA scenarios live in test_representative_verification.py).
+    assert result["representative_verification"] is not None
+    assert result["representative_verification"].verdict == "NO_DATA"
+    assert result["internet_findings"].startswith("## Representative Verification")
+    assert result["internet_findings"].endswith("report")
 
 
 @respx.mock
@@ -894,7 +939,9 @@ async def test_run_scout_completes_normally_when_relationship_search_returns_not
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
     assert "relationship_search" not in result["sources"]
-    assert result["internet_findings"] == "report"
+    # The Representative Verification section is prepended ahead of the
+    # synthesized report - assert the synthesis text survives at the end.
+    assert result["internet_findings"].endswith("report")
     assert result["findings_ok"] is True
 
 
@@ -940,12 +987,7 @@ async def test_run_scout_gathers_link_lookups_for_no_scrape_domains_discovered(p
 
     monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
-    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        side_effect=[
-            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": []})}}]}),
-            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
-        ]
-    )
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(side_effect=_gemini_dispatch())
 
     result = await data_scout_agent.run_scout(
         "Acme Corp", "Jane Doe", "Follow us at https://linkedin.com/company/acme", None, None
@@ -1014,10 +1056,9 @@ async def test_run_scout_gathers_targeted_search_per_claim_when_transcript_given
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
     monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
     respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        side_effect=[
-            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]})}}]}),
-            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
-        ]
+        side_effect=_gemini_dispatch(
+            claims_json={"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]}
+        )
     )
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, "We have 50 employees.")
@@ -1048,10 +1089,9 @@ async def test_run_scout_extracts_claims_from_extra_context_without_transcript(p
 
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
     respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        side_effect=[
-            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": [{"claim": "We were founded in 2010", "search_query": "Acme Corp founded 2010", "source": "context"}]})}}]}),
-            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
-        ]
+        side_effect=_gemini_dispatch(
+            claims_json={"claims": [{"claim": "We were founded in 2010", "search_query": "Acme Corp founded 2010", "source": "context"}]}
+        )
     )
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", "We were founded in 2010.", None, None)
@@ -1081,10 +1121,9 @@ async def test_run_scout_targeted_search_dedupes_against_pass_a_urls(patch_setti
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
     monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
     respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        side_effect=[
-            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]})}}]}),
-            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
-        ]
+        side_effect=_gemini_dispatch(
+            claims_json={"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]}
+        )
     )
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, "We have 50 employees.")
@@ -1108,7 +1147,9 @@ async def test_run_scout_soft_fails_when_gemini_key_missing(patch_settings, monk
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
     assert result["findings_ok"] is False
-    assert result["internet_findings"] == ""
+    # No synthesized report text (missing key) - but the independently
+    # computed Representative Verification section still renders.
+    assert result["internet_findings"].startswith("## Representative Verification")
     # Gathered sources must survive even though synthesis failed.
     assert result["sources"]["blind_search"][0]["query"] == "Acme Corp overview"
 
@@ -1329,7 +1370,7 @@ async def test_run_scout_gathering_timeout_proceeds_with_partial_data(patch_sett
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
-    assert result["internet_findings"] == "report"
+    assert result["internet_findings"].endswith("report")
     assert result["findings_ok"] is True
     assert result["sources"] == {}  # nothing finished gathering before the deadline
 
@@ -1640,10 +1681,9 @@ async def test_run_scout_targeted_search_drops_unrelated_company_result(patch_se
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
     monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
     respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        side_effect=[
-            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]})}}]}),
-            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
-        ]
+        side_effect=_gemini_dispatch(
+            claims_json={"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]}
+        )
     )
 
     result = await data_scout_agent.run_scout(
@@ -1789,12 +1829,7 @@ async def test_run_scout_link_lookup_matches_no_scrape_subdomain(patch_settings,
 
     monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
-    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        side_effect=[
-            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": []})}}]}),
-            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
-        ]
-    )
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(side_effect=_gemini_dispatch())
 
     result = await data_scout_agent.run_scout(
         "Acme Corp", "Jane Doe", "Follow us at https://in.linkedin.com/company/acme", None, None
@@ -1969,5 +2004,5 @@ async def test_run_scout_survives_gather_raising_unexpectedly(patch_settings, mo
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
-    assert result["internet_findings"] == "report"
+    assert result["internet_findings"].endswith("report")
     assert result["interview_claims"] == ["We have 50 employees"]

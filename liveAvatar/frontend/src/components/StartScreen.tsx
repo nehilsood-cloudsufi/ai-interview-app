@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   ExternalLink,
   FileText,
+  FlaskConical,
   KeyRound,
   Loader2,
   MessageSquareText,
@@ -396,6 +397,19 @@ export function StartScreen({ onStart }: StartScreenProps) {
         >
           <ExternalLink className="w-4 h-4" />
           All sessions
+        </a>
+      )}
+
+      {/* DEV-ONLY: manual Data Scout Agent test harness (see
+          components/ScoutTestPage.tsx) - import.meta.env.DEV is false in a
+          production build, so this link never ships. */}
+      {import.meta.env.DEV && (
+        <a
+          href="/scout-test"
+          className="mt-3 flex items-center gap-1.5 text-slate-600 hover:text-slate-400 text-xs font-medium transition-colors"
+        >
+          <FlaskConical className="w-3.5 h-3.5" />
+          Data Scout (Test) — dev only
         </a>
       )}
     </div>

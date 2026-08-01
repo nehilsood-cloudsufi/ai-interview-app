@@ -298,3 +298,78 @@ class UpdateProfileResponse(BaseModel):
     # Sorted for determinism - the full set of profile fields ever manually
     # edited, which the Host's profile_updates merge will never overwrite.
     manually_edited_fields: list[str]
+
+
+# --- DEV-ONLY: Data Scout Agent manual test harness (app.routers.scout_test) ---
+# Not part of the real interview flow - lets a developer run
+# app.services.data_scout_agent.run_scout directly with hand-entered inputs.
+
+
+class ScoutTestRequest(BaseModel):
+    """DEV-ONLY request body for POST /api/scout-test: every input
+    app.services.data_scout_agent.run_scout accepts, entered manually instead
+    of coming from a live interview. `documents_text` is a single pasted
+    document body (wrapped into run_scout's `documents: list[str] | None` by
+    the router), and `email` exercises Representative Identity Verification
+    (app.services.representative_verification) - not yet reachable from the
+    real intake form."""
+
+    company_name: str = ""
+    representative_name: str = ""
+    email: str = ""
+    extra_context: str = ""
+    documents_text: str = ""
+    transcript: str = ""
+
+
+class RepresentativeVerificationBackgroundModel(BaseModel):
+    """Mirrors representative_verification.RepresentativeVerification's
+    `background` dict shape."""
+
+    tenure: str
+    projects: list[str]
+    focus_areas: list[str]
+
+
+class RepresentativeVerificationEvidenceModel(BaseModel):
+    """One cited source (VERIFIED only): mirrors an item in
+    representative_verification.RepresentativeVerification's `evidence`
+    list - the URL plus a short "supports" phrase (from the LLM's per-item
+    citation) stating what that specific source confirms, so a reviewer
+    never has to open the link to know why it's cited."""
+
+    url: str
+    source_name: str
+    supports: str
+
+
+class RepresentativeVerificationModel(BaseModel):
+    """Mirrors app.services.representative_verification.RepresentativeVerification
+    field-for-field (DEV-ONLY response use - the production ScoutReportModel
+    below deliberately omits this; its rendered markdown is already prepended
+    into `internet_findings` for the real UI)."""
+
+    verdict: Literal["VERIFIED", "NOT_FOUND", "NO_DATA"]
+    email_valid: bool
+    email_type: Literal["corporate", "personal", "invalid", "missing"]
+    email_domain: str
+    email_domain_plausible: bool
+    role: str
+    summary: str
+    background: RepresentativeVerificationBackgroundModel
+    evidence: list[RepresentativeVerificationEvidenceModel]
+
+
+class ScoutTestResponse(BaseModel):
+    """DEV-ONLY response for POST /api/scout-test: the full run_scout result.
+    Unlike ScoutReportModel (the production `insights` shape), this includes
+    the raw `sources` dict and the full `representative_verification`
+    structure - the whole point of this harness is to inspect everything
+    Scout gathered and decided, not just the rendered report."""
+
+    internet_findings: str
+    interview_claims: list[str]
+    sources: dict
+    findings_ok: bool
+    company_website: str | None
+    representative_verification: RepresentativeVerificationModel

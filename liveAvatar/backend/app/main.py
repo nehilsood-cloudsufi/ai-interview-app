@@ -3,7 +3,9 @@
 Configures logging, builds the `app`, adds permissive CORS (the frontend and
 backend are same-origin in production, but the wildcard keeps dev tunnels
 simple), and includes every router: concurrency, interview, sessions,
-transcripts, and the HeyGen llm_gateway. There is no agent worker process and
+transcripts, the HeyGen llm_gateway, and scout_test (a DEV-ONLY manual Data
+Scout Agent test harness - never linked to from production UI). There is no
+agent worker process and
 no startup provisioning - the conversation logic runs in-process inside these
 routes, and the per-interview LiveAvatar resources are provisioned per session
 in the sessions router.
@@ -25,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.logging_config import configure_logging
-from app.routers import concurrency, interview, llm_gateway, sessions, transcripts
+from app.routers import concurrency, interview, llm_gateway, scout_test, sessions, transcripts
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -49,6 +51,9 @@ app.include_router(interview.router)
 app.include_router(sessions.router)
 app.include_router(transcripts.router)
 app.include_router(llm_gateway.router)
+# DEV-ONLY: manual Data Scout Agent test harness (see app/routers/scout_test.py)
+# - never linked to from any production UI surface.
+app.include_router(scout_test.router)
 
 # Serve React Frontend in production
 frontend_dist = os.path.join(os.path.dirname(__file__), "../../frontend/dist")

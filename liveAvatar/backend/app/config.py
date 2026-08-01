@@ -354,6 +354,23 @@ class Settings:
         "bloomberg.com",
         "wsj.com",
     )
+    # Personal/free-mail domains - an email on one of these (or a subdomain,
+    # matched via the same suffix-aware _matches_domain used everywhere else)
+    # is tagged email_type="personal" rather than "corporate" by
+    # scout_utils._check_email (see representative_verification.py). Editable
+    # list, not currently env-overridable - extend deliberately, like
+    # scout_reference_site_domains below.
+    scout_personal_email_domains: tuple[str, ...] = (
+        "gmail.com",
+        "outlook.com",
+        "hotmail.com",
+        "yahoo.com",
+        "proton.me",
+        "protonmail.com",
+        "icloud.com",
+        "aol.com",
+        "live.com",
+    )
     # Third-party reference/aggregator domains that are scrapeable but are
     # never a company's own official site (unlike no_scrape_domains above,
     # which is about HOW to access a domain, not whether it's the company's
