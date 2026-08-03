@@ -416,16 +416,29 @@ def _combine_claim_sources(transcript: str | None, extra_context: str | None, do
 def _parse_claims(content: str) -> list[dict[str, Any]]:
     """Parses the JSON claims list out of a Gemini response, tolerating
     markdown code fences the model sometimes wraps the JSON in. Each item is
-    expected to be {"claim", "category", "search_query", "source"}; a bare
-    string is tolerated too (category defaults to "specific", search_query
-    falls back to the claim text itself, source to "transcript") in case the
-    model ignores the object shape. A "general" claim (scale/capability/
-    reputation/internal-metric assertion, no specific number/date/name/
-    entity attached) keeps search_query as None rather than defaulting it to
-    the claim text - see _select_targeted_claims, which relies on that None
-    to keep general claims out of Pass B search entirely; they're judged in
-    synthesis against already-gathered Pass A data instead. Returns the
-    non-empty, stripped claim objects.
+    expected to be {"claim", "category", "search_query", "source", "position"};
+    a bare string is tolerated too (category defaults to "specific",
+    search_query falls back to the claim text itself, source to
+    "transcript") in case the model ignores the object shape. A "general"
+    claim (scale/capability/reputation/internal-metric assertion, no
+    specific number/date/name/entity attached) keeps search_query as None
+    rather than defaulting it to the claim text - see
+    _select_targeted_claims, which relies on that None to keep general
+    claims out of Pass B search entirely; they're judged in synthesis
+    against already-gathered Pass A data instead. Returns the non-empty,
+    stripped claim objects, ALWAYS sorted into interview order (see below) -
+    the returned dicts carry exactly {"claim", "category", "search_query",
+    "source"}, same as before "position" existed.
+
+    Interview order is enforced here in Python, not just trusted from the
+    model's raw JSON array order: each item's own "position" (an int the
+    extraction prompt asks for - see _extract_claims) is the primary sort
+    key, with the item's index in the raw array as a stable tie-breaker/
+    fallback whenever "position" is missing or isn't a plain int. This
+    guarantees claims come out in the order they were stated regardless of
+    any quirk in how the model happened to order its JSON array - fixing a
+    bug where the synthesis report's claim order didn't match interview
+    order (2026-08-02).
 
     Parsing goes through the shared llm_json.parse_llm_json (the helper every
     other agent uses) - it tolerates leading prose, trailing text, and
@@ -435,7 +448,7 @@ def _parse_claims(content: str) -> list[dict[str, Any]]:
     raw_claims = parsed.get("claims", [])
 
     claims: list[dict[str, Any]] = []
-    for item in raw_claims:
+    for original_index, item in enumerate(raw_claims):
         if isinstance(item, dict):
             claim_text = item.get("claim")
             if not isinstance(claim_text, str) or not claim_text.strip():
@@ -448,9 +461,22 @@ def _parse_claims(content: str) -> list[dict[str, Any]]:
                 search_query = claim_text.strip()
             source = item.get("source")
             source = source.strip() if isinstance(source, str) and source.strip() else "transcript"
-            claims.append({"claim": claim_text.strip(), "category": category, "search_query": search_query, "source": source})
+            position = item.get("position")
+            position = position if isinstance(position, int) and not isinstance(position, bool) else original_index
+            claims.append({
+                "claim": claim_text.strip(), "category": category, "search_query": search_query, "source": source,
+                "_position": position, "_original_index": original_index,
+            })
         elif isinstance(item, str) and item.strip():
-            claims.append({"claim": item.strip(), "category": "specific", "search_query": item.strip(), "source": "transcript"})
+            claims.append({
+                "claim": item.strip(), "category": "specific", "search_query": item.strip(), "source": "transcript",
+                "_position": original_index, "_original_index": original_index,
+            })
+
+    claims.sort(key=lambda c: (c["_position"], c["_original_index"]))
+    for claim in claims:
+        del claim["_position"]
+        del claim["_original_index"]
     return claims
 
 

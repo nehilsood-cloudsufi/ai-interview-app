@@ -27,6 +27,7 @@ def _make_scout_result(**overrides) -> dict:
         "findings_ok": True,
         "company_website": "https://acme.example.com",
         "representative_verification": _make_verification(),
+        "claims_report": {"claims": [], "additional_findings": []},
     }
     result.update(overrides)
     return result

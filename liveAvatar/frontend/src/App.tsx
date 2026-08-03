@@ -259,6 +259,7 @@ function App() {
         pipelineStatus={summary.pipelineStatus}
         scorecard={summary.scorecard}
         insights={summary.insights}
+        vendorProfile={vendorProfile.profile}
         recommendation={summary.recommendation}
         evaluationFailed={summary.evaluationFailed}
         onDismiss={summary.dismiss}

@@ -80,6 +80,19 @@ class ScoutReport:
     # existing direct ScoutReport(...) test-fixture constructions elsewhere
     # don't need updating for this field.
     representative_verification: "RepresentativeVerification | None" = None
+    # Structured-JSON counterpart of internet_findings (see
+    # app.services.data_scout_agent._synthesize_claims_report), for the
+    # frontend's DataScoutReport component to render directly instead of
+    # parsing Markdown: {"claims": [{"status","claim","note","sources"}],
+    # "additional_findings": [{"text","url"}]}. Defaults to None for the
+    # same reason as representative_verification above.
+    claims_report: dict[str, Any] | None = None
+    # Deterministic parse of internet_findings (see
+    # app.services.data_scout_agent._build_structured_findings) - no extra
+    # LLM call, purely additive. None when synthesis failed or parsing hit
+    # anything unexpected. Defaults to None for the same reason as the two
+    # fields above.
+    structured_findings: dict[str, Any] | None = None
 
 
 @dataclass

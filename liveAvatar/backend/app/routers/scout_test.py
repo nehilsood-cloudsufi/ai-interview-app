@@ -65,4 +65,5 @@ async def run_scout_test(body: ScoutTestRequest) -> ScoutTestResponse:
         # persistence) - ScoutTestResponse's nested model doesn't validate
         # from an arbitrary object without this.
         representative_verification=dataclasses.asdict(result["representative_verification"]),
+        claims_report=result["claims_report"],
     )

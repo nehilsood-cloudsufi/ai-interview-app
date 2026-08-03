@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { AlertTriangle, ArrowLeft, FlaskConical, Loader2, Play } from 'lucide-react';
 import { API_URL } from '../config';
 import type { ScoutTestResponse } from '../types';
-import { ScoutMarkdown } from './ScoutMarkdown';
+import { DataScoutReport, splitScoutMarkdown } from './DataScoutReport';
 
 // Shared styling for this page's text inputs/textareas - matches
 // StartScreen's FIELD_CLASSES so the dev harness still looks like the app.
@@ -157,7 +157,15 @@ export function ScoutTestPage() {
 
         {result && (
           <div className="flex flex-col gap-4 bg-slate-900/60 border border-slate-700/50 rounded-2xl p-5">
-            <ScoutMarkdown markdown={result.internet_findings} />
+            <DataScoutReport
+              companyName={companyName.trim() || 'the company'}
+              repName={representativeName.trim()}
+              repRole=""
+              reportDate={new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
+              claims={result.claims_report.claims}
+              additionalFindings={result.claims_report.additional_findings}
+              verificationMarkdown={splitScoutMarkdown(result.internet_findings).verification}
+            />
 
             <details className="text-xs text-slate-400">
               <summary className="cursor-pointer font-semibold text-slate-300">

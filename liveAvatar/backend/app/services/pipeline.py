@@ -81,6 +81,8 @@ async def run(state: InterviewState, session_id: str, payload: dict) -> None:
                     findings_ok=scout_result["findings_ok"],
                     company_website=scout_result["company_website"],
                     representative_verification=scout_result["representative_verification"],
+                    claims_report=scout_result["claims_report"],
+                    structured_findings=scout_result.get("structured_findings"),
                 )
             except Exception as e:
                 logger.warning(

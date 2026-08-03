@@ -82,16 +82,64 @@ export interface ScorecardData {
   status: 'APPROVED' | 'REJECTED' | null;    // approval status
 }
 
+// One cited source for a structured claim (backend ScoutClaimSourceModel).
+export interface ScoutClaimSource {
+  name: string;
+  url: string;
+  text: string;
+}
+
+// One judged claim in the structured claims report (backend ScoutClaimModel)
+// - the structured-JSON counterpart of one Markdown claim block in
+// `internet_findings`, kept in interview order (never grouped by status).
+export interface ScoutClaim {
+  status: 'CONTRADICTED' | 'PARTIAL' | 'VERIFIED' | 'NO_DATA';
+  claim: string;
+  note: string;
+  sources: ScoutClaimSource[];
+}
+
+// Category grouping for ScoutAdditionalFinding (backend
+// ScoutAdditionalFindingModel.category) - fixed display order for
+// DataScoutReport's category subheadings.
+export type ScoutAdditionalFindingCategory =
+  | 'Financial'
+  | 'Leadership'
+  | 'Legal & Risk'
+  | 'Partnerships'
+  | 'Workforce'
+  | 'Recent News';
+
+// One entry in the structured additional-findings list (backend
+// ScoutAdditionalFindingModel).
+export interface ScoutAdditionalFinding {
+  text: string;
+  url: string;
+  category: ScoutAdditionalFindingCategory;
+}
+
+// Structured-JSON counterpart of `internet_findings` (backend
+// ScoutClaimsReportModel), for DataScoutReport to render directly instead of
+// parsing Markdown. `claims` stays in interview order - do not re-sort/group
+// by status.
+export interface ScoutClaimsReport {
+  claims: ScoutClaim[];
+  additional_findings: ScoutAdditionalFinding[];
+}
+
 // Scout research report; arrives via the state payload (backend
 // ScoutReportModel). `internet_findings` is a synthesized Markdown report,
 // `interview_claims` are factual claims extracted from the transcript/intake
 // material. The raw `sources` data the agent gathers along the way is
 // deliberately not included here - too large/granular for the UI.
+// `claims_report` is the structured-JSON counterpart of `internet_findings`
+// (null if that call failed or the record predates this field).
 export interface ScoutReport {
   internet_findings: string;
   interview_claims: string[];
   findings_ok: boolean;
   company_website: string | null;
+  claims_report?: ScoutClaimsReport | null;
 }
 
 // Follow-up recommendation (backend FollowupRecommendationModel).
@@ -179,4 +227,5 @@ export interface ScoutTestResponse {
   findings_ok: boolean;
   company_website: string | null;
   representative_verification: RepresentativeVerification;
+  claims_report: ScoutClaimsReport;
 }

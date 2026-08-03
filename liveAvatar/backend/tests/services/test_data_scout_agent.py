@@ -6,6 +6,7 @@ import httpx
 import pytest
 import respx
 
+from app.config import settings
 from app.services import data_scout_agent, scout_gather, scout_utils
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -44,6 +45,22 @@ def _gemini_dispatch(*, claims_json=None, verification_json=None, synthesis_cont
         return httpx.Response(200, json={"choices": [{"message": {"content": synthesis_content}}]})
 
     return _dispatch
+
+
+def _synthesis_request_body(route) -> dict:
+    """Finds the synthesis call among a mocked route's captured calls by the
+    same content-based rule _gemini_dispatch uses (never by position/order -
+    representative verification and synthesis are concurrent, so their
+    relative call order isn't guaranteed)."""
+    for call in route.calls:
+        body = json.loads(call.request.content)
+        schema_name = (body.get("response_format") or {}).get("json_schema", {}).get("name")
+        if schema_name == "representative_verification":
+            continue
+        if "Extract a JSON list of EVERY factual statement" in body["messages"][0]["content"]:
+            continue
+        return body
+    raise AssertionError("No synthesis call found among the mocked route's calls")
 
 
 def test_trunc_leaves_short_text_unchanged():
@@ -1100,6 +1117,78 @@ async def test_run_scout_extracts_claims_from_extra_context_without_transcript(p
 
 
 @respx.mock
+async def test_run_scout_preserves_interview_order_despite_mixed_verdicts_and_scrambled_extraction_order(
+    patch_settings, monkeypatch
+):
+    # Regression test for the 2026-08-02 bug: claims must appear in the
+    # report in the order they were STATED in the interview, never
+    # reordered by verdict (CONTRADICTED/PARTIAL/VERIFIED/NO DATA) or by
+    # claim type. The extraction step is mocked returning claims in a
+    # SCRAMBLED array order (an LLM's raw JSON array order isn't guaranteed
+    # to match the order it read the text in) but tagged with explicit
+    # "position" values reflecting the TRUE interview order -
+    # scout_utils._parse_claims must recover that true order regardless of
+    # the scrambled array, and that corrected order must be what reaches the
+    # synthesis payload (the only place claim status labels are decided).
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    route = respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        side_effect=_gemini_dispatch(
+            claims_json={
+                "claims": [
+                    {
+                        "claim": "Revenue over $1 billion (stated third)",
+                        "category": "specific",
+                        "search_query": "revenue 1 billion",
+                        "source": "transcript",
+                        "position": 2,
+                    },
+                    {
+                        "claim": "Founded in 2010 (stated first)",
+                        "category": "specific",
+                        "search_query": "founded 2010",
+                        "source": "transcript",
+                        "position": 0,
+                    },
+                    {
+                        "claim": "Global presence (stated second)",
+                        "category": "general",
+                        "search_query": None,
+                        "source": "transcript",
+                        "position": 1,
+                    },
+                ]
+            }
+        )
+    )
+
+    result = await data_scout_agent.run_scout(
+        "Acme Corp", "Jane Doe", None, None,
+        "We were founded in 2010. We have a global presence. Our revenue is over $1 billion.",
+    )
+
+    expected_order = [
+        "Founded in 2010 (stated first)",
+        "Global presence (stated second)",
+        "Revenue over $1 billion (stated third)",
+    ]
+    assert result["interview_claims"] == expected_order
+    assert [c["claim"] for c in result["sources"]["interview_claims"]] == expected_order
+
+    # The actual payload sent to the synthesis call must list them in this
+    # same interview order too - not the scrambled extraction-array order -
+    # since that payload is all the synthesis model ever sees.
+    synthesis_body = _synthesis_request_body(route)
+    user_message = synthesis_body["messages"][1]["content"]
+    positions_in_payload = [user_message.index(claim) for claim in expected_order]
+    assert positions_in_payload == sorted(positions_in_payload)
+
+
+@respx.mock
 async def test_run_scout_targeted_search_dedupes_against_pass_a_urls(patch_settings, monkeypatch):
     # The exact behavior this guards against: a URL Pass A already surfaced
     # (blind search) must not be re-listed under targeted_search too. The
@@ -1909,6 +1998,165 @@ def test_parse_claims_tolerates_leading_prose():
     assert [c["claim"] for c in claims] == ["Founded in 2019"]
 
 
+def test_parse_claims_sorts_by_position_field_regardless_of_array_order():
+    # The model's raw JSON array order isn't trusted - each claim's own
+    # "position" (interview order, per the extraction prompt) is the sort
+    # key, so a scrambled array still comes back in interview order.
+    content = json.dumps({
+        "claims": [
+            {"claim": "Third", "category": "specific", "search_query": "c", "source": "transcript", "position": 2},
+            {"claim": "First", "category": "specific", "search_query": "a", "source": "transcript", "position": 0},
+            {"claim": "Second", "category": "specific", "search_query": "b", "source": "transcript", "position": 1},
+        ]
+    })
+    claims = scout_utils._parse_claims(content)
+    assert [c["claim"] for c in claims] == ["First", "Second", "Third"]
+    # The returned dicts still carry exactly the pre-existing shape - no new
+    # "position" key leaks into what callers already depend on.
+    assert set(claims[0].keys()) == {"claim", "category", "search_query", "source"}
+
+
+def test_parse_claims_falls_back_to_array_order_when_position_missing():
+    # Backward-compatible: claims with no "position" field at all (or an
+    # older/malformed model response) keep their original array order
+    # rather than colliding or crashing.
+    content = json.dumps({
+        "claims": [
+            {"claim": "First", "category": "specific", "search_query": "a", "source": "transcript"},
+            {"claim": "Second", "category": "specific", "search_query": "b", "source": "transcript"},
+        ]
+    })
+    claims = scout_utils._parse_claims(content)
+    assert [c["claim"] for c in claims] == ["First", "Second"]
+
+
+def test_parse_claims_treats_non_integer_position_as_missing():
+    # A malformed "position" (e.g. the model emitting a string or bool)
+    # must degrade to the array-order fallback, never raise.
+    content = json.dumps({
+        "claims": [
+            {"claim": "First", "category": "specific", "search_query": "a", "source": "transcript", "position": "not-a-number"},
+            {"claim": "Second", "category": "specific", "search_query": "b", "source": "transcript", "position": True},
+        ]
+    })
+    claims = scout_utils._parse_claims(content)
+    assert [c["claim"] for c in claims] == ["First", "Second"]
+
+
+def test_scout_system_prompt_orders_claims_by_interview_position_not_verdict():
+    # Confirms the fix at the prompt level: the model must no longer be
+    # told to group claims by verdict label or claim type.
+    prompt = settings.scout_system_prompt
+    assert "same order they appear in the interview transcript" in prompt
+    assert "CONTRADICTED` first" not in prompt
+    assert "financial claims first" not in prompt
+
+
+# --- QA fix: categorized Additional Findings (Issue 8) ----------------------
+
+
+def test_scout_system_prompt_lists_all_six_finding_categories_in_order():
+    prompt = settings.scout_system_prompt
+    categories = ["📊 Financial", "👥 Leadership", "⚖️ Legal & Risk", "🤝 Partnerships", "👨‍💼 Workforce", "📰 Recent News"]
+    positions = [prompt.index(c) for c in categories]
+    assert positions == sorted(positions)
+
+
+def test_scout_system_prompt_requires_omitting_empty_category_headings():
+    assert 'never render an empty "### " heading' in settings.scout_system_prompt
+
+
+def test_scout_system_prompt_pins_aramco_bullet_to_partnerships():
+    assert "always belongs here, whether or not a relationship was found" in settings.scout_system_prompt
+
+
+def test_scout_claims_report_prompt_declares_category_field_with_six_values():
+    prompt = settings.scout_claims_report_prompt
+    assert '"Financial" | "Leadership" | "Legal & Risk" | "Partnerships" | "Workforce" | "Recent News"' in prompt
+
+
+def test_scout_claims_relationship_check_prompt_tags_partnerships_category():
+    assert 'category" is always "Partnerships"' in settings.scout_claims_relationship_check_prompt
+
+
+# --- QA fix: evidence directness for VERIFIED vs PARTIAL (Issue 2) ---------
+
+
+def test_scout_system_prompt_requires_direct_evidence_for_verified():
+    prompt = settings.scout_system_prompt
+    assert "EVIDENCE DIRECTNESS" in prompt
+    assert "`VERIFIED` requires at least one source that DIRECTLY confirms the claim" in prompt
+    assert "use `PARTIAL` instead of `VERIFIED`" in prompt
+
+
+def test_scout_claims_report_prompt_requires_direct_evidence_for_verified():
+    prompt = settings.scout_claims_report_prompt
+    assert "EVIDENCE DIRECTNESS" in prompt
+    assert '"VERIFIED" requires at least one source that DIRECTLY confirms the claim' in prompt
+    assert 'use "PARTIAL" instead of "VERIFIED"' in prompt
+
+
+# --- _synthesize_claims_report: category field handling ---------------------
+
+
+def _claims_report_response(claims=None, additional_findings=None) -> httpx.Response:
+    body = {"claims": claims or [], "additional_findings": additional_findings or []}
+    return httpx.Response(
+        200,
+        json={
+            "choices": [{"message": {"content": json.dumps(body)}}],
+        },
+    )
+
+
+def test_claims_report_schema_requires_category_enum_of_six_values():
+    finding_schema = data_scout_agent._CLAIMS_REPORT_SCHEMA["properties"]["additional_findings"]["items"]
+    assert finding_schema["required"] == ["text", "url", "category"]
+    assert finding_schema["properties"]["category"]["enum"] == [
+        "Financial", "Leadership", "Legal & Risk", "Partnerships", "Workforce", "Recent News",
+    ]
+
+
+@respx.mock
+async def test_synthesize_claims_report_passes_through_valid_category(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=_claims_report_response(
+            additional_findings=[{"text": "Revenue grew 20% YoY.", "url": "acme.example.com", "category": "Financial"}]
+        )
+    )
+
+    result = await data_scout_agent._synthesize_claims_report("Acme Corp", None, {})
+
+    assert result["additional_findings"] == [{"text": "Revenue grew 20% YoY.", "url": "acme.example.com", "category": "Financial"}]
+
+
+@respx.mock
+async def test_synthesize_claims_report_defaults_missing_category_to_recent_news(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=_claims_report_response(additional_findings=[{"text": "Some finding.", "url": "acme.example.com"}])
+    )
+
+    result = await data_scout_agent._synthesize_claims_report("Acme Corp", None, {})
+
+    assert result["additional_findings"][0]["category"] == "Recent News"
+
+
+@respx.mock
+async def test_synthesize_claims_report_defaults_invalid_category_to_recent_news(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=_claims_report_response(
+            additional_findings=[{"text": "Some finding.", "url": "acme.example.com", "category": "Not A Real Category"}]
+        )
+    )
+
+    result = await data_scout_agent._synthesize_claims_report("Acme Corp", None, {})
+
+    assert result["additional_findings"][0]["category"] == "Recent News"
+
+
 async def test_fill_link_lookups_caps_lookup_count(patch_settings, monkeypatch):
     search_queries = []
 
@@ -2006,3 +2254,241 @@ async def test_run_scout_survives_gather_raising_unexpectedly(patch_settings, mo
 
     assert result["internet_findings"].endswith("report")
     assert result["interview_claims"] == ["We have 50 employees"]
+
+
+# --- structured_findings: deterministic parse of internet_findings ---------
+
+_SAMPLE_SYNTHESIS_MARKDOWN = """## Interview Claims
+
+`VERIFIED` **Specializes in data engineering and AI**
+Confirmed as a data engineering and AI company.
+↳ ZoomInfo (zoominfo.com/c/acme) — Specializes in data engineering and analytics
+↳ PR Newswire (prnewswire.com/news-releases/acme) — Global AI and data innovation company
+
+`CONTRADICTED` **Founded in 2017**
+Public records place the founding year at 2019.
+↳ LinkedIn (linkedin.com/company/acme) — Company founded in 2019
+↳ Crunchbase (crunchbase.com/organization/acme) — Founded 2019
+
+## 📌 Additional Findings
+- Opened a new office in Austin in 2026. ([PR Newswire](prnewswire.com/acme-austin))
+- Glassdoor rating 4.1/5 from 100 reviews. ([Glassdoor](glassdoor.com/acme))
+- Prior Saudi Aramco relationship found: explored an AI collaboration in 2026. ([IBM Newsroom](newsroom.ibm.com/aramco))"""
+
+
+def test_split_markdown_sections_separates_headings_and_skips_verification():
+    markdown = (
+        "## Representative Verification\n\n**Status:** — NO DATA\n\n"
+        "## Interview Claims\n\nsome claims body\n\n"
+        "## 📌 Additional Findings\n\nsome findings body"
+    )
+    sections = data_scout_agent._split_markdown_sections(markdown)
+    assert data_scout_agent._find_section(sections, "Interview Claims") == "some claims body"
+    assert data_scout_agent._find_section(sections, "Additional Findings") == "some findings body"
+    assert data_scout_agent._find_section(sections, "Representative Verification").startswith("**Status:**")
+
+
+def test_parse_claims_section_empty_placeholder_returns_empty_list():
+    assert data_scout_agent._parse_claims_section("No claims required attention.") == []
+
+
+def test_parse_claims_section_parses_label_claim_description_and_sources():
+    body = data_scout_agent._find_section(
+        data_scout_agent._split_markdown_sections(_SAMPLE_SYNTHESIS_MARKDOWN), "Interview Claims"
+    )
+    claims = data_scout_agent._parse_claims_section(body)
+    assert claims == [
+        {
+            "claim": "Specializes in data engineering and AI",
+            "label": "VERIFIED",
+            "description": "Confirmed as a data engineering and AI company.",
+            "sources": [
+                {"name": "ZoomInfo", "url": "zoominfo.com/c/acme", "note": "Specializes in data engineering and analytics"},
+                {"name": "PR Newswire", "url": "prnewswire.com/news-releases/acme", "note": "Global AI and data innovation company"},
+            ],
+        },
+        {
+            "claim": "Founded in 2017",
+            "label": "CONTRADICTED",
+            "description": "Public records place the founding year at 2019.",
+            "sources": [
+                {"name": "LinkedIn", "url": "linkedin.com/company/acme", "note": "Company founded in 2019"},
+                {"name": "Crunchbase", "url": "crunchbase.com/organization/acme", "note": "Founded 2019"},
+            ],
+        },
+    ]
+
+
+def test_parse_claims_section_skips_malformed_block_without_dropping_others():
+    body = "not a valid claim header at all\n\n`VERIFIED` **Real claim**\nDescription text.\n↳ Source (url) — note"
+    claims = data_scout_agent._parse_claims_section(body)
+    assert len(claims) == 1
+    assert claims[0]["claim"] == "Real claim"
+
+
+def test_parse_additional_findings_section_empty_placeholder_returns_empty_list():
+    assert data_scout_agent._parse_additional_findings_section("No additional findings.") == []
+
+
+def test_parse_additional_findings_section_parses_bullets_with_and_without_source():
+    body = data_scout_agent._find_section(
+        data_scout_agent._split_markdown_sections(_SAMPLE_SYNTHESIS_MARKDOWN), "Additional Findings"
+    )
+    findings = data_scout_agent._parse_additional_findings_section(body)
+    assert findings == [
+        {"text": "Opened a new office in Austin in 2026.", "source": {"name": "PR Newswire", "url": "prnewswire.com/acme-austin"}},
+        {"text": "Glassdoor rating 4.1/5 from 100 reviews.", "source": {"name": "Glassdoor", "url": "glassdoor.com/acme"}},
+        {
+            "text": "Prior Saudi Aramco relationship found: explored an AI collaboration in 2026.",
+            "source": {"name": "IBM Newsroom", "url": "newsroom.ibm.com/aramco"},
+        },
+    ]
+
+
+def test_parse_additional_findings_no_source_sentence_kept_with_null_source():
+    findings = data_scout_agent._parse_additional_findings_section(
+        "- No prior Saudi Aramco relationship found in public records."
+    )
+    assert findings == [{"text": "No prior Saudi Aramco relationship found in public records.", "source": None}]
+
+
+def test_extract_relationship_finding_returns_detail_when_found():
+    findings = [{"text": "Prior Saudi Aramco relationship found: explored AI collaboration in 2026.", "source": None}]
+    assert (
+        data_scout_agent._extract_relationship_finding(findings, "Saudi Aramco")
+        == "explored AI collaboration in 2026."
+    )
+
+
+def test_extract_relationship_finding_returns_none_when_explicitly_not_found():
+    findings = [{"text": "No prior Saudi Aramco relationship found in public records.", "source": None}]
+    assert data_scout_agent._extract_relationship_finding(findings, "Saudi Aramco") is None
+
+
+def test_extract_relationship_finding_returns_none_when_bullet_absent():
+    assert data_scout_agent._extract_relationship_finding([{"text": "Unrelated bullet.", "source": None}], "Saudi Aramco") is None
+
+
+def test_extract_relationship_finding_returns_none_when_entity_blank():
+    assert data_scout_agent._extract_relationship_finding([{"text": "anything", "source": None}], "") is None
+
+
+def test_guess_claim_category_matches_best_overlap_and_defaults_to_general():
+    claim_details = [
+        {"claim": "We have 50 employees", "category": "specific"},
+        {"claim": "Global presence across many countries", "category": "general"},
+    ]
+    assert data_scout_agent._guess_claim_category("We have 50 employees", claim_details) == "specific"
+    assert data_scout_agent._guess_claim_category("Something totally unrelated", claim_details) == "general"
+
+
+def test_build_structured_findings_none_when_findings_not_ok():
+    assert data_scout_agent._build_structured_findings("some markdown", False, "https://acme.example.com", []) is None
+
+
+def test_build_structured_findings_none_when_markdown_blank():
+    assert data_scout_agent._build_structured_findings("   ", True, None, []) is None
+
+
+def test_build_structured_findings_none_when_required_sections_missing():
+    assert data_scout_agent._build_structured_findings("## Some Other Heading\n\nbody", True, None, []) is None
+
+
+def test_build_structured_findings_degrades_to_none_on_unexpected_exception(monkeypatch):
+    def exploding_split(markdown):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(data_scout_agent, "_split_markdown_sections", exploding_split)
+    assert data_scout_agent._build_structured_findings(_SAMPLE_SYNTHESIS_MARKDOWN, True, None, []) is None
+
+
+@respx.mock
+async def test_run_scout_populates_structured_findings_on_synthesis_success(patch_settings, monkeypatch):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL, scout_relationship_check_entity="Saudi Aramco")
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        side_effect=_gemini_dispatch(synthesis_content=_SAMPLE_SYNTHESIS_MARKDOWN)
+    )
+
+    result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    assert result["findings_ok"] is True
+    structured = result["structured_findings"]
+    assert structured is not None
+    assert structured["company_website"] == result["company_website"]
+    assert structured["findings_ok"] is True
+    assert structured["aramco_relationship"] == "explored an AI collaboration in 2026."
+    assert len(structured["claims"]) == 2
+    assert structured["claims"][0]["claim"] == "Specializes in data engineering and AI"
+    assert structured["claims"][0]["label"] == "VERIFIED"
+    assert structured["claims"][0]["category"] in ("specific", "general")
+    assert len(structured["additional_findings"]) == 3
+
+    # Regression: every pre-existing ScoutReport field is still present and
+    # of its expected type - adding structured_findings must not have
+    # displaced or renamed anything.
+    assert set(result.keys()) == {
+        "internet_findings",
+        "interview_claims",
+        "sources",
+        "findings_ok",
+        "company_website",
+        "representative_verification",
+        "claims_report",
+        "structured_findings",
+    }
+    assert isinstance(result["internet_findings"], str)
+    assert isinstance(result["interview_claims"], list)
+    assert isinstance(result["sources"], dict)
+    assert isinstance(result["findings_ok"], bool)
+
+
+@respx.mock
+async def test_run_scout_structured_findings_claims_match_internet_findings_markdown(patch_settings, monkeypatch):
+    # The structured claims must reflect exactly what's rendered in the
+    # existing internet_findings markdown - same labels, same claim text,
+    # same source count - since structured_findings is a parse of that exact
+    # text, not an independent judgment.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        side_effect=_gemini_dispatch(synthesis_content=_SAMPLE_SYNTHESIS_MARKDOWN)
+    )
+
+    result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    markdown = result["internet_findings"]
+    structured = result["structured_findings"]
+    for claim in structured["claims"]:
+        assert f"`{claim['label']}` **{claim['claim']}**" in markdown
+        for source in claim["sources"]:
+            assert f"↳ {source['name']} ({source['url']}) — {source['note']}" in markdown
+
+
+@respx.mock
+async def test_run_scout_structured_findings_none_when_synthesis_fails(patch_settings, monkeypatch):
+    # findings_ok False (synthesis failed) must degrade structured_findings
+    # to None too - never a partially-populated/misleading structure.
+    patch_settings(gemini_api_key=None)
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+
+    result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    assert result["findings_ok"] is False
+    assert result["structured_findings"] is None
+    # internet_findings must still be returned correctly (the independently
+    # computed Representative Verification section) regardless of the
+    # structured_findings degradation.
+    assert result["internet_findings"].startswith("## Representative Verification")

@@ -63,6 +63,7 @@ def make_scout_result(**overrides) -> dict:
         "findings_ok": True,
         "company_website": None,
         "representative_verification": None,
+        "claims_report": None,
     }
     result.update(overrides)
     return result

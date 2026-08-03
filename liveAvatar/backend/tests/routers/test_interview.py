@@ -291,6 +291,8 @@ def test_seeded_interview_state(client):
         "interview_claims": [],
         "findings_ok": True,
         "company_website": "https://acme.example",
+        "claims_report": None,
+        "structured_findings": None,
     }
 
 

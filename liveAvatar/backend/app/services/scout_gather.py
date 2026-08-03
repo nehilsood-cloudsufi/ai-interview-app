@@ -13,7 +13,7 @@ from app.services import gemini_client, page_fetcher, scout_utils, web_search_cl
 logger = logging.getLogger(__name__)
 
 _RELATED_FETCH_LIMIT = 1  # how many of a search's top results get their full page text fetched (biggest single time sink in the pipeline)
-_CLAIM_EXTRACTION_TIMEOUT_SECONDS = 30.0  # httpx timeout for the single-attempt claim-extraction call
+_CLAIM_EXTRACTION_TIMEOUT_SECONDS = 60.0  # httpx timeout for the single-attempt claim-extraction call - raised from 30s (2026-08-03): a real transcript was observed exceeding 30s end-to-end, causing the call to time out and silently return zero claims instead of just running a bit longer
 _MAX_CLAIM_QUERY_CHARS = 200  # claim search_query used for a Pass B targeted search
 _TARGETED_SEARCH_MAX_RESULTS = 3  # Pass B results sliced to this many client-side, keeping the per-claim source list tight
 _MAX_LINK_LOOKUPS = 5  # cap on no-scrape link lookups per run - footer link farms must not eat the gather budget
@@ -138,6 +138,10 @@ async def _fill_blind_search(state: "_GatherState", company_name: str, cache: _F
             relevant_hits = scout_utils._filter_relevant(hits, company_name)
             if not relevant_hits:
                 return
+            # Sorted by domain (alphabetical) for deterministic result order
+            # across runs of the same query - selection/relevance filtering
+            # above is unaffected, only the final presentation order.
+            relevant_hits = sorted(relevant_hits, key=lambda hit: scout_utils._domain_of(hit["url"]) or "")
             entry = {"query": query, "results": await _enrich_with_full_text(relevant_hits, cache=cache)}
             state.blind_search.append(entry)
             state.already_fetched_urls.update(result["url"] for result in entry["results"])
@@ -256,6 +260,9 @@ async def _gather_relationship_search(company_name: str, cache: _FetchCache | No
     relevant_hits = scout_utils._filter_relevant(hits, company_name)
     if not relevant_hits:
         return []
+    # Sorted by domain (alphabetical) for deterministic result order across
+    # runs of the same query - relevance filtering above is unaffected.
+    relevant_hits = sorted(relevant_hits, key=lambda hit: scout_utils._domain_of(hit["url"]) or "")
     return [{"query": query, "results": await _enrich_with_full_text(relevant_hits, cache=cache)}]
 
 
@@ -284,6 +291,9 @@ async def _gather_representative_search(
     relevant_hits = scout_utils._filter_relevant(hits, company_name, extra_name=representative_name)
     if not relevant_hits:
         return []
+    # Sorted by domain (alphabetical) for deterministic result order across
+    # runs of the same query - relevance filtering above is unaffected.
+    relevant_hits = sorted(relevant_hits, key=lambda hit: scout_utils._domain_of(hit["url"]) or "")
     return [{"query": query, "results": await _enrich_with_full_text(relevant_hits, cache=cache)}]
 
 
@@ -364,11 +374,40 @@ async def _extract_claims(transcript: str | None, extra_context: str | None, doc
                     "internal metric like '95% retention rate'). A ranking or "
                     "award claim (e.g. 'we were ranked #1 by Gartner in 2025') IS "
                     "a checkable factual claim, not an opinion - include it. The "
-                    "ONLY things to skip are pure opinions/preferences (e.g. 'we "
-                    "prefer co-innovation') and plans/intentions (e.g. 'we're "
-                    "planning to expand') - every other factual assertion about "
-                    "the company gets extracted, no matter how general or vague "
-                    "it sounds. Extract claims about ANY factual topic - products "
+                    "ONLY things to skip are pure opinions with no checkable "
+                    "content (e.g. 'we think collaboration matters') and vague, "
+                    "contentless intentions (e.g. 'we're planning to expand') - "
+                    "every other factual assertion about the company gets "
+                    "extracted, no matter how general or vague it sounds. A "
+                    "roadmap or development statement that names specific "
+                    "capabilities, products, or technologies being built (e.g. "
+                    "'we are developing AI agents, governance capabilities, and "
+                    "industry-specific AI solutions') is NOT a vague plan to "
+                    "skip - extract it as a \"specific\" claim with a search "
+                    "query, naming the capabilities mentioned. A partnership-"
+                    "model preference (e.g. 'we prefer co-innovation "
+                    "partnerships') must ALWAYS be extracted, however it is "
+                    "phrased - never skip a partnership-model statement as a "
+                    "mere opinion, since it is a key evaluation criterion. "
+                    "Extract each factual statement as a SEPARATE, ATOMIC "
+                    "claim - one single verifiable fact per claim. If a "
+                    "single statement lists multiple independent components "
+                    "(e.g. 'we offer watsonx, Red Hat OpenShift, IBM Cloud, "
+                    "MLOps, and data engineering services', or 'on-premises, "
+                    "hybrid cloud, edge, and disconnected environments'), "
+                    "NEVER combine them into one claim - split them into "
+                    "separate claims, one per component (e.g. 'IBM offers "
+                    "watsonx' / 'IBM offers Red Hat OpenShift' / 'IBM offers "
+                    "IBM Cloud' / 'IBM offers MLOps capabilities' / 'IBM "
+                    "offers data engineering services'), never merging, "
+                    "summarizing, or dropping any of them. Each claim must "
+                    "be independently verifiable on its own. Exception: do "
+                    "NOT split components that are inherently linked and "
+                    "cannot be verified independently of each other (e.g. "
+                    "'revenue grew 20% last year to $67B' - the growth rate "
+                    "and the absolute number together form one checkable "
+                    "claim; keep it as a single claim). Extract claims about "
+                    "ANY factual topic - products "
                     "or services, workforce, clients, revenue, offices, "
                     "ownership, milestones, rankings, awards, certifications, "
                     "partnerships, scale, reach, reputation, etc. - not only "
@@ -382,17 +421,24 @@ async def _extract_claims(transcript: str | None, extra_context: str | None, doc
                     "verify it; for a \"general\" claim, set \"search_query\" to "
                     "null - it will be checked against already-gathered company "
                     "data instead of a new search. Also tag which section each "
-                    "claim came from. Respond with STRICTLY a single JSON object "
-                    "(no prose, no markdown fences) of exactly this shape: "
-                    '{"claims": [{"claim": "<claim text>", "category": '
+                    "claim came from. Also tag each claim with its \"position\": "
+                    "an integer starting at 0, giving the exact order the claims "
+                    "were stated across the sections (top to bottom, transcript "
+                    "then context then documents) - number them sequentially in "
+                    "the order you encounter them as you read, never reordered by "
+                    "topic or importance; this position is what the final report "
+                    "uses to preserve interview order. Respond with STRICTLY a "
+                    "single JSON object (no prose, no markdown fences) of exactly "
+                    'this shape: {"claims": [{"claim": "<claim text>", "category": '
                     '"specific"|"general", "search_query": "<3-5 word search '
-                    'phrase or null>", "source": "<transcript|context|document>"}, '
-                    '...]}. If there are no extractable factual claims, return '
-                    '{"claims": []}.'
+                    'phrase or null>", "source": "<transcript|context|document>", '
+                    '"position": <int>}, ...]}. If there are no extractable '
+                    'factual claims, return {"claims": []}.'
                 ),
             },
             {"role": "user", "content": combined},
         ],
+        "temperature": 0,
     }
 
     try:
@@ -435,7 +481,11 @@ async def _gather_targeted(
 
     async def _search_claim(claim_obj: dict[str, Any]) -> list[dict[str, Any]]:
         hits = await web_search_client.search(claim_obj["search_query"][:_MAX_CLAIM_QUERY_CHARS])
-        return scout_utils._filter_relevant(hits, company_name)[:_TARGETED_SEARCH_MAX_RESULTS]
+        selected_hits = scout_utils._filter_relevant(hits, company_name)[:_TARGETED_SEARCH_MAX_RESULTS]
+        # Sorted by domain (alphabetical) for deterministic result order
+        # across runs of the same query - which hits get selected above
+        # (relevance-ranked, capped) is unaffected, only their final order.
+        return sorted(selected_hits, key=lambda hit: scout_utils._domain_of(hit["url"]) or "")
 
     raw_results = await asyncio.gather(*(_search_claim(claim_obj) for claim_obj in selected), return_exceptions=True)
 
