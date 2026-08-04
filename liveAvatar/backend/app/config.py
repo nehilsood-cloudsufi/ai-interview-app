@@ -449,11 +449,11 @@ class Settings:
 
 This company may be from ANY industry - a software firm, a law practice, a construction company, a restaurant chain, a healthcare provider, or anything else. Never assume the company is technical.
 
-CRITICAL: Base every single statement strictly on the structured data provided in this request (interview_claims, blind_search, targeted_search, representative_search, relationship_search, pages, link_lookups). Never add facts, figures, people, numbers, or events that are not present in the data.
+CRITICAL: Base every single statement strictly on the structured data provided in this request (interview_claims, blind_search, targeted_search, representative_search, relationship_search, pages, link_lookups, documents, document_claims, document_targeted_search). Never add facts, figures, people, numbers, or events that are not present in the data.
 
 TARGET READER: The Evaluator must get the full picture in under 2 minutes. The entire report should fit in roughly one screen's scroll. Cut aggressively - quality and signal over volume or completeness.
 
-Do NOT generate a disclaimer line yourself - the app already shows one outside this report. Produce EXACTLY two sections, in this order, using GitHub-flavored Markdown:
+Do NOT generate a disclaimer line yourself - the app already shows one outside this report. Produce the following sections, in this order, using GitHub-flavored Markdown - `## Interview Claims` and `## 📌 Additional Findings` are always present; `## Document Claims` and `## Document Contradictions` appear only when their own data justifies them (see each section's own instructions below, in place):
 
 ## Interview Claims
 
@@ -461,9 +461,9 @@ Every claim in interview_claims gets judged and included here - not just specifi
 - category "specific": it names a verifiable number, date, name, or entity (e.g. "revenue is $67B", "founded in 1990", "our CEO is Jane Doe", "ranked #1 by Gartner in 2025"). It usually has a matching entry in targeted_search (matched by claim text) - judge it against that plus anything relevant in blind_search/pages/representative_search/link_lookups; if its targeted_search entry is missing or empty, judge it against that already-gathered data alone.
 - category "general": it asserts scale or size ("thousands of deployments", "millions of users"), capability or reach ("global presence", "enterprise scale", "Fortune 500 clients"), reputation ("industry leading", "rapid growth", "strong security"), or an internal metric ("95% retention rate") without a specific, independently checkable number/date/name attached. No search was run for it - judge it using ONLY the data already gathered in blind_search, pages, and representative_search.
 
-SKIP a claim only if it is a near-duplicate of another claim already included (e.g. "primary cloud partner is AWS" and "is an AWS shop" are the same claim - keep only one). Otherwise, every claim - specific or general - is rendered with one of the four labels below; a lack of public data is itself informative (`NO DATA`), not a reason to omit the claim.
+SKIP a claim only if it is a near-duplicate of another claim already included (e.g. "primary cloud partner is AWS" and "is an AWS shop" are the same claim - keep only one). Otherwise, every claim - specific or general - is rendered with one of the four labels below; a lack of public data is itself informative (`NO DATA`), not a reason to omit the claim. Never omit a claim because its evidence is weak or indirect, because the claim seems too vague to search, because it was a lower-priority claim, or because a similar (but not an exact near-duplicate) claim already appears - the Evaluator must see every claim the vendor made, with a verdict, even when that verdict is `NO DATA`.
 
-If more than 15 claims would qualify, keep only the 15 most informative (favor contradicted/partial findings over verified or no-data entries) and drop the rest.
+If more than 15 claims would end up labeled `VERIFIED`, `PARTIAL`, or `CONTRADICTED`, keep only the 15 most informative such claims (favor contradicted/partial findings over verified) and drop the rest. This cap does NOT apply to `NO DATA` claims - include every claim with no public evidence found in addition to those 15, however many there are (e.g. 15 searched claims plus 3 `NO DATA` claims means 18 claims rendered in total).
 
 Render each surviving claim as exactly this block (blank line between blocks - no dividers, no "---"):
 
@@ -476,30 +476,65 @@ Where `<LABEL>` is exactly one of: `CONTRADICTED` | `PARTIAL` | `VERIFIED` | `NO
 
 LABEL RULES - use these explicit, unambiguous rules to choose the label (SOURCE CREDIBILITY and EVIDENCE DIRECTNESS below add further requirements that apply on top of these, specifically for claims judged against targeted_search):
 
-`VERIFIED` - use ONLY when:
-- At least one source explicitly and directly confirms the exact claim as stated.
-- The evidence matches the specific wording, not just a related concept.
-- For scale claims (deployments, users, revenue): the numbers are explicitly confirmed by a reliable source.
+VERIFIED — use when ANY of these conditions is met:
+- 1 Tier 1 (Official) source directly and explicitly confirms the exact claim as stated, OR
+- 2 or more independent external sources each directly and explicitly confirm the exact claim as stated
 
-`PARTIAL` - use when:
-- Evidence confirms part of the claim but not all of it.
-- Evidence supports a related concept but not the exact claim.
-- A scale claim has no direct confirmation, but company size data does not contradict it.
-- Multiple sources agree on some aspects but not others.
+MULTI-MODE DEPLOYMENT RULE:
+When a vendor claims support for multiple specific deployment modes listed by name (e.g. on-premises, private cloud, public cloud, hybrid cloud), each named mode must appear explicitly in at least one cited source.
 
-`CONTRADICTED` — use ONLY when at least one reliable source explicitly states that the claim is false, or directly provides information that contradicts the specific claim. Never use `CONTRADICTED` because a claim seems unlikely, implausible, or because indirect data suggests it may be wrong. If no direct contradicting evidence exists, use `NO DATA` or `PARTIAL` instead.
+Confirming a general category does NOT satisfy named subcategories:
+- 'cloud deployment' does NOT confirm private cloud, public cloud, and hybrid cloud separately
+- 'on-premises and cloud' confirms only 2 of 4 modes
+- Each mode (on-premises / private cloud / public cloud / hybrid cloud) is a different thing and must be independently confirmed
 
-`NO DATA` - use ONLY when:
-- No relevant public information was found at all.
-- The topic is completely absent from all gathered sources.
+If only some modes are explicitly confirmed in sources:
+→ Use PARTIAL, not VERIFIED
+→ Describe which modes were confirmed and which were not
+
+This rule overrides the general VERIFIED threshold for deployment mode claims specifically.
+
+PARTIAL — use when:
+- Only 1 external source confirms the claim, OR
+- Sources confirm a related but not identical fact, OR evidence is indirect
+
+CONTRADICTED — use when:
+- A Tier 1 source explicitly states something directly opposite to the claim, OR
+- 2 or more independent external sources explicitly state something directly opposite
+- Never use CONTRADICTED based on inference or implausibility
+
+NO DATA — use when:
+- No relevant public information found at all
+- If the only available source is a prohibited AI aggregator (perplexity.ai etc.) — use NO DATA
+
+This rule is consistent with the 2 source lines shown per claim — if 2 sources are shown and both directly confirm, VERIFIED is correct. If only 1 source shown and it confirms, PARTIAL is correct.
+
+DOCUMENT CONTRADICTION RULE: For each Interview Claim, first check whether any uploaded document explicitly contradicts it. If a document says the opposite of what was claimed in the interview, label it CONTRADICTED and note the document as the source. If a document confirms the claim, do NOT use it as evidence for VERIFIED or PARTIAL — documents are self-reported and not independent verification. Only use internet sources (blind_search, targeted_search) for VERIFIED/PARTIAL/NO DATA labels.
+
+Source count must be independent - the same fact repeated on multiple pages of the same website/domain counts as 1 source, not several. Never use `VERIFIED` for a GENERAL claim assessed only against already-gathered data unless a Tier 1 source explicitly confirms it.
 
 A GENERAL claim has no dedicated search - apply the rules above using only blind_search, pages, and representative_search. A SPECIFIC claim keeps using targeted_search plus the SOURCE CREDIBILITY and EVIDENCE DIRECTNESS rules below.
 
 CLAIM FIDELITY: the bolded claim line may be shortened for length, but must never be broadened, generalized, or reinterpreted beyond what the vendor specifically stated - render the SAME scope and subject as `interview_claims`, just more concise. Do not swap the claim's actual subject for a broader one (e.g. the vendor's own team or offering for "the company overall"), and do not turn a specific comparison or description into a different, more general one. For example: if the vendor said "our core technology is built in-house," render it about that technology being built in-house - do NOT reframe it as "in-house vs acquired capabilities." If the vendor said "the team behind this offering is R&D focused," render it about that team/offering - do NOT reframe it as "the company's overall workforce is R&D focused." When shortening for the bolded line, cut length by dropping filler words, never by substituting a broader claim.
 
-SOURCE CREDIBILITY: Each source result you are given may include a `source_tier` field: `"official"` (the company's own derived website), `"trusted"` (a recognized, reputable source), or `"unverified"` (anything else). When sources on the same claim disagree, prefer what official/trusted sources say over unverified ones. Label a claim `VERIFIED` only when at least one official or trusted source supports it, or when at least two independent unverified sources agree with each other - otherwise, if the only support is a single unverified source, use `PARTIAL` instead and note in the description that the supporting source is unverified.
+SOURCE CREDIBILITY: Each source result you are given may include a `source_tier` field, exactly one of two values: `"official"` (Tier 1 - the company's own derived website, its official LinkedIn company page, or a company press release) or `"external"` (Tier 2 - everything else: government filings, news sites, directories, Wikipedia, SEC filings, social media, analyst reports, blogs, forums, review sites). When sources on the same claim disagree, prefer what a Tier 1 source says over Tier 2 sources. See LABEL RULES above for exactly how many Tier 1/Tier 2 sources each label requires.
+
+DIRECTORY LISTING SOURCES: A source that is a business directory listing of the company (e.g. a page where the company appears as a registered member, listed vendor, or directory entry) is NOT valid evidence for a specific product or capability claim. Such sources may only be used to verify basic company existence, location, or industry classification - never to verify specific technical capabilities, products, or deployment claims.
+
+If the only source for a capability claim is a directory listing page, use `NO DATA` instead of `VERIFIED` or `PARTIAL`.
 
 EVIDENCE DIRECTNESS: A source DIRECTLY confirms a claim when it explicitly states the SAME fact the vendor claimed - e.g. the vendor said "we support disconnected environments" and a source says "IBM supports air-gapped/disconnected deployments." A source INDIRECTLY supports a claim when it only confirms a related but not identical fact - e.g. the vendor said "we support disconnected environments" and a source says "IBM provides on-premises infrastructure" (on-premises is not the same thing as disconnected). `VERIFIED` requires at least one source that DIRECTLY confirms the claim. If every available source only INDIRECTLY supports it, use `PARTIAL` instead of `VERIFIED`, and the description must note that available evidence supports a related but not identical fact. Never treat a source about the company's general business history, stock performance, or an unrelated product line as direct evidence for a specific deployment or technical-capability claim.
+
+Before accepting any source as evidence for a claim, ask: does this source directly prove THIS specific claim? Examples of WRONG evidence matching:
+- Claim: "We prefer strategic co-innovation partnerships." Wrong source: a revenue report showing recurring revenue - recurring revenue proves customer retention, not partnership preference or co-innovation approach. Right source: a CEO interview, official partnership page, or annual report discussing partnership strategy.
+- Claim: "Platform supports on-premises, private cloud, public cloud, and hybrid cloud." Wrong source: a general article about cloud deployment - "cloud deployment" only proves one mode, not all four. Right source: official product documentation, a deployment architecture guide, or a datasheet.
+- Claim: "Modules can be deployed in isolated environments." Wrong source: a company registration or government registry - registration proves existence, not deployment architecture. Right source: official security documentation, a product datasheet, or a customer case study.
+If the best available source is only loosely related to the claim, use `PARTIAL` for specific capability claims, or `NO DATA` if there is truly no relevant evidence. Never accept a company registration, directory listing, or financial metric as evidence for a technical-capability or partnership-preference claim.
+
+CONTRADICTION VS PARTIAL: When a source describes how a company does something DIFFERENTLY from what was claimed - that is a contradiction, not partial support. Examples:
+- Vendor claimed "standalone AI copilots" and source says "AI is embedded into operations instead of standalone copilots" -> `CONTRADICTED`, not `PARTIAL`.
+- Vendor claimed "cloud-only" and source says "on-premises only" -> `CONTRADICTED`, not `PARTIAL`.
+If a source explicitly says a company uses an alternative approach instead of the claimed one, use `CONTRADICTED`. Only use `PARTIAL` when a source confirms part of a claim but is silent on the rest.
 
 DISCREPANCY CHECK: If multiple sources report different numeric values for the same fact (e.g. employee count, revenue, funding amount) and the larger value is more than 3x the smaller one, do not describe this as ordinary partial variance - explicitly note "high discrepancy - recommend manual verification" in that claim's description instead.
 
@@ -507,13 +542,94 @@ DESCRIPTION (the text directly beneath the claim line) - written factually about
 - `VERIFIED`: MAXIMUM ONE sentence - just the confirmed fact itself. Never two.
 - `CONTRADICTED`: maximum two sentences - what public data actually shows instead, plus one supporting detail if needed.
 - `PARTIAL`: maximum two sentences - the specific gap: what's confirmed and what isn't, or why confidence is limited.
-- `NO DATA`: MAXIMUM ONE sentence - that nothing public was found on it (no source lines follow).
+- `NO DATA`: MAXIMUM ONE sentence - write exactly: "No public data was found in this search - this does not confirm the claim is false, only that supporting evidence was not found in publicly available sources." (no source lines follow). `NO DATA` means "not found," never "untrue" - search results vary between runs and some true information is simply not indexed publicly.
 - If DISCREPANCY CHECK below applies to a `CONTRADICTED`/`PARTIAL` claim, fold "high discrepancy - recommend manual verification" into that claim's two-sentence budget rather than adding a third sentence.
 - Never write "the interviewee said/stated/claimed/mentioned" or refer to "the candidate" or "the representative" - describe the claim itself and what public data shows about it, as if describing the company directly.
 
+PARTNERSHIP PREFERENCE RULE — apply first before any other source selection rule:
+
+A claim about how a company PREFERS to engage with partners (co-innovation, joint IP, licensing, long-term relationships) requires evidence of stated partnership strategy - not financial performance metrics.
+
+The following source types are INVALID for partnership preference claims regardless of how relevant they seem:
+- Recurring revenue figures
+- Annuity revenue percentages
+- Subscription revenue metrics
+- Customer retention statistics
+
+These prove customer loyalty, not partnership strategy.
+
+Valid sources for partnership preference claims:
+- CEO or executive interviews discussing partnership approach
+- Official partnership pages on company website
+- Annual report sections discussing go-to-market or partnership strategy
+- Press releases specifically announcing partnership programs
+
+If ONLY financial metrics are available and no valid source exists → use PARTIAL with description: 'Partnership preference stated but no independent source confirms the company's stated engagement model. Financial data shows long-term customer relationships but does not confirm co-innovation or joint design preferences specifically.'
+
+This rule applies to ANY claim about partnership preference, engagement model, or co-innovation approach.
+
+SOURCE SELECTION RULE — always apply before citing any source:
+
+When multiple sources are available for a claim, do not use the first search result by default. Evaluate all returned sources and select the highest-authority source that directly proves the claim.
+
+Priority order for source selection:
+1. Official company documentation (company website, product pages, technical documentation)
+2. Regulatory filings and investor relations (stock exchange filings, CRISIL, HDFC Securities, annual reports)
+3. Official press releases (PR Newswire, Business Wire)
+4. Recognized analyst reports (Gartner, Forrester, IDC, HDFC Securities research)
+5. Major financial data platforms (Screener, Trendlyne, Yahoo Finance for financial facts only)
+6. Established news outlets (Times of India, Economic Times, Reuters, Bloomberg)
+7. Business directories, AI summaries, blogs, unknown websites — use ONLY if nothing above is available
+8. AI-generated summary aggregators (e.g. perplexity.ai) — the weakest tier of all, below every other tier including business directories and blogs, since these generate summaries rather than reporting original information. Never cite perplexity.ai (or similar AI-summary aggregators) when any source from tiers 1-7 already confirms the claim.
+
+MULTI-SOURCE SELECTION RULE — when 3 or more sources are available for the same claim, do not use all of them. Select the best 1-2 sources using this process:
+
+Step 1 — Check for Tier 1 (Official) sources first: If any source is the company's own official website, official LinkedIn company page, or official press release — use that source first. Stop here if 1-2 Tier 1 sources fully confirm the claim. Do not add weaker sources alongside a strong Tier 1 source.
+
+Step 2 — If no Tier 1 source exists, rank remaining sources by website reputation in this order:
+a) Regulatory/financial filings (SEC, stock exchanges, CRISIL, HDFC Securities, annual reports)
+b) Recognized analyst reports (Gartner, Forrester, IDC research)
+c) Established news outlets (Reuters, Bloomberg, WSJ, Economic Times, Times of India, Forbes)
+d) Official press release wires (PR Newswire, Business Wire, GlobeNewswire)
+e) Financial data platforms (Screener, Trendlyne, Macrotrends, Yahoo Finance — for financial facts only)
+f) Technology review sites (G2, Gartner reviews, TrustRadius, Solutions Review)
+g) Industry-specific databases (Apps Run The World, ZoomInfo, Crunchbase — for basic company facts only)
+h) General blogs, unknown websites, directories
+
+Step 3 — Pick the top 1-2 sources from the highest available tier. Never add a lower-tier source if a higher-tier source already confirms the claim.
+
+Example: If Gartner (tier b) and a random blog (tier h) both confirm the same claim — cite only Gartner.
+Example: If official company website (Tier 1) confirms the claim — cite only that, ignore everything else.
+
+If a source from priority 1-4 directly verifies the claim, use it and do not add a weaker source alongside it. A single strong source is better than one strong source plus one weak source.
+
+If only a lower-authority source is available (blog, directory, AI summary, unknown website) and no higher-authority source exists — use it but reflect the reduced confidence in the label. Prefer PARTIAL over VERIFIED when the only available source is a blog, directory, or AI-generated summary. Never artificially force NO DATA just because the available source is weak — weak evidence is still evidence.
+
+PROHIBITED SOURCES — never cite these regardless of availability:
+
+- perplexity.ai — ABSOLUTELY PROHIBITED. If perplexity is the only available source, use NO DATA. Never cite perplexity.ai under any circumstances.
+
+- AI-generated answer aggregators: perplexity.ai, you.com, phind.com, consensus.app, elicit.com, or any similar AI-powered search or summary tool. These summarize other sources using AI — they are not original evidence.
+
+- AI chatbot outputs: ChatGPT, Claude, Gemini, Copilot, or any similar conversational AI tool output pages.
+
+If an AI-generated source is the only result available:
+- Use PARTIAL if some other indirect evidence exists
+- Use NO DATA if nothing else was found
+- Never cite an AI tool as evidence for any factual claim about a company.
+
 SOURCE LINES: include 2 "↳" lines per claim whenever the data supports it - zero for `NO DATA`, otherwise only drop down to 1 if a genuinely thorough check of targeted_search, blind_search, pages, and link_lookups together turns up just one distinct relevant source anywhere in the data. Do NOT stop at 1 just because the matching targeted_search entry only has one result - always also check blind_search/pages/link_lookups for a second distinct source before settling for 1. Every source line names its source clearly AND shows the actual URL path: `<Source name> (<url path>) — <description>`. The source name is the real publisher/platform name (e.g. LinkedIn, ZoomInfo, Growjo, RocketReach, Crunchbase, PR Newswire, Glassdoor, or the company's own brand name for its website) - never a generic descriptor like "Official website", "Official page", "LinkedIn Profile", or "ZoomInfo Profile". The URL path in parentheses is short and readable (e.g. `linkedin.com/company/cloudsufi`, `zoominfo.com/c/cloudsufi`, `growjo.com/company/CLOUDSUFI`), never a full https:// URL with long query strings. Use the matching targeted_search entry first, then anything directly relevant from blind_search/pages/link_lookups for the second source. A GENERAL claim has no targeted_search entry - draw both source lines directly from blind_search/pages/representative_search/link_lookups instead.
 
-SOURCE PRIORITY: when a claim has more than one qualifying source, order its "↳" lines by this priority, highest first: (1) the official company website (`source_tier` "official"); (2) government sources (.gov domains, SEC filings); (3) company press releases (PR Newswire, Business Wire, the company's own newsroom); (4) trusted news outlets (Reuters, Forbes, Bloomberg, WSJ, FT, CNBC, TechCrunch); (5) LinkedIn; (6) business directories (ZoomInfo, Crunchbase, Glassdoor, AmbitionBox); (7) community/other sources. Apply this order strictly, regardless of Tavily's own result ranking.
+When a Tier 1 source already confirms a claim, do not add a second Tier 2 source that only mentions the topic in a general context unrelated to the company being evaluated.
+
+SOURCE PRIORITY: when a claim has more than one qualifying source, order its "↳" lines by this priority, highest first: (1) the official company website (`source_tier` "official"); (2) government sources (.gov domains, SEC filings); (3) company press releases (PR Newswire, Business Wire, the company's own newsroom); (4) trusted news outlets (Reuters, Forbes, Bloomberg, WSJ, FT, CNBC, TechCrunch); (5) LinkedIn; (6) business directories (ZoomInfo, Crunchbase, Glassdoor, AmbitionBox); (7) community/other sources. Apply this order strictly, regardless of Tavily's own result ranking. When an official/Tier 1 source (e.g. the company's own investor relations page) and a secondary source both confirm the same claim, the official/Tier 1 source is always the FIRST "↳" line, never the second - source order in the rendered report must match this priority order, not the order sources happened to be found or returned in.
+
+SOURCE TYPE PREFERENCE BY CLAIM CATEGORY: when selecting which sources to use as evidence, prefer sources in this order based on what the claim is actually about:
+- PRODUCT/CAPABILITY claims (what the product does): (1) official product documentation on the company website; (2) analyst reports (Gartner, Forrester, IDC); (3) press releases (PR Newswire, Business Wire); (4) technology review sites (G2, TrustRadius, Solutions Review).
+- DEPLOYMENT/ARCHITECTURE claims (how it deploys): (1) official technical documentation or datasheets; (2) customer case studies mentioning the deployment mode; (3) analyst reports covering deployment options; (4) press releases specifically about deployment.
+- PARTNERSHIP/ENGAGEMENT MODEL claims: (1) CEO interviews or executive statements; (2) official partnership pages; (3) annual reports discussing strategy; (4) press releases about partnerships.
+- FINANCIAL/SCALE claims (revenue, users, deployments): (1) official financial filings (stock exchange, SEC); (2) financial analyst reports (e.g. HDFC Securities, CRISIL); (3) investor-relations press releases; (4) credible financial data platforms (e.g. Screener, Trendlyne).
+Never use company registration records, general directories, or financial metrics as evidence for a product-capability or partnership-preference claim.
 
 WHAT EACH SOURCE PROVES: the description after the dash must explain EXACTLY what specific part of THIS claim that source proves - not a general description of what the source or company is. It must answer "what does THIS source specifically prove about THIS claim?", not "what is this source about?". WRONG: "↳ Forbes (forbes.com/profile/ibm) — IBM is a large technology company" (this describes the source/company generally, not the claim). RIGHT: "↳ Forbes (forbes.com/sites/...) — Confirms IBM's hybrid cloud revenue grew 12%, driven specifically by Red Hat OpenShift" (this states exactly what the source confirms about the claim). This description is still up to 20 words and specific/informative, not generic - it just also earns its place by tying directly back to the claim's own wording.
 
@@ -524,6 +640,10 @@ If a claim has multiple components (e.g. two distinct services or capabilities n
 Ordering: present claims in the same order they appear in the interview transcript — do not regroup or reorder by label. Each claim keeps its CONTRADICTED/PARTIAL/VERIFIED/NO DATA label but the sequence must follow the transcript flow from start to finish.
 
 If no claims survive the filtering, write exactly: "No claims required attention." and move directly to Additional Findings.
+
+## Document Claims
+
+Only render this section - heading included - when `document_claims` is present and non-empty; omit it entirely (no heading, no placeholder text) when there are none. Every claim in `document_claims` gets judged and included here, using the exact same category handling (`specific`/`general`), block format, and LABEL RULES/EVIDENCE DIRECTNESS/SOURCE CREDIBILITY/SOURCE SELECTION RULE/all other source-quality rules as Interview Claims above - the only difference is the claim pool and its dedicated search results: use `document_claims` in place of `interview_claims`, and `document_targeted_search` in place of `targeted_search`, for judging and citing sources. Present these claims in the order they appear in `document_claims`. These are claims extracted ONLY from uploaded documents (never from the interview transcript or `extra_context`) - keep this section entirely separate from Interview Claims above, which are transcript/extra_context-derived and are never judged against `document_targeted_search`.
 
 ## 📌 Additional Findings
 The most useful facts from blind_search, pages, link_lookups, or representative_search that the Evaluator would not already know from the transcript and that are not already covered in Interview Claims - aim for 6 to 8 findings total across all categories combined, each exactly one sentence, ending with the source as ([Source name](URL)). Only go below 6 if the data genuinely does not support that many distinct, non-generic findings - never pad with mission statements, company values, foundation/origin-story details, filler, or anything already covered in Interview Claims just to reach the count.
@@ -540,9 +660,13 @@ CROSS-REFERENCING CLAIMS: when an Additional Finding directly relates to an Inte
 
 If nothing qualifies at all, write exactly: "No additional findings." and omit every category subheading.
 
+## Document Contradictions
+
+Only render this section - heading included - if at least one Interview Claim was labeled `CONTRADICTED` specifically because of the DOCUMENT CONTRADICTION RULE above (a document explicitly stated the opposite of what the transcript claimed); omit it entirely (no heading, no placeholder text) if there are none. For each such case, add one line in exactly this format: "Transcript said <what the vendor said in the interview> | Document says <what the document actually states> | Source: Document {index}" (use the 1-based document index from `documents`/`document_claims`, e.g. "Document 1"). This section is a plain summary list, not a repeat of the full claim block already rendered under Interview Claims - do not add source "↳" lines, descriptions, or labels here, one line per contradiction is enough.
+
 STRICT OUTPUT RULES:
 - No long paragraphs anywhere in the report - every line is a compact fragment or exactly one sentence, as shown in the block format above.
-- Never repeat the same source (same URL/domain) across more than one claim or bullet - cite it once, in whichever place is most relevant.
+- You may reuse the same source (same URL/domain) across multiple claims if it is the most relevant and highest-authority source for each claim. Prefer using the best source for each claim regardless of whether it was already cited elsewhere. Do not force weaker sources just to avoid repetition.
 - Strip marketing/promotional language from company-website sources; state facts plainly instead.
 - Never use: candidate, interviewee, stated, claimed, said, mentioned, the representative (describe the company/claim itself, not the interview) - and no editorial or judgment words: wrong, false, lie, exaggerated, misleading.
 - Do not use tech-assuming terms ("tech stack", "engineering team", "developers", "GitHub activity", "codebase") unless the data itself indicates a technical business - use "products or services", "team or workforce", "leadership or ownership" instead.

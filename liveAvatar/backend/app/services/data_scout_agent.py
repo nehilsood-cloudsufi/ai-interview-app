@@ -135,10 +135,10 @@ async def _post_to_gemini(payload: dict[str, Any]) -> str:
 
 async def _synthesize_internet_findings(company_name: str, company_website: str | None, sources: dict[str, Any]) -> str:
     """Truncates the sources payload, then calls Gemini to synthesize the
-    full two-section report (Interview Claims, Additional Findings - see
-    scout_system_prompt). Returns the rendered markdown; raises on any
-    unrecoverable failure so the caller can soft-fail while preserving the
-    already-gathered sources.
+    full report (Interview Claims, Document Claims, Additional Findings,
+    Document Contradictions - see scout_system_prompt). Returns the
+    rendered markdown; raises on any unrecoverable failure so the caller can
+    soft-fail while preserving the already-gathered sources.
 
     Unlike the prior peer-sections design, this DOES receive
     interview_claims - the claim-focused report format requires mapping each
@@ -149,6 +149,28 @@ async def _synthesize_internet_findings(company_name: str, company_website: str 
         raise RuntimeError("GEMINI_API_KEY is not configured; cannot synthesize scout findings.")
 
     truncated_sources = scout_utils._truncate_sources(sources)
+    # scout_utils._truncate_sources only copies over keys it explicitly
+    # recognizes, so the three document-related keys below (added for the
+    # Document Claims / DOCUMENT CONTRADICTION RULE feature) are handled
+    # here instead, mirroring that function's own truncation shape, rather
+    # than teaching scout_utils.py about them.
+    if "documents" in sources:
+        truncated_sources["documents"] = [
+            scout_utils._trunc(text, scout_utils._MAX_DOCUMENT_CHARS) for text in sources["documents"]
+        ]
+    if "document_claims" in sources:
+        truncated_sources["document_claims"] = sources["document_claims"]
+    if "document_targeted_search" in sources:
+        truncated_sources["document_targeted_search"] = [
+            {
+                **entry,
+                "results": [
+                    {**result, "text": scout_utils._trunc(result.get("text"), scout_utils._MAX_SEARCH_RESULT_CHARS)}
+                    for result in (entry.get("results") or [])
+                ],
+            }
+            for entry in sources["document_targeted_search"]
+        ]
     payload_json = json.dumps(truncated_sources, ensure_ascii=False, indent=2)
     logger.info("Synthesis payload size: sources JSON=%d chars", len(payload_json))
 
@@ -579,6 +601,25 @@ async def run_scout(
             {"claim": detail["claim"], "category": detail["category"], "source": detail["source"]}
             for detail in state.claim_details
         ] or state.claims
+    if state.document_targeted_search:
+        sources["document_targeted_search"] = state.document_targeted_search
+    if state.document_claims:
+        # Same tagged-object shape as interview_claims above, but extracted
+        # ONLY from documents (see scout_gather._extract_document_claims) -
+        # kept as its own key so the synthesis prompt renders these in the
+        # separate "## Document Claims" section, never merged into
+        # interview_claims.
+        sources["document_claims"] = [
+            {"claim": detail["claim"], "category": detail["category"], "source": detail["source"]}
+            for detail in state.document_claim_details
+        ] or state.document_claims
+    if state.document_texts:
+        # Redacted full document text (see scout_gather._redact_documents) -
+        # not claims, the raw document content itself, so the synthesis
+        # prompt's DOCUMENT CONTRADICTION RULE can check an Interview Claim
+        # against what a document actually says, not just against
+        # document-derived claims.
+        sources["documents"] = state.document_texts
 
     # Synthesis and representative verification are independent Gemini calls
     # (neither's input depends on the other's output) - run them

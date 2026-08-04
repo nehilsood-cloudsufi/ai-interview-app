@@ -36,64 +36,150 @@ async def test_low_quality_domain_is_filtered_out(patch_settings):
 
 
 @respx.mock
-async def test_trusted_domain_is_tagged_trusted(patch_settings):
-    patch_settings(
-        tavily_api_key="tvly-key",
-        tavily_api_base_url=TAVILY_BASE_URL,
-        scout_trusted_domains=("trusted-source.example",),
-    )
+async def test_linkedin_company_page_matching_company_is_tagged_official(patch_settings):
+    patch_settings(tavily_api_key="tvly-key", tavily_api_base_url=TAVILY_BASE_URL)
     respx.post(f"{TAVILY_BASE_URL}/search").mock(
         return_value=httpx.Response(
             200,
-            json={"results": [{"title": "Trusted", "url": "https://www.trusted-source.example/acme", "content": "..."}]},
+            json={"results": [{"title": "Acme Corp", "url": "https://www.linkedin.com/company/acme-corp", "content": "..."}]},
         )
     )
 
-    results = await web_search_client.search("Acme Corp")
+    results = await web_search_client.search("Acme Corp", company_name="Acme Corp")
 
-    assert results[0]["source_tier"] == "trusted"
+    assert results[0]["source_tier"] == "official"
 
 
 @respx.mock
-async def test_unrecognized_domain_is_tagged_unverified(patch_settings):
-    patch_settings(
-        tavily_api_key="tvly-key",
-        tavily_api_base_url=TAVILY_BASE_URL,
-        scout_trusted_domains=("trusted-source.example",),
-    )
+async def test_linkedin_company_page_for_a_different_company_is_tagged_external(patch_settings):
+    patch_settings(tavily_api_key="tvly-key", tavily_api_base_url=TAVILY_BASE_URL)
     respx.post(f"{TAVILY_BASE_URL}/search").mock(
         return_value=httpx.Response(
             200,
-            json={"results": [{"title": "Random blog", "url": "https://randomblog.example/acme", "content": "..."}]},
+            json={"results": [{"title": "IBM", "url": "https://www.linkedin.com/company/ibm", "content": "..."}]},
         )
     )
 
-    results = await web_search_client.search("Acme Corp")
+    results = await web_search_client.search("Acme Corp", company_name="Acme Corp")
 
-    assert results[0]["source_tier"] == "unverified"
+    assert results[0]["source_tier"] == "external"
 
 
 @respx.mock
-async def test_no_domain_config_still_tags_everything_unverified(patch_settings):
-    # Both tuples empty (the shipped default) - nothing filtered, everything
-    # tagged "unverified" rather than crashing or leaving the field absent.
-    patch_settings(
-        tavily_api_key="tvly-key",
-        tavily_api_base_url=TAVILY_BASE_URL,
-        scout_low_quality_domains=(),
-        scout_trusted_domains=(),
-    )
+async def test_prnewswire_url_with_company_name_in_path_is_tagged_official(patch_settings):
+    patch_settings(tavily_api_key="tvly-key", tavily_api_base_url=TAVILY_BASE_URL)
     respx.post(f"{TAVILY_BASE_URL}/search").mock(
         return_value=httpx.Response(
             200,
-            json={"results": [{"title": "Anything", "url": "https://anywhere.example/acme", "content": "..."}]},
+            json={
+                "results": [
+                    {
+                        "title": "Acme Corp announces...",
+                        "url": "https://www.prnewswire.com/news-releases/acme-corp-announces-expansion.html",
+                        "content": "...",
+                    }
+                ]
+            },
+        )
+    )
+
+    results = await web_search_client.search("Acme Corp", company_name="Acme Corp")
+
+    assert results[0]["source_tier"] == "official"
+
+
+@respx.mock
+async def test_prnewswire_url_without_company_name_is_tagged_external(patch_settings):
+    patch_settings(tavily_api_key="tvly-key", tavily_api_base_url=TAVILY_BASE_URL)
+    respx.post(f"{TAVILY_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "title": "Some other company announces...",
+                        "url": "https://www.prnewswire.com/news-releases/other-company-announces-merger.html",
+                        "content": "...",
+                    }
+                ]
+            },
+        )
+    )
+
+    results = await web_search_client.search("Acme Corp", company_name="Acme Corp")
+
+    assert results[0]["source_tier"] == "external"
+
+
+@respx.mock
+async def test_government_domain_is_tagged_external_not_official(patch_settings):
+    # A .gov domain (SEC filings, government sources) is Tier 2 - it is NOT
+    # one of the three Tier 1 categories (company website, official LinkedIn
+    # page, company press release), even though it's a highly credible source.
+    patch_settings(tavily_api_key="tvly-key", tavily_api_base_url=TAVILY_BASE_URL)
+    respx.post(f"{TAVILY_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={"results": [{"title": "Acme Corp 10-K", "url": "https://www.sec.gov/cgi-bin/browse-edgar?acme-corp", "content": "..."}]},
+        )
+    )
+
+    results = await web_search_client.search("Acme Corp", company_name="Acme Corp")
+
+    assert results[0]["source_tier"] == "external"
+
+
+@respx.mock
+async def test_news_and_directory_domains_are_all_tagged_external(patch_settings):
+    # Reuters, Forbes, ZoomInfo - none are Tier 1, regardless of reputation.
+    patch_settings(tavily_api_key="tvly-key", tavily_api_base_url=TAVILY_BASE_URL)
+    respx.post(f"{TAVILY_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"title": "Reuters", "url": "https://www.reuters.com/business/acme-corp", "content": "..."},
+                    {"title": "Forbes", "url": "https://www.forbes.com/companies/acme-corp", "content": "..."},
+                    {"title": "ZoomInfo", "url": "https://www.zoominfo.com/c/acme-corp/12345", "content": "..."},
+                ]
+            },
+        )
+    )
+
+    results = await web_search_client.search("Acme Corp", company_name="Acme Corp")
+
+    assert [r["source_tier"] for r in results] == ["external", "external", "external"]
+
+
+@respx.mock
+async def test_no_company_name_tags_everything_external(patch_settings):
+    # Without a company_name to match LinkedIn/press-release paths against,
+    # even a URL that WOULD otherwise qualify (an official LinkedIn company
+    # page) can't be confirmed as Tier 1 - degrades to "external" rather than
+    # crashing or leaving the field absent.
+    patch_settings(tavily_api_key="tvly-key", tavily_api_base_url=TAVILY_BASE_URL)
+    respx.post(f"{TAVILY_BASE_URL}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={"results": [{"title": "Acme Corp", "url": "https://www.linkedin.com/company/acme-corp", "content": "..."}]},
         )
     )
 
     results = await web_search_client.search("Acme Corp")
 
     assert len(results) == 1
-    assert results[0]["source_tier"] == "unverified"
+    assert results[0]["source_tier"] == "external"
+
+
+def test_unverified_string_does_not_appear_in_web_search_client_source():
+    # Static guard: "unverified" was the old third-tier label (retired in
+    # favor of the two-tier official/external system) - a regression here
+    # would silently reintroduce it as a source_tier value.
+    import inspect
+
+    from app.services import web_search_client as wsc
+
+    assert "unverified" not in inspect.getsource(wsc)
 
 
 @respx.mock
@@ -153,24 +239,29 @@ async def test_non_dict_result_items_are_skipped(patch_settings):
 
 
 @respx.mock
-async def test_trusted_subdomain_is_tagged_trusted(patch_settings):
-    # Suffix-aware like every other blocklist: news.reuters.com counts as
-    # reuters.com once the trusted list is populated.
-    patch_settings(
-        tavily_api_key="tvly-key",
-        tavily_api_base_url=TAVILY_BASE_URL,
-        scout_trusted_domains=("trusted-source.example",),
-    )
+async def test_press_release_subdomain_is_tagged_official(patch_settings):
+    # Suffix-aware like every other domain list in this module: a
+    # subdomain of a press-release wire (e.g. ir.businesswire.com) still
+    # counts as businesswire.com.
+    patch_settings(tavily_api_key="tvly-key", tavily_api_base_url=TAVILY_BASE_URL)
     respx.post(f"{TAVILY_BASE_URL}/search").mock(
         return_value=httpx.Response(
             200,
-            json={"results": [{"title": "T", "url": "https://news.trusted-source.example/acme", "content": "..."}]},
+            json={
+                "results": [
+                    {
+                        "title": "Acme Corp",
+                        "url": "https://ir.businesswire.com/news/acme-corp-quarterly-results",
+                        "content": "...",
+                    }
+                ]
+            },
         )
     )
 
-    results = await web_search_client.search("Acme Corp")
+    results = await web_search_client.search("Acme Corp", company_name="Acme Corp")
 
-    assert results[0]["source_tier"] == "trusted"
+    assert results[0]["source_tier"] == "official"
 
 
 @respx.mock
