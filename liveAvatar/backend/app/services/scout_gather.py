@@ -12,7 +12,7 @@ from app.services import gemini_client, page_fetcher, scout_utils, web_search_cl
 
 logger = logging.getLogger(__name__)
 
-_RELATED_FETCH_LIMIT = 1  # how many of a search's top results get their full page text fetched (biggest single time sink in the pipeline)
+_RELATED_FETCH_LIMIT = 2  # how many of a search's top results get their full page text fetched (biggest single time sink in the pipeline)
 _CLAIM_EXTRACTION_TIMEOUT_SECONDS = 60.0  # httpx timeout for the single-attempt claim-extraction call - raised from 30s (2026-08-03): a real transcript was observed exceeding 30s end-to-end, causing the call to time out and silently return zero claims instead of just running a bit longer
 _MAX_CLAIM_QUERY_CHARS = 200  # claim search_query used for a Pass B targeted search
 _TARGETED_SEARCH_MAX_RESULTS = 3  # Pass B results sliced to this many client-side, keeping the per-claim source list tight
