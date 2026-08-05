@@ -2,6 +2,7 @@ import asyncio
 import ipaddress
 import logging
 import socket
+import time
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -218,14 +219,27 @@ async def fetch_page_with_subpages(url: str) -> dict[str, Any] | None:
     are followed manually with per-hop SSRF validation (see _get_validated),
     so follow_redirects stays off on the client."""
     async with httpx.AsyncClient(timeout=_PAGE_FETCH_TIMEOUT_SECONDS) as client:
+        root_start = time.monotonic()
         text, subpage_links = await _fetch_one(client, url, discover_links=True)
+        logger.info("[scout-timing] website root fetch (%s): %.2fs", url, time.monotonic() - root_start)
         if text is None:
             return None
 
-        subpages = []
-        for link in subpage_links:
+        async def _fetch_subpage(link: str) -> dict[str, str] | None:
+            start = time.monotonic()
             sub_text, _ = await _fetch_one(client, link, discover_links=False)
-            if sub_text:
-                subpages.append({"url": link, "text": sub_text})
+            logger.info("[scout-timing] website subpage fetch (%s): %.2fs", link, time.monotonic() - start)
+            return {"url": link, "text": sub_text} if sub_text else None
+
+        # Concurrent, not sequential (fixed 2026-08-01 - up to _MAX_SUBPAGES=3
+        # independent same-site fetches were previously awaited one at a
+        # time in a for loop, needlessly stacking their durations on the
+        # critical path): these subpages don't depend on each other, and one
+        # httpx.AsyncClient is already shared across all of them, so there's
+        # no reason not to overlap them - same pattern as every other
+        # independent-fetch batch in this pipeline (blind search, targeted
+        # search, link lookups).
+        fetched = await asyncio.gather(*(_fetch_subpage(link) for link in subpage_links))
+        subpages = [subpage for subpage in fetched if subpage is not None]
 
         return {"text": text, "subpages": subpages}

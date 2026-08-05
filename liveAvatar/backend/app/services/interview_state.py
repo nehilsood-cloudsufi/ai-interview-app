@@ -29,6 +29,7 @@ from app.models import TranscriptTurn
 if TYPE_CHECKING:
     from app.services.coordinator_agent import FollowupRecommendation
     from app.services.evaluator_agent import Scorecard
+    from app.services.representative_verification import RepresentativeVerification
 
 # Post-interview pipeline (Scout -> Evaluator -> Coordinator) progress, owned
 # and mutated exclusively by app.services.pipeline.
@@ -47,6 +48,13 @@ class VendorProfile:
     company_name: str = ""
     contact_name: str = ""
     contact_role: str | None = None
+    # Feeds Representative Identity Verification in the Data Scout Agent;
+    # blank (the default) degrades verification to evidence-only.
+    email: str = ""
+    # Not yet on the intake form (UI field pending) - plumbed through the
+    # backend for app.services.data_scout_agent.run_scout's representative
+    # verification; defaults to "" until a form field exists.
+    email: str = ""
 
 
 @dataclass
@@ -59,13 +67,35 @@ class ScoutReport:
     `sources` is the raw structured data gathered (kept for completeness -
     not currently rendered anywhere), `findings_ok` is False when synthesis
     failed but sources were still gathered, and `company_website` is whatever
-    the agent derived (or None)."""
+    the agent derived (or None). `representative_verification` is the
+    structured result of verifying the interviewed representative's identity
+    (see app.services.representative_verification) - its rendered markdown
+    is prepended to `internet_findings` itself, so this structured field
+    exists for persistence/future use rather than its own rendering path."""
 
     internet_findings: str
     interview_claims: list[str]
     sources: dict[str, Any]
     findings_ok: bool
     company_website: str | None
+    # Set by run_scout's representative-identity-verification step (see
+    # app.services.representative_verification). Defaults to None so the
+    # existing direct ScoutReport(...) test-fixture constructions elsewhere
+    # don't need updating for this field.
+    representative_verification: "RepresentativeVerification | None" = None
+    # Structured-JSON counterpart of internet_findings (see
+    # app.services.data_scout_agent._synthesize_claims_report), for the
+    # frontend's DataScoutReport component to render directly instead of
+    # parsing Markdown: {"claims": [{"status","claim","note","sources"}],
+    # "additional_findings": [{"text","url"}]}. Defaults to None for the
+    # same reason as representative_verification above.
+    claims_report: dict[str, Any] | None = None
+    # Deterministic parse of internet_findings (see
+    # app.services.data_scout_agent._build_structured_findings) - no extra
+    # LLM call, purely additive. None when synthesis failed or parsing hit
+    # anything unexpected. Defaults to None for the same reason as the two
+    # fields above.
+    structured_findings: dict[str, Any] | None = None
 
 
 @dataclass

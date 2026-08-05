@@ -57,6 +57,7 @@ export function StartScreen({ onStart }: StartScreenProps) {
   const [durationMinutes, setDurationMinutes] = useState<number>(5);
   const [contactName, setContactName] = useState<string>('');
   const [contactRole, setContactRole] = useState<string>('');
+  const [email, setEmail] = useState<string>('');
   const [companyName, setCompanyName] = useState<string>('');
   const [aboutText, setAboutText] = useState<string>('');
   // Context documents staged client-side; uploaded only once Start is
@@ -122,6 +123,7 @@ export function StartScreen({ onStart }: StartScreenProps) {
           contact_name: contactName.trim(),
           company_name: companyName.trim(),
           ...(contactRole.trim() && { contact_role: contactRole.trim() }),
+          ...(email.trim() && { email: email.trim() }),
           ...(aboutText.trim() && { about_text: aboutText.trim() }),
           ...(TIER === 'prod' && { passcode, duration_minutes: durationMinutes }),
         }),
@@ -229,6 +231,15 @@ export function StartScreen({ onStart }: StartScreenProps) {
             onChange={(e) => setContactRole(e.target.value)}
             disabled={busy}
             placeholder="Role (optional)"
+            className={FIELD_CLASSES}
+          />
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            disabled={busy}
+            placeholder="your@company.com"
+            aria-label="Contact Email"
             className={FIELD_CLASSES}
           />
           <textarea

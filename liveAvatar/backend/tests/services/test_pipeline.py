@@ -62,6 +62,8 @@ def make_scout_result(**overrides) -> dict:
         "sources": {"blind_search": []},
         "findings_ok": True,
         "company_website": None,
+        "representative_verification": None,
+        "claims_report": None,
     }
     result.update(overrides)
     return result
@@ -72,7 +74,7 @@ async def test_run_happy_path_transitions_scouting_evaluating_ready(monkeypatch)
     scout_result = make_scout_result()
     scorecard = make_scorecard({"interest": 80.0}, overall=80.0)
 
-    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript):
+    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript, email=""):
         transitions.append(("scout", state.pipeline_status))
         return scout_result
 
@@ -151,7 +153,7 @@ async def test_scout_synthesis_failure_still_reaches_ready(monkeypatch):
     scout_result = make_scout_result(internet_findings="", findings_ok=False)
     scorecard = make_scorecard({"interest": 60.0}, overall=60.0)
 
-    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript):
+    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript, email=""):
         return scout_result
 
     async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
@@ -177,7 +179,7 @@ async def test_scout_synthesis_failure_still_reaches_ready(monkeypatch):
 
 
 async def test_evaluator_raises_leaves_scorecard_and_recommendation_null_but_still_ready(monkeypatch, caplog):
-    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript):
+    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript, email=""):
         return make_scout_result()
 
     async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
@@ -216,7 +218,7 @@ async def test_evaluator_failure_sets_evaluation_failed_and_still_reaches_ready(
     # silently swallowed - state.evaluation_failed and the saved payload both
     # carry the flag so the frontend can tell the vendor scoring didn't run,
     # instead of just showing an empty scorecard with no explanation.
-    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript):
+    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript, email=""):
         return make_scout_result()
 
     async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
@@ -247,7 +249,7 @@ async def test_evaluator_failure_sets_evaluation_failed_and_still_reaches_ready(
 
 
 async def test_final_save_failure_marks_failed_and_attempts_resave(monkeypatch):
-    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript):
+    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript, email=""):
         return make_scout_result()
 
     scorecard = make_scorecard({"interest": 40.0}, overall=40.0)
@@ -284,7 +286,7 @@ async def test_ready_status_only_set_after_successful_save(monkeypatch):
     # state.pipeline_status must flip to "ready" only once the save that
     # carries the "ready" record has actually succeeded - not before, so a
     # save failure can never leave a transient "ready" visible to a poll.
-    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript):
+    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript, email=""):
         return make_scout_result()
 
     scorecard = make_scorecard({"interest": 80.0}, overall=80.0)
@@ -311,7 +313,7 @@ async def test_ready_status_only_set_after_successful_save(monkeypatch):
 
 
 async def test_resave_failure_after_final_save_failure_does_not_raise(monkeypatch, caplog):
-    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript):
+    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript, email=""):
         return make_scout_result()
 
     async def fake_score_interview(turns, rubric, scout_report, vendor_context=""):
@@ -333,7 +335,7 @@ async def test_resave_failure_after_final_save_failure_does_not_raise(monkeypatc
 
 
 async def test_unexpected_exception_mid_run_marks_failed_and_attempts_resave(monkeypatch):
-    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript):
+    async def fake_run_scout(company_name, representative_name, extra_context, documents, transcript, email=""):
         return make_scout_result()
 
     scorecard = make_scorecard({"interest": 100.0}, overall=100.0)

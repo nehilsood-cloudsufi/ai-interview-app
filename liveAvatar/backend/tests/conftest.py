@@ -40,6 +40,7 @@ _SETTINGS_IMPORTERS = [
     "app.services.scout_utils",
     "app.services.scout_gather",
     "app.services.data_scout_agent",
+    "app.services.representative_verification",
 ]
 
 

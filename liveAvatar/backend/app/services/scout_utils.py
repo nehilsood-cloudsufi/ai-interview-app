@@ -1,15 +1,22 @@
 """Pure helper functions for the Data Scout Agent: no async, no network I/O.
 Domain/URL parsing, PII redaction, same-company relevance filtering, source
 truncation, and claim-text parsing - all deterministic, synchronous, and
-side-effect-free (config reads aside).
+side-effect-free (config reads aside; the `_timed` logging helper below is
+the one intentional exception - a synchronous context manager, not I/O
+itself, used to wrap the async gathering/synthesis phases elsewhere).
 """
 
+import logging
 import re
+import time
+from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlparse
 
 from app.config import settings
 from app.services.llm_json import parse_llm_json
+
+logger = logging.getLogger(__name__)
 
 # --- Payload truncation (see _truncate_sources / _combine_claim_sources) ---
 # Per-field character caps applied before the sources dict is serialised and
@@ -61,6 +68,11 @@ _PHONE_RE = re.compile(
     r"(?<!\w)(?:\+?\d{1,3}[-.\s])?(?:\(\d{3}\)[-.\s]?|\d{3}[-.\s])\d{3}[-.\s]\d{4}\b"
 )
 _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+# Whole-string email validation for representative_verification's
+# _check_email - deliberately a separate pattern from _EMAIL_RE above, which
+# is tuned for extracting an email substring out of prose (PII redaction),
+# not for validating that an entire string IS one.
+_EMAIL_FORMAT_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 # Generic business mailbox local-parts are allowed through unredacted (they
 # identify a department/role, not a person).
 _GENERIC_EMAIL_LOCAL_PARTS = {
@@ -89,6 +101,24 @@ _ADDRESS_RE = re.compile(
 # entirely (deliberately lenient, biased toward keeping borderline results).
 _COMPANY_SUFFIX_RE = re.compile(r"\b(?:inc|llc|ltd|limited|corp|corporation|company|co|group|plc|gmbh)\b\.?", re.IGNORECASE)
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9\s]")
+
+
+@contextmanager
+def _timed(label: str):
+    """Logs how long the wrapped block took, at INFO under a `[scout-timing]`
+    prefix (grep-able independent of everything else this pipeline logs).
+    Synchronous context manager - `async with` isn't needed since the timer
+    itself does nothing async; it just brackets a block that happens to
+    contain `await`s. Used to measure each gathering/synthesis phase's own
+    wall-clock cost (see data_scout_agent.run_scout and scout_gather's
+    per-phase calls) without changing any behavior - logging a duration has
+    no effect on control flow, exceptions still propagate through `yield`
+    unchanged."""
+    start = time.monotonic()
+    try:
+        yield
+    finally:
+        logger.info("[scout-timing] %s: %.2fs", label, time.monotonic() - start)
 
 
 def _domain_of(url: str) -> str:
@@ -299,6 +329,47 @@ def _truncate_sources(sources: dict[str, Any]) -> dict[str, Any]:
     return truncated
 
 
+def _check_email(email: str) -> dict[str, Any]:
+    """Pure format/domain classification for representative_verification -
+    no network I/O, no company_name (domain-vs-company authenticity needs
+    web evidence and is judged later, in
+    representative_verification._compute_verdict). Returns
+    {"email_valid", "email_type", "email_domain"}, where email_type is
+    exactly one of "corporate"/"personal"/"invalid"/"missing"."""
+    email = (email or "").strip()
+    if not email:
+        return {"email_valid": False, "email_type": "missing", "email_domain": ""}
+    if not _EMAIL_FORMAT_RE.match(email):
+        return {"email_valid": False, "email_type": "invalid", "email_domain": ""}
+    domain = email.rsplit("@", 1)[1].lower()
+    email_type = "personal" if _matches_domain(domain, settings.scout_personal_email_domains) else "corporate"
+    return {"email_valid": True, "email_type": email_type, "email_domain": domain}
+
+
+def _company_names_match(a: str, b: str) -> bool:
+    """Case-insensitive substring-aware match (either direction) or a shared
+    normalized token (reuses _normalize_company_tokens above) - e.g. "IBM"
+    vs "IBM Corporation", or "Acme" vs "Acme Corp, Inc." Used by
+    representative_verification._compute_verdict to compare a stated company
+    against an LLM-extracted employer/domain-owner - never done by the LLM
+    itself. False if either name is blank."""
+    if not a or not b:
+        return False
+    a_low, b_low = a.strip().lower(), b.strip().lower()
+    if a_low in b_low or b_low in a_low:
+        return True
+    return bool(_normalize_company_tokens(a) & _normalize_company_tokens(b))
+
+
+def _is_unknown(value: str | None) -> bool:
+    """Canonical placeholder check for representative_verification's
+    LLM-extracted fields: the extraction prompt's anti-hallucination rule
+    asks for 'none'/'unknown'/'not found'/empty rather than guessing when
+    the evidence doesn't say something. One helper keeps every verdict and
+    rendering check consistent instead of re-deriving this per call site."""
+    return not value or value.strip().lower() in ("none", "unknown", "not found", "")
+
+
 def _matches_domain(domain: str, candidates: "set[str] | tuple[str, ...]") -> bool:
     """True if `domain` is one of `candidates` or a subdomain of one (e.g.
     "in.linkedin.com" matches "linkedin.com"). The one domain-matching rule
@@ -345,16 +416,29 @@ def _combine_claim_sources(transcript: str | None, extra_context: str | None, do
 def _parse_claims(content: str) -> list[dict[str, Any]]:
     """Parses the JSON claims list out of a Gemini response, tolerating
     markdown code fences the model sometimes wraps the JSON in. Each item is
-    expected to be {"claim", "category", "search_query", "source"}; a bare
-    string is tolerated too (category defaults to "specific", search_query
-    falls back to the claim text itself, source to "transcript") in case the
-    model ignores the object shape. A "general" claim (scale/capability/
-    reputation/internal-metric assertion, no specific number/date/name/
-    entity attached) keeps search_query as None rather than defaulting it to
-    the claim text - see _select_targeted_claims, which relies on that None
-    to keep general claims out of Pass B search entirely; they're judged in
-    synthesis against already-gathered Pass A data instead. Returns the
-    non-empty, stripped claim objects.
+    expected to be {"claim", "category", "search_query", "source", "position"};
+    a bare string is tolerated too (category defaults to "specific",
+    search_query falls back to the claim text itself, source to
+    "transcript") in case the model ignores the object shape. A "general"
+    claim (scale/capability/reputation/internal-metric assertion, no
+    specific number/date/name/entity attached) keeps search_query as None
+    rather than defaulting it to the claim text - see
+    _select_targeted_claims, which relies on that None to keep general
+    claims out of Pass B search entirely; they're judged in synthesis
+    against already-gathered Pass A data instead. Returns the non-empty,
+    stripped claim objects, ALWAYS sorted into interview order (see below) -
+    the returned dicts carry exactly {"claim", "category", "search_query",
+    "source"}, same as before "position" existed.
+
+    Interview order is enforced here in Python, not just trusted from the
+    model's raw JSON array order: each item's own "position" (an int the
+    extraction prompt asks for - see _extract_claims) is the primary sort
+    key, with the item's index in the raw array as a stable tie-breaker/
+    fallback whenever "position" is missing or isn't a plain int. This
+    guarantees claims come out in the order they were stated regardless of
+    any quirk in how the model happened to order its JSON array - fixing a
+    bug where the synthesis report's claim order didn't match interview
+    order (2026-08-02).
 
     Parsing goes through the shared llm_json.parse_llm_json (the helper every
     other agent uses) - it tolerates leading prose, trailing text, and
@@ -364,7 +448,7 @@ def _parse_claims(content: str) -> list[dict[str, Any]]:
     raw_claims = parsed.get("claims", [])
 
     claims: list[dict[str, Any]] = []
-    for item in raw_claims:
+    for original_index, item in enumerate(raw_claims):
         if isinstance(item, dict):
             claim_text = item.get("claim")
             if not isinstance(claim_text, str) or not claim_text.strip():
@@ -377,9 +461,22 @@ def _parse_claims(content: str) -> list[dict[str, Any]]:
                 search_query = claim_text.strip()
             source = item.get("source")
             source = source.strip() if isinstance(source, str) and source.strip() else "transcript"
-            claims.append({"claim": claim_text.strip(), "category": category, "search_query": search_query, "source": source})
+            position = item.get("position")
+            position = position if isinstance(position, int) and not isinstance(position, bool) else original_index
+            claims.append({
+                "claim": claim_text.strip(), "category": category, "search_query": search_query, "source": source,
+                "_position": position, "_original_index": original_index,
+            })
         elif isinstance(item, str) and item.strip():
-            claims.append({"claim": item.strip(), "category": "specific", "search_query": item.strip(), "source": "transcript"})
+            claims.append({
+                "claim": item.strip(), "category": "specific", "search_query": item.strip(), "source": "transcript",
+                "_position": original_index, "_original_index": original_index,
+            })
+
+    claims.sort(key=lambda c: (c["_position"], c["_original_index"]))
+    for claim in claims:
+        del claim["_position"]
+        del claim["_original_index"]
     return claims
 
 

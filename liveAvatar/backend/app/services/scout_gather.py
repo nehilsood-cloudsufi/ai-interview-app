@@ -12,8 +12,8 @@ from app.services import gemini_client, page_fetcher, scout_utils, web_search_cl
 
 logger = logging.getLogger(__name__)
 
-_RELATED_FETCH_LIMIT = 1  # how many of a search's top results get their full page text fetched (biggest single time sink in the pipeline)
-_CLAIM_EXTRACTION_TIMEOUT_SECONDS = 30.0  # httpx timeout for the single-attempt claim-extraction call
+_RELATED_FETCH_LIMIT = 2  # how many of a search's top results get their full page text fetched (biggest single time sink in the pipeline)
+_CLAIM_EXTRACTION_TIMEOUT_SECONDS = 60.0  # httpx timeout for the single-attempt claim-extraction call - raised from 30s (2026-08-03): a real transcript was observed exceeding 30s end-to-end, causing the call to time out and silently return zero claims instead of just running a bit longer
 _MAX_CLAIM_QUERY_CHARS = 200  # claim search_query used for a Pass B targeted search
 _TARGETED_SEARCH_MAX_RESULTS = 3  # Pass B results sliced to this many client-side, keeping the per-claim source list tight
 _MAX_LINK_LOOKUPS = 5  # cap on no-scrape link lookups per run - footer link farms must not eat the gather budget
@@ -26,14 +26,23 @@ _MAX_LINK_LOOKUPS = 5  # cap on no-scrape link lookups per run - footer link far
 _FetchCache = dict[str, "asyncio.Future[str | None]"]
 
 
+async def _fetch_page_text_timed(url: str) -> str | None:
+    """page_fetcher.fetch_page_text with a per-URL timing log - split out of
+    _fetch_text_cached so a cache HIT (a concurrent enrichment task awaiting
+    a fetch some other task already kicked off) never logs a duplicate
+    timing line for the same URL."""
+    with scout_utils._timed(f"page fetch: {url}"):
+        return await page_fetcher.fetch_page_text(url)
+
+
 async def _fetch_text_cached(url: str, cache: _FetchCache | None) -> str | None:
     """page_fetcher.fetch_page_text with per-run dedup (see _FetchCache).
     cache=None (direct test calls) degrades to an uncached fetch."""
     if cache is None:
-        return await page_fetcher.fetch_page_text(url)
+        return await _fetch_page_text_timed(url)
     future = cache.get(url)
     if future is None:
-        future = asyncio.ensure_future(page_fetcher.fetch_page_text(url))
+        future = asyncio.ensure_future(_fetch_page_text_timed(url))
         cache[url] = future
     return await future
 
@@ -83,12 +92,12 @@ async def _enrich_with_full_text(
     return enriched
 
 
-async def _lookup_no_scrape_link(url: str, domain: str, cache: _FetchCache | None = None) -> dict[str, Any]:
+async def _lookup_no_scrape_link(url: str, domain: str, company_name: str = "", cache: _FetchCache | None = None) -> dict[str, Any]:
     """Runs a targeted search for a login-walled platform link (LinkedIn,
     Twitter/X, etc.) instead of scraping it directly. Returns a dict with
     `full_profile_accessible` always False - the report must say this is a
     partial view, never the complete profile."""
-    hits = await web_search_client.search(f"site:{domain} {url} overview")
+    hits = await web_search_client.search(f"site:{domain} {url} overview", company_name=company_name)
     return {"url": url, "domain": domain, "results": await _enrich_with_full_text(hits, cache=cache), "full_profile_accessible": False}
 
 
@@ -125,10 +134,15 @@ async def _fill_blind_search(state: "_GatherState", company_name: str, cache: _F
                 time_range=settings.scout_recency_bias_time_range
                 if template in _RECENCY_BIASED_BLIND_SEARCH_QUERY_TEMPLATES
                 else None,
+                company_name=company_name,
             )
             relevant_hits = scout_utils._filter_relevant(hits, company_name)
             if not relevant_hits:
                 return
+            # Sorted by domain (alphabetical) for deterministic result order
+            # across runs of the same query - selection/relevance filtering
+            # above is unaffected, only the final presentation order.
+            relevant_hits = sorted(relevant_hits, key=lambda hit: scout_utils._domain_of(hit["url"]) or "")
             entry = {"query": query, "results": await _enrich_with_full_text(relevant_hits, cache=cache)}
             state.blind_search.append(entry)
             state.already_fetched_urls.update(result["url"] for result in entry["results"])
@@ -205,7 +219,7 @@ async def _derive_company_website(
         )
         return preferred or mentioned[0]
 
-    hits = await web_search_client.search(f"{company_name} official website")
+    hits = await web_search_client.search(f"{company_name} official website", company_name=company_name)
     acceptable_domain: str | None = None
     for hit in hits:
         domain = scout_utils._domain_of(hit["url"])
@@ -241,12 +255,15 @@ async def _gather_relationship_search(company_name: str, cache: _FetchCache | No
     if not entity:
         return []
     query = f"{company_name} {entity}"
-    hits = await web_search_client.search(query)
+    hits = await web_search_client.search(query, company_name=company_name)
     if not hits:
         return []
     relevant_hits = scout_utils._filter_relevant(hits, company_name)
     if not relevant_hits:
         return []
+    # Sorted by domain (alphabetical) for deterministic result order across
+    # runs of the same query - relevance filtering above is unaffected.
+    relevant_hits = sorted(relevant_hits, key=lambda hit: scout_utils._domain_of(hit["url"]) or "")
     return [{"query": query, "results": await _enrich_with_full_text(relevant_hits, cache=cache)}]
 
 
@@ -269,17 +286,20 @@ async def _gather_representative_search(
     if not representative_name or not representative_name.strip():
         return []
     query = f"{representative_name} {company_name}"
-    hits = await web_search_client.search(query)
+    hits = await web_search_client.search(query, company_name=company_name)
     if not hits:
         return []
     relevant_hits = scout_utils._filter_relevant(hits, company_name, extra_name=representative_name)
     if not relevant_hits:
         return []
+    # Sorted by domain (alphabetical) for deterministic result order across
+    # runs of the same query - relevance filtering above is unaffected.
+    relevant_hits = sorted(relevant_hits, key=lambda hit: scout_utils._domain_of(hit["url"]) or "")
     return [{"query": query, "results": await _enrich_with_full_text(relevant_hits, cache=cache)}]
 
 
 async def _fill_link_lookups(
-    state: "_GatherState", discovered_urls: list[str], cache: _FetchCache | None = None
+    state: "_GatherState", discovered_urls: list[str], company_name: str = "", cache: _FetchCache | None = None
 ) -> None:
     """No-scrape-domain targeted-search lookups for login-walled URLs
     discovered in extra_context, an attached document, or the website text
@@ -304,7 +324,7 @@ async def _fill_link_lookups(
 
     async def _one_lookup(url: str, domain: str) -> None:
         try:
-            lookup = await _lookup_no_scrape_link(url, domain, cache=cache)
+            lookup = await _lookup_no_scrape_link(url, domain, company_name, cache=cache)
             state.link_lookups.append(lookup)
             state.already_fetched_urls.add(url)
             state.already_fetched_urls.update(result["url"] for result in lookup["results"])
@@ -316,74 +336,102 @@ async def _fill_link_lookups(
     state.link_lookups.sort(key=lambda lookup: discovery_order.index(lookup["url"]))
 
 
-async def _extract_claims(transcript: str | None, extra_context: str | None, documents: list[str] | None) -> list[dict[str, Any]]:
-    """Pass B, step 1: one Gemini call that pulls concrete, checkable factual
-    claims out of the transcript, the intake form's free-text "anything else"
-    field, and any attached documents - all three are candidate-provided
-    statements about the company that should be checked against public data,
-    treated as equally-weighted inputs. Skips opinions, plans, and vague/
-    unfalsifiable statements. Covers ANY factual topic (products/services,
-    workforce, clients, revenue, offices, ownership, milestones), not just
-    technical ones, so this works for any industry. Returns the extracted
-    claims (each with its own short web-search query and source label), or []
-    on any error or when none of the three inputs were provided (soft-fails
-    so a claim-extraction failure can never abort the whole run)."""
-    combined = scout_utils._combine_claim_sources(transcript, extra_context, documents)
+# Shared system prompt behind both _extract_claims (transcript + extra_context)
+# and _extract_document_claims (documents only) - identical extraction rules;
+# only the combined input text passed alongside this prompt differs between
+# the two callers (see _run_claim_extraction_call).
+_CLAIM_EXTRACTION_SYSTEM_PROMPT = (
+    "Extract a JSON list of EVERY factual statement the company "
+    "representative made, drawn from the labeled sections below "
+    "(an interview transcript, additional free-text context they "
+    "provided, and/or attached documents - not every section will "
+    "be present). Treat claims from every section as equally "
+    "weighted candidate claims about the company. A factual "
+    "statement is anything asserted as true about the company, "
+    "whether specific and checkable (a number, date, name, "
+    "product or service, client, office location, milestone, "
+    "industry ranking, award, certification, or partnership) or "
+    "general (a scale/size assertion like 'thousands of "
+    "deployments' or 'millions of users', a capability claim like "
+    "'global presence' or 'Fortune 500 clients', a reputation "
+    "claim like 'industry leading' or 'rapid growth', or an "
+    "internal metric like '95% retention rate'). A ranking or "
+    "award claim (e.g. 'we were ranked #1 by Gartner in 2025') IS "
+    "a checkable factual claim, not an opinion - include it. The "
+    "ONLY things to skip are pure opinions with no checkable "
+    "content (e.g. 'we think collaboration matters') and vague, "
+    "contentless intentions (e.g. 'we're planning to expand') - "
+    "every other factual assertion about the company gets "
+    "extracted, no matter how general or vague it sounds. A "
+    "roadmap or development statement that names specific "
+    "capabilities, products, or technologies being built (e.g. "
+    "'we are developing AI agents, governance capabilities, and "
+    "industry-specific AI solutions') is NOT a vague plan to "
+    "skip - extract it as a \"specific\" claim with a search "
+    "query, naming the capabilities mentioned. A partnership-"
+    "model preference (e.g. 'we prefer co-innovation "
+    "partnerships') must ALWAYS be extracted, however it is "
+    "phrased - never skip a partnership-model statement as a "
+    "mere opinion, since it is a key evaluation criterion. "
+    "Extract claims EXACTLY as the vendor stated them - do "
+    "not split, do not merge, do not rephrase. If the "
+    "vendor said 'we serve banking, insurance, healthcare, "
+    "government, and manufacturing' - extract that as ONE "
+    "claim exactly as stated. If the vendor said 'we offer "
+    "watsonx, Red Hat OpenShift, and IBM Cloud' - extract "
+    "that as ONE claim. If the vendor said 'we are "
+    "developing AI copilots and agentic automation' - "
+    "extract that as ONE claim. The only transformation "
+    "allowed is minor grammatical cleanup to make the claim "
+    "a clear statement - never change the scope, subject, "
+    "or meaning of what the vendor said. Extract claims about "
+    "ANY factual topic - products "
+    "or services, workforce, clients, revenue, offices, "
+    "ownership, milestones, rankings, awards, certifications, "
+    "partnerships, scale, reach, reputation, etc. - not only "
+    "technical topics; this company may not be a technology "
+    "company at all. For each claim, tag it with a \"category\" "
+    "of exactly \"specific\" (it names a verifiable number, date, "
+    "name, or entity) or \"general\" (a scale, capability, "
+    "reputation, or internal-metric assertion with no such "
+    "specific anchor). For a \"specific\" claim, also produce a "
+    "short web-search phrase (3 to 5 words) that would help "
+    "verify it; for a \"general\" claim, set \"search_query\" to "
+    "null - it will be checked against already-gathered company "
+    "data instead of a new search. Also tag which section each "
+    "claim came from. Also tag each claim with its \"position\": "
+    "an integer starting at 0, giving the exact order the claims "
+    "were stated across the sections (top to bottom, transcript "
+    "then context then documents) - number them sequentially in "
+    "the order you encounter them as you read, never reordered by "
+    "topic or importance; this position is what the final report "
+    "uses to preserve interview order. Respond with STRICTLY a "
+    "single JSON object (no prose, no markdown fences) of exactly "
+    'this shape: {"claims": [{"claim": "<claim text>", "category": '
+    '"specific"|"general", "search_query": "<3-5 word search '
+    'phrase or null>", "source": "<transcript|context|document>", '
+    '"position": <int>}, ...]}. If there are no extractable '
+    'factual claims, return {"claims": []}.'
+)
+
+
+async def _run_claim_extraction_call(combined: str) -> list[dict[str, Any]]:
+    """Shared Gemini call + parsing behind both _extract_claims and
+    _extract_document_claims - same prompt/schema/timeout/retry behavior;
+    only `combined` (the already-built, labeled input text) differs. Returns
+    [] on any error or when there's no API key/content to extract from
+    (soft-fails so a claim-extraction failure can never abort the whole
+    run)."""
     if not settings.gemini_api_key or not combined.strip():
         return []
 
     payload = {
         "model": settings.scout_gemini_model,
         "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Extract a JSON list of EVERY factual statement the company "
-                    "representative made, drawn from the labeled sections below "
-                    "(an interview transcript, additional free-text context they "
-                    "provided, and/or attached documents - not every section will "
-                    "be present). Treat claims from every section as equally "
-                    "weighted candidate claims about the company. A factual "
-                    "statement is anything asserted as true about the company, "
-                    "whether specific and checkable (a number, date, name, "
-                    "product or service, client, office location, milestone, "
-                    "industry ranking, award, certification, or partnership) or "
-                    "general (a scale/size assertion like 'thousands of "
-                    "deployments' or 'millions of users', a capability claim like "
-                    "'global presence' or 'Fortune 500 clients', a reputation "
-                    "claim like 'industry leading' or 'rapid growth', or an "
-                    "internal metric like '95% retention rate'). A ranking or "
-                    "award claim (e.g. 'we were ranked #1 by Gartner in 2025') IS "
-                    "a checkable factual claim, not an opinion - include it. The "
-                    "ONLY things to skip are pure opinions/preferences (e.g. 'we "
-                    "prefer co-innovation') and plans/intentions (e.g. 'we're "
-                    "planning to expand') - every other factual assertion about "
-                    "the company gets extracted, no matter how general or vague "
-                    "it sounds. Extract claims about ANY factual topic - products "
-                    "or services, workforce, clients, revenue, offices, "
-                    "ownership, milestones, rankings, awards, certifications, "
-                    "partnerships, scale, reach, reputation, etc. - not only "
-                    "technical topics; this company may not be a technology "
-                    "company at all. For each claim, tag it with a \"category\" "
-                    "of exactly \"specific\" (it names a verifiable number, date, "
-                    "name, or entity) or \"general\" (a scale, capability, "
-                    "reputation, or internal-metric assertion with no such "
-                    "specific anchor). For a \"specific\" claim, also produce a "
-                    "short web-search phrase (3 to 5 words) that would help "
-                    "verify it; for a \"general\" claim, set \"search_query\" to "
-                    "null - it will be checked against already-gathered company "
-                    "data instead of a new search. Also tag which section each "
-                    "claim came from. Respond with STRICTLY a single JSON object "
-                    "(no prose, no markdown fences) of exactly this shape: "
-                    '{"claims": [{"claim": "<claim text>", "category": '
-                    '"specific"|"general", "search_query": "<3-5 word search '
-                    'phrase or null>", "source": "<transcript|context|document>"}, '
-                    '...]}. If there are no extractable factual claims, return '
-                    '{"claims": []}.'
-                ),
-            },
+            {"role": "system", "content": _CLAIM_EXTRACTION_SYSTEM_PROMPT},
             {"role": "user", "content": combined},
         ],
+        "temperature": 0,
     }
 
     try:
@@ -402,6 +450,58 @@ async def _extract_claims(transcript: str | None, extra_context: str | None, doc
     except Exception as exc:
         logger.warning("Claim extraction failed: %s", exc)
         return []
+
+
+async def _extract_claims(transcript: str | None, extra_context: str | None) -> list[dict[str, Any]]:
+    """Pass B, step 1a: one Gemini call that pulls concrete, checkable
+    factual claims out of the transcript and the intake form's free-text
+    "anything else" field - both are candidate-provided statements about the
+    company that should be checked against public data, treated as equally-
+    weighted inputs. Skips opinions, plans, and vague/unfalsifiable
+    statements. Covers ANY factual topic (products/services, workforce,
+    clients, revenue, offices, ownership, milestones), not just technical
+    ones, so this works for any industry. Returns the extracted claims (each
+    with its own short web-search query and source label), or [] on any
+    error or when neither input was provided.
+
+    Deliberately does NOT include documents - those are extracted separately
+    by _extract_document_claims, so document-derived claims get their own
+    "Document Claims" report section and their own targeted search, kept
+    entirely apart from transcript/extra_context claims (see
+    scout_system_prompt's DOCUMENT CONTRADICTION RULE and "## Document
+    Claims" section)."""
+    combined = scout_utils._combine_claim_sources(transcript, extra_context, None)
+    return await _run_claim_extraction_call(combined)
+
+
+def _redact_documents(documents: list[str] | None) -> list[str]:
+    """Redacts PII from every non-blank attached document's text - this is
+    the one candidate-provided input that previously reached a Gemini call
+    (claim extraction) without ever going through _redact_pii (transcript/
+    extra_context aren't redacted either, but documents are singled out
+    here because they also flow into the synthesis payload verbatim for the
+    DOCUMENT CONTRADICTION RULE check - see run_scout's `sources["documents"]`).
+    Blank/None entries are dropped entirely rather than redacted to empty
+    strings."""
+    return [scout_utils._redact_pii(doc) for doc in (documents or []) if doc and doc.strip()]
+
+
+async def _extract_document_claims(documents: list[str] | None) -> list[dict[str, Any]]:
+    """Pass B, step 1b: the document-only counterpart to _extract_claims -
+    same extraction prompt/schema (via _run_claim_extraction_call), but the
+    combined input text is built from ONLY the attached documents (never the
+    transcript or extra_context), so a document-stated fact is extracted and
+    later verified entirely independently of anything the vendor said in
+    the interview. Document text is redacted via _redact_documents BEFORE
+    being combined and sent to Gemini - this fixes the previously-known gap
+    where document text was the one candidate-provided input that never
+    passed through PII redaction on its way into a Gemini call. Returns []
+    if there are no non-blank documents."""
+    redacted_documents = _redact_documents(documents)
+    if not redacted_documents:
+        return []
+    combined = scout_utils._combine_claim_sources(None, None, redacted_documents)
+    return await _run_claim_extraction_call(combined)
 
 
 async def _gather_targeted(
@@ -425,8 +525,12 @@ async def _gather_targeted(
     selected = scout_utils._select_targeted_claims(claims)
 
     async def _search_claim(claim_obj: dict[str, Any]) -> list[dict[str, Any]]:
-        hits = await web_search_client.search(claim_obj["search_query"][:_MAX_CLAIM_QUERY_CHARS])
-        return scout_utils._filter_relevant(hits, company_name)[:_TARGETED_SEARCH_MAX_RESULTS]
+        hits = await web_search_client.search(claim_obj["search_query"][:_MAX_CLAIM_QUERY_CHARS], company_name=company_name)
+        selected_hits = scout_utils._filter_relevant(hits, company_name)[:_TARGETED_SEARCH_MAX_RESULTS]
+        # Sorted by domain (alphabetical) for deterministic result order
+        # across runs of the same query - which hits get selected above
+        # (relevance-ranked, capped) is unaffected, only their final order.
+        return sorted(selected_hits, key=lambda hit: scout_utils._domain_of(hit["url"]) or "")
 
     raw_results = await asyncio.gather(*(_search_claim(claim_obj) for claim_obj in selected), return_exceptions=True)
 
@@ -475,6 +579,20 @@ class _GatherState:
         # search is skipped, capped, or deduped to zero results).
         self.claim_details: list[dict[str, Any]] = []
         self.targeted_search: list[dict[str, Any]] = []
+        # Document claims/search are kept entirely separate from the above -
+        # extracted only from `documents` (never transcript/extra_context),
+        # verified via their own dedicated targeted search, and rendered in
+        # their own "## Document Claims" report section (see
+        # scout_gather._extract_document_claims and
+        # data_scout_agent.run_scout's `sources["document_claims"]`).
+        self.document_claims: list[str] = []
+        self.document_claim_details: list[dict[str, Any]] = []
+        self.document_targeted_search: list[dict[str, Any]] = []
+        # Redacted full document texts, carried alongside document_claims so
+        # the synthesis prompt can apply the DOCUMENT CONTRADICTION RULE to
+        # Interview Claims (checking a transcript claim against document
+        # text directly, not just against document-derived claims).
+        self.document_texts: list[str] = []
         self.already_fetched_urls: set[str] = set()
 
 
@@ -499,7 +617,8 @@ async def _run_pass_a(
     deadline firing mid-run and one source blowing up preserve everything
     the other sources already finished, honoring _GatherState's
     partial-progress contract for timeouts AND exceptions alike."""
-    company_website = await _derive_company_website(company_name, extra_context, documents)
+    with scout_utils._timed("website derivation search"):
+        company_website = await _derive_company_website(company_name, extra_context, documents)
     state.company_website = company_website
 
     async def _fill_website() -> None:
@@ -538,10 +657,11 @@ async def _run_pass_a(
             state.already_fetched_urls.update(result["url"] for result in entry["results"])
 
     async def _guarded(name: str, coro: Any) -> None:
-        try:
-            await coro
-        except Exception as exc:
-            logger.warning("Pass A %s failed: %s: %s", name, type(exc).__name__, exc)
+        with scout_utils._timed(name):
+            try:
+                await coro
+            except Exception as exc:
+                logger.warning("Pass A %s failed: %s: %s", name, type(exc).__name__, exc)
 
     await asyncio.gather(
         _guarded("website fetch", _fill_website()),
@@ -561,37 +681,44 @@ async def _run_pass_a(
         text_blobs.extend(subpage["text"] for subpage in page["subpages"])
     discovered_urls = scout_utils._extract_urls(text_blobs)
 
-    await _guarded("link lookups", _fill_link_lookups(state, discovered_urls, cache=cache))
+    await _guarded("link lookups", _fill_link_lookups(state, discovered_urls, company_name, cache=cache))
 
 
-async def _run_pass_b(
-    state: _GatherState,
-    company_name: str,
-    transcript: str | None,
-    extra_context: str | None,
-    documents: list[str] | None,
-    cache: _FetchCache | None = None,
-) -> None:
-    """Pass B: enrichment from candidate-provided inputs - the transcript,
-    the intake form's free-text context, and any attached documents - all
-    treated as equally-weighted sources of claims to check. Runs only if at
-    least one of the three was actually provided. Writes results into
-    `state` (both the plain claim strings and the full tagged claim objects
-    - see _GatherState.claim_details); returns nothing."""
-    has_input = (
-        (transcript and transcript.strip())
-        or (extra_context and extra_context.strip())
-        or any(doc and doc.strip() for doc in (documents or []))
-    )
+async def _extract_claims_step(
+    transcript: str | None, extra_context: str | None
+) -> list[dict[str, Any]]:
+    """Pass B, step 1a (interview claim extraction) - split out of the old
+    _run_pass_b so _gather_all can run this CONCURRENTLY with Pass A (see
+    _gather_all): extraction is a Gemini call over the transcript/
+    extra_context alone - neither of which come from Pass A - so serializing
+    it strictly after Pass A (the pre-2026-08-01 behavior) wasted whichever
+    of the two finished first entirely off the critical path. Only the
+    targeted-search step below genuinely needs Pass A's already_fetched_urls
+    (for dedup), so that part still waits for Pass A to finish. Runs only if
+    at least one of the two candidate inputs was actually provided; returns
+    [] otherwise. Documents are handled entirely separately by
+    _extract_document_claims_step - see that function's docstring."""
+    has_input = (transcript and transcript.strip()) or (extra_context and extra_context.strip())
     if not has_input:
-        return
-    extracted = await _extract_claims(transcript, extra_context, documents)
-    state.claims = [claim_obj["claim"] for claim_obj in extracted]
-    state.claim_details = extracted
-    if extracted:
-        state.targeted_search = await _gather_targeted(
-            extracted, state.already_fetched_urls, company_name, cache=cache
-        )
+        return []
+    with scout_utils._timed("claim extraction (Gemini)"):
+        return await _extract_claims(transcript, extra_context)
+
+
+async def _extract_document_claims_step(documents: list[str] | None) -> list[dict[str, Any]]:
+    """Pass B, step 1b (document claim extraction) - the document-only
+    counterpart to _extract_claims_step, run CONCURRENTLY alongside it and
+    Pass A in _gather_all. Kept as its own step (rather than folded into
+    _extract_claims_step) so document-derived claims never mix with
+    transcript/extra_context claims: they get their own extraction call,
+    their own targeted search, and their own "## Document Claims" report
+    section (see scout_system_prompt). Runs only if at least one non-blank
+    document was provided; returns [] otherwise."""
+    has_input = any(doc and doc.strip() for doc in (documents or []))
+    if not has_input:
+        return []
+    with scout_utils._timed("document claim extraction (Gemini)"):
+        return await _extract_document_claims(documents)
 
 
 async def _gather_all(
@@ -602,10 +729,67 @@ async def _gather_all(
     documents: list[str] | None,
     transcript: str | None,
 ) -> None:
-    """Runs Pass A then Pass B sequentially, writing results into `state` as
-    it goes (Pass B needs Pass A's already_fetched_urls for dedup). One
-    page-text fetch cache spans both passes so the same URL is never fetched
-    and parsed twice in a run. Returns nothing."""
+    """Runs Pass A and Pass B's claim extraction CONCURRENTLY - measured
+    2026-08-01: claim extraction has no actual dependency on Pass A's
+    output, so running it after Pass A finished (the old sequential design)
+    cost the extraction call's full duration (~8s in a representative run)
+    for nothing. Only Pass B's SECOND step (the per-claim targeted search)
+    genuinely needs Pass A's already_fetched_urls (for dedup), so that part
+    still runs strictly after both of the above finish. One page-text fetch
+    cache spans the whole run so the same URL is never fetched and parsed
+    twice.
+
+    Document claim extraction (_extract_document_claims_step) runs
+    alongside Pass A and interview claim extraction in the same gather -
+    same rationale (no dependency on either), and it keeps document-derived
+    claims entirely separate from transcript/extra_context claims from the
+    moment they're extracted (see scout_gather._extract_document_claims).
+
+    return_exceptions=True (matching every other concurrent gather in this
+    module - see _guarded, _gather_targeted): Pass A already swallows its
+    own per-source failures internally, but the one call inside it that
+    isn't individually guarded (_derive_company_website) can still raise:
+    if it does, the exception is logged here rather than also discarding
+    the two claim-extraction steps' independently-obtained results,
+    consistent with _GatherState's partial-progress philosophy (one piece
+    failing must not lose what another, unrelated piece already produced)."""
     cache: _FetchCache = {}
-    await _run_pass_a(state, company_name, representative_name, extra_context, documents, cache=cache)
-    await _run_pass_b(state, company_name, transcript, extra_context, documents, cache=cache)
+    pass_a_result, extracted_result, document_extracted_result = await asyncio.gather(
+        _run_pass_a(state, company_name, representative_name, extra_context, documents, cache=cache),
+        _extract_claims_step(transcript, extra_context),
+        _extract_document_claims_step(documents),
+        return_exceptions=True,
+    )
+    if isinstance(pass_a_result, BaseException):
+        logger.warning("Pass A failed: %s: %s", type(pass_a_result).__name__, pass_a_result)
+    if isinstance(extracted_result, BaseException):
+        logger.warning("Claim extraction step failed: %s: %s", type(extracted_result).__name__, extracted_result)
+        extracted_result = []
+    if isinstance(document_extracted_result, BaseException):
+        logger.warning(
+            "Document claim extraction step failed: %s: %s",
+            type(document_extracted_result).__name__, document_extracted_result,
+        )
+        document_extracted_result = []
+
+    state.claims = [claim_obj["claim"] for claim_obj in extracted_result]
+    state.claim_details = extracted_result
+    state.document_claims = [claim_obj["claim"] for claim_obj in document_extracted_result]
+    state.document_claim_details = document_extracted_result
+    state.document_texts = _redact_documents(documents)
+
+    if extracted_result:
+        with scout_utils._timed("targeted per-claim search"):
+            state.targeted_search = await _gather_targeted(
+                extracted_result, state.already_fetched_urls, company_name, cache=cache
+            )
+    if document_extracted_result:
+        # Runs sequentially after the interview targeted search above (not
+        # concurrently with it) so both can safely dedup against the same
+        # state.already_fetched_urls set without racing on its mutation -
+        # still entirely its own dedicated search per document claim,
+        # completely separate from targeted_search/interview claims.
+        with scout_utils._timed("document targeted per-claim search"):
+            state.document_targeted_search = await _gather_targeted(
+                document_extracted_result, state.already_fetched_urls, company_name, cache=cache
+            )

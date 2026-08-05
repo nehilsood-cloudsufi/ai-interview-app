@@ -70,6 +70,7 @@ async def run(state: InterviewState, session_id: str, payload: dict) -> None:
                         state.vendor_context,
                         None,
                         render_transcript(state.turns),
+                        profile.email,
                     ),
                     timeout=_SCOUT_DEADLINE_SECONDS,
                 )
@@ -79,6 +80,9 @@ async def run(state: InterviewState, session_id: str, payload: dict) -> None:
                     sources=scout_result["sources"],
                     findings_ok=scout_result["findings_ok"],
                     company_website=scout_result["company_website"],
+                    representative_verification=scout_result["representative_verification"],
+                    claims_report=scout_result["claims_report"],
+                    structured_findings=scout_result.get("structured_findings"),
                 )
             except Exception as e:
                 logger.warning(

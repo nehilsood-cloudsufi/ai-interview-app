@@ -6,9 +6,71 @@ import httpx
 import pytest
 import respx
 
+from app.config import settings
 from app.services import data_scout_agent, scout_gather, scout_utils
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+_DEFAULT_VERIFICATION_JSON = {
+    "tied_to_stated_company": False,
+    "role": "unknown",
+    "background": {"tenure": "not found", "projects": [], "focus_areas": []},
+    "summary": "no data",
+    "citations": [],
+}
+
+
+def _gemini_dispatch(*, claims_json=None, document_claims_json=None, verification_json=None, synthesis_content="report"):
+    """Builds a respx side_effect callable that routes one chat/completions
+    request to the right canned response by CONTENT (the response_format's
+    json_schema name, or the system prompt's own wording) rather than by
+    call order. Needed since 2026-08-01: representative verification's
+    extraction call and the main synthesis call are independent, CONCURRENT
+    Gemini calls, so a fixed positional side_effect list can no longer
+    assume which one lands in which slot (claim extraction, meanwhile, runs
+    concurrently with Pass A - which makes no Gemini calls of its own - so
+    it remains reliably the first chat/completions call chronologically,
+    but is routed by content here too for one consistent dispatcher).
+
+    Interview claim extraction and document claim extraction (see Change 1)
+    share the exact same system prompt, so they're distinguished by the USER
+    message instead: a document-only extraction call's combined text always
+    contains "Attached Document" (see scout_utils._combine_claim_sources),
+    which an interview (transcript/extra_context) call's never does."""
+
+    def _dispatch(request):
+        body = json.loads(request.content)
+        schema_name = (body.get("response_format") or {}).get("json_schema", {}).get("name")
+        if schema_name == "representative_verification":
+            content = json.dumps(verification_json if verification_json is not None else _DEFAULT_VERIFICATION_JSON)
+            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+        system_content = body["messages"][0]["content"]
+        if "Extract a JSON list of EVERY factual statement" in system_content:
+            user_message = body["messages"][1]["content"]
+            if "Attached Document" in user_message:
+                content = json.dumps(document_claims_json if document_claims_json is not None else {"claims": []})
+            else:
+                content = json.dumps(claims_json if claims_json is not None else {"claims": []})
+            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": synthesis_content}}]})
+
+    return _dispatch
+
+
+def _synthesis_request_body(route) -> dict:
+    """Finds the synthesis call among a mocked route's captured calls by the
+    same content-based rule _gemini_dispatch uses (never by position/order -
+    representative verification and synthesis are concurrent, so their
+    relative call order isn't guaranteed)."""
+    for call in route.calls:
+        body = json.loads(call.request.content)
+        schema_name = (body.get("response_format") or {}).get("json_schema", {}).get("name")
+        if schema_name == "representative_verification":
+            continue
+        if "Extract a JSON list of EVERY factual statement" in body["messages"][0]["content"]:
+            continue
+        return body
+    raise AssertionError("No synthesis call found among the mocked route's calls")
 
 
 def test_trunc_leaves_short_text_unchanged():
@@ -532,7 +594,7 @@ async def test_gather_relationship_search_does_not_apply_recency_bias(monkeypatc
     # partnership is still relevant - no time_range should be passed.
     seen_time_range = "not called"
 
-    async def fake_search(query, time_range=None):
+    async def fake_search(query, time_range=None, company_name=""):
         nonlocal seen_time_range
         seen_time_range = time_range
         return []
@@ -572,7 +634,7 @@ async def test_extract_claims_happy_path(patch_settings):
         )
     )
 
-    claims = await scout_gather._extract_claims("We have 50 employees. We opened a Boston office in 2024.", None, None)
+    claims = await scout_gather._extract_claims("We have 50 employees. We opened a Boston office in 2024.", None)
 
     assert [c["claim"] for c in claims] == ["We have 50 employees", "We opened a Boston office in 2024"]
     assert claims[0]["search_query"] == "50 employees"
@@ -580,15 +642,17 @@ async def test_extract_claims_happy_path(patch_settings):
 
 
 @respx.mock
-async def test_extract_claims_combines_transcript_context_and_documents(patch_settings):
+async def test_extract_claims_combines_transcript_and_context_but_not_documents(patch_settings):
+    # Change 1: documents are extracted separately by _extract_document_claims
+    # now, so _extract_claims (interview claim extraction) must combine only
+    # transcript + extra_context - a document passed in here must NOT appear
+    # in the extraction payload, even though the old signature accepted one.
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     route = respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": []})}}]})
     )
 
-    await scout_gather._extract_claims(
-        "We have 50 employees.", "We were founded in 2010.", ["We are ISO 9001 certified."]
-    )
+    await scout_gather._extract_claims("We have 50 employees.", "We were founded in 2010.")
 
     sent_body = json.loads(route.calls[0].request.content)
     user_message = sent_body["messages"][1]["content"]
@@ -596,8 +660,77 @@ async def test_extract_claims_combines_transcript_context_and_documents(patch_se
     assert "We have 50 employees." in user_message
     assert "Additional Context" in user_message
     assert "We were founded in 2010." in user_message
+    assert "Attached Document" not in user_message
+
+
+@respx.mock
+async def test_extract_document_claims_uses_only_document_text(patch_settings):
+    # Change 1: _extract_document_claims must extract from documents ONLY -
+    # never transcript or extra_context (it doesn't even accept them).
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": []})}}]})
+    )
+
+    await scout_gather._extract_document_claims(["We are ISO 9001 certified."])
+
+    sent_body = json.loads(route.calls[0].request.content)
+    user_message = sent_body["messages"][1]["content"]
     assert "Attached Document 1" in user_message
     assert "We are ISO 9001 certified." in user_message
+    assert "Interview Transcript" not in user_message
+    assert "Additional Context" not in user_message
+
+
+@respx.mock
+async def test_extract_document_claims_returns_claims_separately_from_interview_claims(patch_settings):
+    # End-to-end check (via _gather_all) that document claims never get
+    # mixed into state.claims/state.claim_details (interview claims).
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL, tavily_api_key=None)
+
+    def _dispatch(request):
+        body = json.loads(request.content)
+        user_message = body["messages"][1]["content"]
+        if "Attached Document" in user_message:
+            content = json.dumps({"claims": [{"claim": "ISO 9001 certified", "category": "specific", "search_query": "ISO 9001 certified", "source": "document"}]})
+        else:
+            content = json.dumps({"claims": [{"claim": "50 employees", "category": "specific", "search_query": "50 employees", "source": "transcript"}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(side_effect=_dispatch)
+
+    state = scout_gather._GatherState()
+    await scout_gather._gather_all(state, "Acme", "", None, ["We are ISO 9001 certified."], "We have 50 employees.")
+
+    assert state.claims == ["50 employees"]
+    assert state.document_claims == ["ISO 9001 certified"]
+    assert [d["claim"] for d in state.claim_details] == ["50 employees"]
+    assert [d["claim"] for d in state.document_claim_details] == ["ISO 9001 certified"]
+
+
+async def test_extract_document_claims_returns_empty_for_no_documents(patch_settings):
+    patch_settings(gemini_api_key="gem-key")
+    assert await scout_gather._extract_document_claims(None) == []
+    assert await scout_gather._extract_document_claims([]) == []
+    assert await scout_gather._extract_document_claims(["   ", ""]) == []
+
+
+@respx.mock
+async def test_extract_document_claims_redacts_pii_before_gemini_call(patch_settings):
+    # Fixes the known document PII gap: document text must be redacted
+    # before it ever reaches the extraction Gemini call.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    route = respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": []})}}]})
+    )
+
+    await scout_gather._extract_document_claims(["Contact our CEO at jane.doe@example.com or (555) 123-4567."])
+
+    sent_body = json.loads(route.calls[0].request.content)
+    user_message = sent_body["messages"][1]["content"]
+    assert "jane.doe@example.com" not in user_message
+    assert "(555) 123-4567" not in user_message
+    assert "[redacted]" in user_message
 
 
 @respx.mock
@@ -612,7 +745,7 @@ async def test_extract_claims_works_from_extra_context_alone(patch_settings):
         )
     )
 
-    claims = await scout_gather._extract_claims(None, "We are ISO certified.", None)
+    claims = await scout_gather._extract_claims(None, "We are ISO certified.")
 
     assert [c["claim"] for c in claims] == ["We are ISO certified"]
     assert claims[0]["source"] == "context"
@@ -627,7 +760,7 @@ async def test_extract_claims_tolerates_plain_string_claims(patch_settings):
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": ["A bare claim"]})}}]})
     )
 
-    claims = await scout_gather._extract_claims("Some transcript.", None, None)
+    claims = await scout_gather._extract_claims("Some transcript.", None)
 
     assert claims == [
         {"claim": "A bare claim", "category": "specific", "search_query": "A bare claim", "source": "transcript"}
@@ -642,19 +775,19 @@ async def test_extract_claims_strips_markdown_fences(patch_settings):
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": fenced}}]})
     )
 
-    claims = await scout_gather._extract_claims("Some transcript text.", None, None)
+    claims = await scout_gather._extract_claims("Some transcript text.", None)
 
     assert [c["claim"] for c in claims] == ["A claim"]
 
 
 async def test_extract_claims_returns_empty_without_api_key(patch_settings):
     patch_settings(gemini_api_key=None)
-    assert await scout_gather._extract_claims("Some transcript.", None, None) == []
+    assert await scout_gather._extract_claims("Some transcript.", None) == []
 
 
 async def test_extract_claims_returns_empty_when_all_inputs_blank(patch_settings):
     patch_settings(gemini_api_key="gem-key")
-    assert await scout_gather._extract_claims("   ", "  ", [" ", ""]) == []
+    assert await scout_gather._extract_claims("   ", "  ") == []
 
 
 @respx.mock
@@ -662,7 +795,7 @@ async def test_extract_claims_returns_empty_on_http_error(patch_settings):
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(return_value=httpx.Response(500))
 
-    assert await scout_gather._extract_claims("Some transcript.", None, None) == []
+    assert await scout_gather._extract_claims("Some transcript.", None) == []
 
 
 @respx.mock
@@ -672,7 +805,7 @@ async def test_extract_claims_returns_empty_on_malformed_json(patch_settings):
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": "not json at all"}}]})
     )
 
-    assert await scout_gather._extract_claims("Some transcript.", None, None) == []
+    assert await scout_gather._extract_claims("Some transcript.", None) == []
 
 
 # --- run_scout: blind gathering ---------------------------------------------
@@ -836,6 +969,16 @@ async def test_run_scout_gathers_representative_search(patch_settings, monkeypat
             "results": [{"title": "Jane Doe - LinkedIn", "url": "https://linkedin.com/in/janedoe", "snippet": "VP Sales at Acme", "text": None}],
         }
     ]
+    # Representative Identity Verification: the structured result is
+    # returned, and its rendered markdown is prepended ahead of the
+    # synthesized report (the mocked Gemini response "report" isn't valid
+    # JSON, so the verification LLM call itself soft-fails to NO_DATA - a
+    # technical failure, distinct from NOT_FOUND - dedicated VERIFIED/
+    # NOT_FOUND/NO_DATA scenarios live in test_representative_verification.py).
+    assert result["representative_verification"] is not None
+    assert result["representative_verification"].verdict == "NO_DATA"
+    assert result["internet_findings"].startswith("## Representative Verification")
+    assert result["internet_findings"].endswith("report")
 
 
 @respx.mock
@@ -894,7 +1037,9 @@ async def test_run_scout_completes_normally_when_relationship_search_returns_not
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
     assert "relationship_search" not in result["sources"]
-    assert result["internet_findings"] == "report"
+    # The Representative Verification section is prepended ahead of the
+    # synthesized report - assert the synthesis text survives at the end.
+    assert result["internet_findings"].endswith("report")
     assert result["findings_ok"] is True
 
 
@@ -940,12 +1085,7 @@ async def test_run_scout_gathers_link_lookups_for_no_scrape_domains_discovered(p
 
     monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
-    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        side_effect=[
-            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": []})}}]}),
-            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
-        ]
-    )
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(side_effect=_gemini_dispatch())
 
     result = await data_scout_agent.run_scout(
         "Acme Corp", "Jane Doe", "Follow us at https://linkedin.com/company/acme", None, None
@@ -975,7 +1115,7 @@ async def test_run_scout_skips_pass_b_entirely_when_no_candidate_input(patch_set
     patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
     extract_claims_called = False
 
-    async def fake_extract_claims(transcript, extra_context, documents):
+    async def fake_extract_claims(transcript, extra_context):
         nonlocal extract_claims_called
         extract_claims_called = True
         return []
@@ -1014,10 +1154,9 @@ async def test_run_scout_gathers_targeted_search_per_claim_when_transcript_given
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
     monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
     respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        side_effect=[
-            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]})}}]}),
-            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
-        ]
+        side_effect=_gemini_dispatch(
+            claims_json={"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]}
+        )
     )
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, "We have 50 employees.")
@@ -1048,15 +1187,211 @@ async def test_run_scout_extracts_claims_from_extra_context_without_transcript(p
 
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
     respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        side_effect=[
-            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": [{"claim": "We were founded in 2010", "search_query": "Acme Corp founded 2010", "source": "context"}]})}}]}),
-            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
-        ]
+        side_effect=_gemini_dispatch(
+            claims_json={"claims": [{"claim": "We were founded in 2010", "search_query": "Acme Corp founded 2010", "source": "context"}]}
+        )
     )
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", "We were founded in 2010.", None, None)
 
     assert result["interview_claims"] == ["We were founded in 2010"]
+
+
+# --- Document Claims: extracted/verified separately from Interview Claims
+# (Change 1/2/3) ---------------------------------------------------------
+
+
+@respx.mock
+async def test_run_scout_document_claims_kept_separate_from_interview_claims(patch_settings, monkeypatch):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        if "50 employees" in query:
+            return [{"title": "Acme grows", "url": "https://news.example.com/acme-50", "snippet": "Acme now has 50 staff."}]
+        if "ISO 9001" in query:
+            return [{"title": "Acme cert registry", "url": "https://certs.example.com/acme-iso", "snippet": "Acme holds ISO 9001."}]
+        return []
+
+    async def fake_fetch_page_text(url):
+        return None
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        side_effect=_gemini_dispatch(
+            claims_json={"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]},
+            document_claims_json={"claims": [{"claim": "We are ISO 9001 certified", "search_query": "Acme Corp ISO 9001", "source": "document"}]},
+        )
+    )
+
+    result = await data_scout_agent.run_scout(
+        "Acme Corp", "Jane Doe", None, ["We are ISO 9001 certified."], "We have 50 employees."
+    )
+
+    # Interview claims/search stay exactly as before - untouched by documents.
+    assert result["interview_claims"] == ["We have 50 employees"]
+    assert result["sources"]["interview_claims"] == [
+        {"claim": "We have 50 employees", "category": "specific", "source": "transcript"}
+    ]
+    assert result["sources"]["targeted_search"] == [
+        {
+            "claim": "We have 50 employees",
+            "results": [{"title": "Acme grows", "url": "https://news.example.com/acme-50", "snippet": "Acme now has 50 staff.", "text": None}],
+        }
+    ]
+    # Document claims/search are a completely separate key - never merged in.
+    assert result["sources"]["document_claims"] == [
+        {"claim": "We are ISO 9001 certified", "category": "specific", "source": "document"}
+    ]
+    assert result["sources"]["document_targeted_search"] == [
+        {
+            "claim": "We are ISO 9001 certified",
+            "results": [{"title": "Acme cert registry", "url": "https://certs.example.com/acme-iso", "snippet": "Acme holds ISO 9001.", "text": None}],
+        }
+    ]
+    assert result["sources"]["documents"] == ["We are ISO 9001 certified."]
+
+
+async def test_run_scout_omits_document_keys_when_no_documents_given(patch_settings, monkeypatch):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    with respx.mock:
+        respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(side_effect=_gemini_dispatch())
+        result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, "We have 50 employees.")
+
+    assert "document_claims" not in result["sources"]
+    assert "document_targeted_search" not in result["sources"]
+    assert "documents" not in result["sources"]
+
+
+@respx.mock
+async def test_run_scout_synthesis_payload_includes_document_data(patch_settings, monkeypatch):
+    # Confirms the new sources keys actually reach the Gemini synthesis
+    # payload (scout_utils._truncate_sources doesn't recognize them, so
+    # data_scout_agent._synthesize_internet_findings must carry them over
+    # itself - see Change 2/3).
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    route = respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        side_effect=_gemini_dispatch(
+            document_claims_json={"claims": [{"claim": "We are ISO 9001 certified", "search_query": "ISO 9001", "source": "document"}]},
+        )
+    )
+
+    await data_scout_agent.run_scout(
+        "Acme Corp", "Jane Doe", None, ["We are ISO 9001 certified."], "We have 50 employees."
+    )
+
+    synthesis_body = _synthesis_request_body(route)
+    payload_json = synthesis_body["messages"][1]["content"]
+    assert "We are ISO 9001 certified" in payload_json
+    assert '"document_claims"' in payload_json
+    assert '"documents"' in payload_json
+
+
+@respx.mock
+async def test_run_scout_redacts_document_text_before_synthesis_payload(patch_settings, monkeypatch):
+    # Change 3: _redact_pii must be applied to document text before any
+    # Gemini call - including the raw text carried into the synthesis
+    # payload for the DOCUMENT CONTRADICTION RULE check, not just the
+    # document claim-extraction call.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    route = respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(side_effect=_gemini_dispatch())
+
+    await data_scout_agent.run_scout(
+        "Acme Corp", "Jane Doe", None, ["Contact our CEO at jane.doe@example.com or (555) 123-4567."], None
+    )
+
+    synthesis_body = _synthesis_request_body(route)
+    payload_json = synthesis_body["messages"][1]["content"]
+    assert "jane.doe@example.com" not in payload_json
+    assert "(555) 123-4567" not in payload_json
+    assert "[redacted]" in payload_json
+
+
+@respx.mock
+async def test_run_scout_preserves_interview_order_despite_mixed_verdicts_and_scrambled_extraction_order(
+    patch_settings, monkeypatch
+):
+    # Regression test for the 2026-08-02 bug: claims must appear in the
+    # report in the order they were STATED in the interview, never
+    # reordered by verdict (CONTRADICTED/PARTIAL/VERIFIED/NO DATA) or by
+    # claim type. The extraction step is mocked returning claims in a
+    # SCRAMBLED array order (an LLM's raw JSON array order isn't guaranteed
+    # to match the order it read the text in) but tagged with explicit
+    # "position" values reflecting the TRUE interview order -
+    # scout_utils._parse_claims must recover that true order regardless of
+    # the scrambled array, and that corrected order must be what reaches the
+    # synthesis payload (the only place claim status labels are decided).
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    route = respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        side_effect=_gemini_dispatch(
+            claims_json={
+                "claims": [
+                    {
+                        "claim": "Revenue over $1 billion (stated third)",
+                        "category": "specific",
+                        "search_query": "revenue 1 billion",
+                        "source": "transcript",
+                        "position": 2,
+                    },
+                    {
+                        "claim": "Founded in 2010 (stated first)",
+                        "category": "specific",
+                        "search_query": "founded 2010",
+                        "source": "transcript",
+                        "position": 0,
+                    },
+                    {
+                        "claim": "Global presence (stated second)",
+                        "category": "general",
+                        "search_query": None,
+                        "source": "transcript",
+                        "position": 1,
+                    },
+                ]
+            }
+        )
+    )
+
+    result = await data_scout_agent.run_scout(
+        "Acme Corp", "Jane Doe", None, None,
+        "We were founded in 2010. We have a global presence. Our revenue is over $1 billion.",
+    )
+
+    expected_order = [
+        "Founded in 2010 (stated first)",
+        "Global presence (stated second)",
+        "Revenue over $1 billion (stated third)",
+    ]
+    assert result["interview_claims"] == expected_order
+    assert [c["claim"] for c in result["sources"]["interview_claims"]] == expected_order
+
+    # The actual payload sent to the synthesis call must list them in this
+    # same interview order too - not the scrambled extraction-array order -
+    # since that payload is all the synthesis model ever sees.
+    synthesis_body = _synthesis_request_body(route)
+    user_message = synthesis_body["messages"][1]["content"]
+    positions_in_payload = [user_message.index(claim) for claim in expected_order]
+    assert positions_in_payload == sorted(positions_in_payload)
 
 
 @respx.mock
@@ -1081,10 +1416,9 @@ async def test_run_scout_targeted_search_dedupes_against_pass_a_urls(patch_setti
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
     monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
     respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        side_effect=[
-            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]})}}]}),
-            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
-        ]
+        side_effect=_gemini_dispatch(
+            claims_json={"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]}
+        )
     )
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, "We have 50 employees.")
@@ -1108,7 +1442,9 @@ async def test_run_scout_soft_fails_when_gemini_key_missing(patch_settings, monk
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
     assert result["findings_ok"] is False
-    assert result["internet_findings"] == ""
+    # No synthesized report text (missing key) - but the independently
+    # computed Representative Verification section still renders.
+    assert result["internet_findings"].startswith("## Representative Verification")
     # Gathered sources must survive even though synthesis failed.
     assert result["sources"]["blind_search"][0]["query"] == "Acme Corp overview"
 
@@ -1252,7 +1588,7 @@ async def test_gather_blind_search_biases_only_revenue_employees_leadership_quer
     )
     calls: list[tuple[str, str | None]] = []
 
-    async def fake_search(query, time_range=None):
+    async def fake_search(query, time_range=None, company_name=""):
         calls.append((query, time_range))
         return []
 
@@ -1329,7 +1665,7 @@ async def test_run_scout_gathering_timeout_proceeds_with_partial_data(patch_sett
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
-    assert result["internet_findings"] == "report"
+    assert result["internet_findings"].endswith("report")
     assert result["findings_ok"] is True
     assert result["sources"] == {}  # nothing finished gathering before the deadline
 
@@ -1640,10 +1976,9 @@ async def test_run_scout_targeted_search_drops_unrelated_company_result(patch_se
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
     monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
     respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        side_effect=[
-            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]})}}]}),
-            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
-        ]
+        side_effect=_gemini_dispatch(
+            claims_json={"claims": [{"claim": "We have 50 employees", "search_query": "Acme Corp 50 employees", "source": "transcript"}]}
+        )
     )
 
     result = await data_scout_agent.run_scout(
@@ -1789,12 +2124,7 @@ async def test_run_scout_link_lookup_matches_no_scrape_subdomain(patch_settings,
 
     monkeypatch.setattr("app.services.page_fetcher.fetch_page_text", fake_fetch_page_text)
     monkeypatch.setattr("app.services.web_search_client.search", fake_search)
-    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
-        side_effect=[
-            httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"claims": []})}}]}),
-            httpx.Response(200, json={"choices": [{"message": {"content": "report"}}]}),
-        ]
-    )
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(side_effect=_gemini_dispatch())
 
     result = await data_scout_agent.run_scout(
         "Acme Corp", "Jane Doe", "Follow us at https://in.linkedin.com/company/acme", None, None
@@ -1872,6 +2202,209 @@ def test_parse_claims_tolerates_leading_prose():
     content = 'Here are the claims:\n{"claims": [{"claim": "Founded in 2019", "category": "specific", "search_query": "founded 2019", "source": "transcript"}]}'
     claims = scout_utils._parse_claims(content)
     assert [c["claim"] for c in claims] == ["Founded in 2019"]
+
+
+def test_parse_claims_sorts_by_position_field_regardless_of_array_order():
+    # The model's raw JSON array order isn't trusted - each claim's own
+    # "position" (interview order, per the extraction prompt) is the sort
+    # key, so a scrambled array still comes back in interview order.
+    content = json.dumps({
+        "claims": [
+            {"claim": "Third", "category": "specific", "search_query": "c", "source": "transcript", "position": 2},
+            {"claim": "First", "category": "specific", "search_query": "a", "source": "transcript", "position": 0},
+            {"claim": "Second", "category": "specific", "search_query": "b", "source": "transcript", "position": 1},
+        ]
+    })
+    claims = scout_utils._parse_claims(content)
+    assert [c["claim"] for c in claims] == ["First", "Second", "Third"]
+    # The returned dicts still carry exactly the pre-existing shape - no new
+    # "position" key leaks into what callers already depend on.
+    assert set(claims[0].keys()) == {"claim", "category", "search_query", "source"}
+
+
+def test_parse_claims_falls_back_to_array_order_when_position_missing():
+    # Backward-compatible: claims with no "position" field at all (or an
+    # older/malformed model response) keep their original array order
+    # rather than colliding or crashing.
+    content = json.dumps({
+        "claims": [
+            {"claim": "First", "category": "specific", "search_query": "a", "source": "transcript"},
+            {"claim": "Second", "category": "specific", "search_query": "b", "source": "transcript"},
+        ]
+    })
+    claims = scout_utils._parse_claims(content)
+    assert [c["claim"] for c in claims] == ["First", "Second"]
+
+
+def test_parse_claims_treats_non_integer_position_as_missing():
+    # A malformed "position" (e.g. the model emitting a string or bool)
+    # must degrade to the array-order fallback, never raise.
+    content = json.dumps({
+        "claims": [
+            {"claim": "First", "category": "specific", "search_query": "a", "source": "transcript", "position": "not-a-number"},
+            {"claim": "Second", "category": "specific", "search_query": "b", "source": "transcript", "position": True},
+        ]
+    })
+    claims = scout_utils._parse_claims(content)
+    assert [c["claim"] for c in claims] == ["First", "Second"]
+
+
+def test_scout_system_prompt_orders_claims_by_interview_position_not_verdict():
+    # Confirms the fix at the prompt level: the model must no longer be
+    # told to group claims by verdict label or claim type.
+    prompt = settings.scout_system_prompt
+    assert "same order they appear in the interview transcript" in prompt
+    assert "CONTRADICTED` first" not in prompt
+    assert "financial claims first" not in prompt
+
+
+# --- QA fix: categorized Additional Findings (Issue 8) ----------------------
+
+
+def test_scout_system_prompt_lists_all_six_finding_categories_in_order():
+    prompt = settings.scout_system_prompt
+    categories = ["📊 Financial", "👥 Leadership", "⚖️ Legal & Risk", "🤝 Partnerships", "👨‍💼 Workforce", "📰 Recent News"]
+    positions = [prompt.index(c) for c in categories]
+    assert positions == sorted(positions)
+
+
+def test_scout_system_prompt_requires_omitting_empty_category_headings():
+    assert 'never render an empty "### " heading' in settings.scout_system_prompt
+
+
+def test_scout_system_prompt_pins_aramco_bullet_to_partnerships():
+    assert "always belongs here, whether or not a relationship was found" in settings.scout_system_prompt
+
+
+# --- Document Claims / Document Contradictions prompt rules (Change 1/2/3) --
+
+
+def test_scout_system_prompt_declares_document_contradiction_rule():
+    prompt = settings.scout_system_prompt
+    assert "DOCUMENT CONTRADICTION RULE" in prompt
+    assert "first check whether any uploaded document explicitly contradicts it" in prompt
+    assert "do NOT use it as evidence for VERIFIED or PARTIAL" in prompt
+    assert "documents are self-reported and not independent verification" in prompt
+    # Must sit ahead of NO DATA's "Source count must be independent" so it
+    # governs the label BEFORE the generic internet-source rules apply.
+    assert prompt.index("DOCUMENT CONTRADICTION RULE") < prompt.index("Source count must be independent")
+
+
+def test_scout_system_prompt_declares_document_claims_section():
+    prompt = settings.scout_system_prompt
+    assert "## Document Claims" in prompt
+    assert "omit it entirely (no heading, no placeholder text) when there are none" in prompt
+    assert "document_claims" in prompt
+    assert "document_targeted_search" in prompt
+    # Document Claims must sit between Interview Claims and Additional
+    # Findings, per the required section order. rindex (not index): each
+    # heading is also named once, earlier, in the intro paragraph that lists
+    # all section names - the actual "## " heading is the LAST occurrence.
+    assert prompt.rindex("## Interview Claims") < prompt.rindex("## Document Claims") < prompt.rindex("## 📌 Additional Findings")
+
+
+def test_scout_system_prompt_declares_document_contradictions_summary_section():
+    prompt = settings.scout_system_prompt
+    assert "## Document Contradictions" in prompt
+    assert "Transcript said" in prompt
+    assert "Document says" in prompt
+    assert "Source: Document {index}" in prompt
+    assert "omit it entirely (no heading, no placeholder text) if there are none" in prompt
+    # Document Contradictions is the final section, after Additional
+    # Findings. rindex, not index - see the sibling test's comment above.
+    assert prompt.rindex("## 📌 Additional Findings") < prompt.rindex("## Document Contradictions")
+
+
+def test_scout_system_prompt_critical_data_list_includes_document_keys():
+    prompt = settings.scout_system_prompt
+    assert "documents, document_claims, document_targeted_search" in prompt
+
+
+def test_scout_claims_report_prompt_declares_category_field_with_six_values():
+    prompt = settings.scout_claims_report_prompt
+    assert '"Financial" | "Leadership" | "Legal & Risk" | "Partnerships" | "Workforce" | "Recent News"' in prompt
+
+
+def test_scout_claims_relationship_check_prompt_tags_partnerships_category():
+    assert 'category" is always "Partnerships"' in settings.scout_claims_relationship_check_prompt
+
+
+# --- QA fix: evidence directness for VERIFIED vs PARTIAL (Issue 2) ---------
+
+
+def test_scout_system_prompt_requires_direct_evidence_for_verified():
+    prompt = settings.scout_system_prompt
+    assert "EVIDENCE DIRECTNESS" in prompt
+    assert "`VERIFIED` requires at least one source that DIRECTLY confirms the claim" in prompt
+    assert "use `PARTIAL` instead of `VERIFIED`" in prompt
+
+
+def test_scout_claims_report_prompt_requires_direct_evidence_for_verified():
+    prompt = settings.scout_claims_report_prompt
+    assert "EVIDENCE DIRECTNESS" in prompt
+    assert '"VERIFIED" requires at least one source that DIRECTLY confirms the claim' in prompt
+    assert 'use "PARTIAL" instead of "VERIFIED"' in prompt
+
+
+# --- _synthesize_claims_report: category field handling ---------------------
+
+
+def _claims_report_response(claims=None, additional_findings=None) -> httpx.Response:
+    body = {"claims": claims or [], "additional_findings": additional_findings or []}
+    return httpx.Response(
+        200,
+        json={
+            "choices": [{"message": {"content": json.dumps(body)}}],
+        },
+    )
+
+
+def test_claims_report_schema_requires_category_enum_of_six_values():
+    finding_schema = data_scout_agent._CLAIMS_REPORT_SCHEMA["properties"]["additional_findings"]["items"]
+    assert finding_schema["required"] == ["text", "url", "category"]
+    assert finding_schema["properties"]["category"]["enum"] == [
+        "Financial", "Leadership", "Legal & Risk", "Partnerships", "Workforce", "Recent News",
+    ]
+
+
+@respx.mock
+async def test_synthesize_claims_report_passes_through_valid_category(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=_claims_report_response(
+            additional_findings=[{"text": "Revenue grew 20% YoY.", "url": "acme.example.com", "category": "Financial"}]
+        )
+    )
+
+    result = await data_scout_agent._synthesize_claims_report("Acme Corp", None, {})
+
+    assert result["additional_findings"] == [{"text": "Revenue grew 20% YoY.", "url": "acme.example.com", "category": "Financial"}]
+
+
+@respx.mock
+async def test_synthesize_claims_report_defaults_missing_category_to_recent_news(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=_claims_report_response(additional_findings=[{"text": "Some finding.", "url": "acme.example.com"}])
+    )
+
+    result = await data_scout_agent._synthesize_claims_report("Acme Corp", None, {})
+
+    assert result["additional_findings"][0]["category"] == "Recent News"
+
+
+@respx.mock
+async def test_synthesize_claims_report_defaults_invalid_category_to_recent_news(patch_settings):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        return_value=_claims_report_response(
+            additional_findings=[{"text": "Some finding.", "url": "acme.example.com", "category": "Not A Real Category"}]
+        )
+    )
+
+    result = await data_scout_agent._synthesize_claims_report("Acme Corp", None, {})
+
+    assert result["additional_findings"][0]["category"] == "Recent News"
 
 
 async def test_fill_link_lookups_caps_lookup_count(patch_settings, monkeypatch):
@@ -1969,5 +2502,243 @@ async def test_run_scout_survives_gather_raising_unexpectedly(patch_settings, mo
 
     result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
 
-    assert result["internet_findings"] == "report"
+    assert result["internet_findings"].endswith("report")
     assert result["interview_claims"] == ["We have 50 employees"]
+
+
+# --- structured_findings: deterministic parse of internet_findings ---------
+
+_SAMPLE_SYNTHESIS_MARKDOWN = """## Interview Claims
+
+`VERIFIED` **Specializes in data engineering and AI**
+Confirmed as a data engineering and AI company.
+↳ ZoomInfo (zoominfo.com/c/acme) — Specializes in data engineering and analytics
+↳ PR Newswire (prnewswire.com/news-releases/acme) — Global AI and data innovation company
+
+`CONTRADICTED` **Founded in 2017**
+Public records place the founding year at 2019.
+↳ LinkedIn (linkedin.com/company/acme) — Company founded in 2019
+↳ Crunchbase (crunchbase.com/organization/acme) — Founded 2019
+
+## 📌 Additional Findings
+- Opened a new office in Austin in 2026. ([PR Newswire](prnewswire.com/acme-austin))
+- Glassdoor rating 4.1/5 from 100 reviews. ([Glassdoor](glassdoor.com/acme))
+- Prior Saudi Aramco relationship found: explored an AI collaboration in 2026. ([IBM Newsroom](newsroom.ibm.com/aramco))"""
+
+
+def test_split_markdown_sections_separates_headings_and_skips_verification():
+    markdown = (
+        "## Representative Verification\n\n**Status:** — NO DATA\n\n"
+        "## Interview Claims\n\nsome claims body\n\n"
+        "## 📌 Additional Findings\n\nsome findings body"
+    )
+    sections = data_scout_agent._split_markdown_sections(markdown)
+    assert data_scout_agent._find_section(sections, "Interview Claims") == "some claims body"
+    assert data_scout_agent._find_section(sections, "Additional Findings") == "some findings body"
+    assert data_scout_agent._find_section(sections, "Representative Verification").startswith("**Status:**")
+
+
+def test_parse_claims_section_empty_placeholder_returns_empty_list():
+    assert data_scout_agent._parse_claims_section("No claims required attention.") == []
+
+
+def test_parse_claims_section_parses_label_claim_description_and_sources():
+    body = data_scout_agent._find_section(
+        data_scout_agent._split_markdown_sections(_SAMPLE_SYNTHESIS_MARKDOWN), "Interview Claims"
+    )
+    claims = data_scout_agent._parse_claims_section(body)
+    assert claims == [
+        {
+            "claim": "Specializes in data engineering and AI",
+            "label": "VERIFIED",
+            "description": "Confirmed as a data engineering and AI company.",
+            "sources": [
+                {"name": "ZoomInfo", "url": "zoominfo.com/c/acme", "note": "Specializes in data engineering and analytics"},
+                {"name": "PR Newswire", "url": "prnewswire.com/news-releases/acme", "note": "Global AI and data innovation company"},
+            ],
+        },
+        {
+            "claim": "Founded in 2017",
+            "label": "CONTRADICTED",
+            "description": "Public records place the founding year at 2019.",
+            "sources": [
+                {"name": "LinkedIn", "url": "linkedin.com/company/acme", "note": "Company founded in 2019"},
+                {"name": "Crunchbase", "url": "crunchbase.com/organization/acme", "note": "Founded 2019"},
+            ],
+        },
+    ]
+
+
+def test_parse_claims_section_skips_malformed_block_without_dropping_others():
+    body = "not a valid claim header at all\n\n`VERIFIED` **Real claim**\nDescription text.\n↳ Source (url) — note"
+    claims = data_scout_agent._parse_claims_section(body)
+    assert len(claims) == 1
+    assert claims[0]["claim"] == "Real claim"
+
+
+def test_parse_additional_findings_section_empty_placeholder_returns_empty_list():
+    assert data_scout_agent._parse_additional_findings_section("No additional findings.") == []
+
+
+def test_parse_additional_findings_section_parses_bullets_with_and_without_source():
+    body = data_scout_agent._find_section(
+        data_scout_agent._split_markdown_sections(_SAMPLE_SYNTHESIS_MARKDOWN), "Additional Findings"
+    )
+    findings = data_scout_agent._parse_additional_findings_section(body)
+    assert findings == [
+        {"text": "Opened a new office in Austin in 2026.", "source": {"name": "PR Newswire", "url": "prnewswire.com/acme-austin"}},
+        {"text": "Glassdoor rating 4.1/5 from 100 reviews.", "source": {"name": "Glassdoor", "url": "glassdoor.com/acme"}},
+        {
+            "text": "Prior Saudi Aramco relationship found: explored an AI collaboration in 2026.",
+            "source": {"name": "IBM Newsroom", "url": "newsroom.ibm.com/aramco"},
+        },
+    ]
+
+
+def test_parse_additional_findings_no_source_sentence_kept_with_null_source():
+    findings = data_scout_agent._parse_additional_findings_section(
+        "- No prior Saudi Aramco relationship found in public records."
+    )
+    assert findings == [{"text": "No prior Saudi Aramco relationship found in public records.", "source": None}]
+
+
+def test_extract_relationship_finding_returns_detail_when_found():
+    findings = [{"text": "Prior Saudi Aramco relationship found: explored AI collaboration in 2026.", "source": None}]
+    assert (
+        data_scout_agent._extract_relationship_finding(findings, "Saudi Aramco")
+        == "explored AI collaboration in 2026."
+    )
+
+
+def test_extract_relationship_finding_returns_none_when_explicitly_not_found():
+    findings = [{"text": "No prior Saudi Aramco relationship found in public records.", "source": None}]
+    assert data_scout_agent._extract_relationship_finding(findings, "Saudi Aramco") is None
+
+
+def test_extract_relationship_finding_returns_none_when_bullet_absent():
+    assert data_scout_agent._extract_relationship_finding([{"text": "Unrelated bullet.", "source": None}], "Saudi Aramco") is None
+
+
+def test_extract_relationship_finding_returns_none_when_entity_blank():
+    assert data_scout_agent._extract_relationship_finding([{"text": "anything", "source": None}], "") is None
+
+
+def test_guess_claim_category_matches_best_overlap_and_defaults_to_general():
+    claim_details = [
+        {"claim": "We have 50 employees", "category": "specific"},
+        {"claim": "Global presence across many countries", "category": "general"},
+    ]
+    assert data_scout_agent._guess_claim_category("We have 50 employees", claim_details) == "specific"
+    assert data_scout_agent._guess_claim_category("Something totally unrelated", claim_details) == "general"
+
+
+def test_build_structured_findings_none_when_findings_not_ok():
+    assert data_scout_agent._build_structured_findings("some markdown", False, "https://acme.example.com", []) is None
+
+
+def test_build_structured_findings_none_when_markdown_blank():
+    assert data_scout_agent._build_structured_findings("   ", True, None, []) is None
+
+
+def test_build_structured_findings_none_when_required_sections_missing():
+    assert data_scout_agent._build_structured_findings("## Some Other Heading\n\nbody", True, None, []) is None
+
+
+def test_build_structured_findings_degrades_to_none_on_unexpected_exception(monkeypatch):
+    def exploding_split(markdown):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(data_scout_agent, "_split_markdown_sections", exploding_split)
+    assert data_scout_agent._build_structured_findings(_SAMPLE_SYNTHESIS_MARKDOWN, True, None, []) is None
+
+
+@respx.mock
+async def test_run_scout_populates_structured_findings_on_synthesis_success(patch_settings, monkeypatch):
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL, scout_relationship_check_entity="Saudi Aramco")
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        side_effect=_gemini_dispatch(synthesis_content=_SAMPLE_SYNTHESIS_MARKDOWN)
+    )
+
+    result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    assert result["findings_ok"] is True
+    structured = result["structured_findings"]
+    assert structured is not None
+    assert structured["company_website"] == result["company_website"]
+    assert structured["findings_ok"] is True
+    assert structured["aramco_relationship"] == "explored an AI collaboration in 2026."
+    assert len(structured["claims"]) == 2
+    assert structured["claims"][0]["claim"] == "Specializes in data engineering and AI"
+    assert structured["claims"][0]["label"] == "VERIFIED"
+    assert structured["claims"][0]["category"] in ("specific", "general")
+    assert len(structured["additional_findings"]) == 3
+
+    # Regression: every pre-existing ScoutReport field is still present and
+    # of its expected type - adding structured_findings must not have
+    # displaced or renamed anything.
+    assert set(result.keys()) == {
+        "internet_findings",
+        "interview_claims",
+        "sources",
+        "findings_ok",
+        "company_website",
+        "representative_verification",
+        "claims_report",
+        "structured_findings",
+    }
+    assert isinstance(result["internet_findings"], str)
+    assert isinstance(result["interview_claims"], list)
+    assert isinstance(result["sources"], dict)
+    assert isinstance(result["findings_ok"], bool)
+
+
+@respx.mock
+async def test_run_scout_structured_findings_claims_match_internet_findings_markdown(patch_settings, monkeypatch):
+    # The structured claims must reflect exactly what's rendered in the
+    # existing internet_findings markdown - same labels, same claim text,
+    # same source count - since structured_findings is a parse of that exact
+    # text, not an independent judgment.
+    patch_settings(gemini_api_key="gem-key", gemini_base_url=GEMINI_BASE_URL)
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+    respx.post(f"{GEMINI_BASE_URL}chat/completions").mock(
+        side_effect=_gemini_dispatch(synthesis_content=_SAMPLE_SYNTHESIS_MARKDOWN)
+    )
+
+    result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    markdown = result["internet_findings"]
+    structured = result["structured_findings"]
+    for claim in structured["claims"]:
+        assert f"`{claim['label']}` **{claim['claim']}**" in markdown
+        for source in claim["sources"]:
+            assert f"↳ {source['name']} ({source['url']}) — {source['note']}" in markdown
+
+
+@respx.mock
+async def test_run_scout_structured_findings_none_when_synthesis_fails(patch_settings, monkeypatch):
+    # findings_ok False (synthesis failed) must degrade structured_findings
+    # to None too - never a partially-populated/misleading structure.
+    patch_settings(gemini_api_key=None)
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.services.web_search_client.search", fake_search)
+
+    result = await data_scout_agent.run_scout("Acme Corp", "Jane Doe", None, None, None)
+
+    assert result["findings_ok"] is False
+    assert result["structured_findings"] is None
+    # internet_findings must still be returned correctly (the independently
+    # computed Representative Verification section) regardless of the
+    # structured_findings degradation.
+    assert result["internet_findings"].startswith("## Representative Verification")

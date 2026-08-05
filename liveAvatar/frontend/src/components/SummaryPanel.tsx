@@ -1,10 +1,10 @@
 import { X, Download, Loader2, AlertTriangle, Check, ExternalLink } from 'lucide-react';
-import type { FollowupRecommendation, PipelineStatus, ScorecardData, ScoutReport, TranscriptTurn } from '../types';
+import type { FollowupRecommendation, PipelineStatus, ScorecardData, ScoutReport, TranscriptTurn, VendorProfile } from '../types';
 import { SESSIONS_SHEET_URL } from '../config';
 import { downloadTranscript } from '../utils/downloadTranscript';
+import { DataScoutReport, splitScoutMarkdown } from './DataScoutReport';
 import { FollowupPanel } from './FollowupPanel';
 import { ScorecardPanel } from './ScorecardPanel';
-import { ScoutMarkdown } from './ScoutMarkdown';
 import { TranscriptBubble } from './TranscriptBubble';
 
 interface SummaryPanelProps {
@@ -22,6 +22,9 @@ interface SummaryPanelProps {
   // fills it in. Also included in the downloaded Markdown record
   // (utils/downloadTranscript.ts).
   insights?: ScoutReport | null;
+  // Vendor identity for the structured DataScoutReport header (company/rep
+  // name/role) - the same profile object the intake form/live interview use.
+  vendorProfile?: VendorProfile | null;
   recommendation?: FollowupRecommendation | null;
   // True once the pipeline reports its Evaluator call itself failed (e.g. a
   // too-short transcript) - drives the amber note shown in place of the
@@ -103,7 +106,13 @@ function PipelineStrip({ status }: { status: PipelineStatus }) {
  * Renders nothing when there's no report yet (still scouting) or synthesis
  * failed with nothing usable to show.
  */
-function ScoutReportSection({ report }: { report: ScoutReport | null | undefined }) {
+function ScoutReportSection({
+  report,
+  vendorProfile,
+}: {
+  report: ScoutReport | null | undefined;
+  vendorProfile?: VendorProfile | null;
+}) {
   // Array.isArray guard: a stale backend still serving the pre-migration
   // insights shape (a findings array) is truthy but has no .interview_claims,
   // which would otherwise throw on the .length access below and blank the
@@ -122,26 +131,36 @@ function ScoutReportSection({ report }: { report: ScoutReport | null | undefined
     );
   }
 
+  // The structured claims_report (see types.ts) drives the DataScoutReport
+  // card layout; it renders fine with empty claims/additionalFindings, so
+  // there's a single report format regardless of whether claims_report
+  // populated (older persisted records / a failed structured-report call
+  // just show an empty claims/findings state instead of falling back to a
+  // second, differently-formatted report).
+  const claimsReport = report.claims_report;
+  // Representative Verification currently only reaches the frontend
+  // prepended to internet_findings as its own "## " Markdown block (see
+  // representative_verification.render_representative_verification) -
+  // splitScoutMarkdown pulls it back out so DataScoutReport can render it as
+  // its own card instead of a separate Markdown report underneath.
+  const { verification } = splitScoutMarkdown(report.internet_findings || '');
+
   return (
     <section>
       <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
         Data Scout Report
       </h3>
-      {report.interview_claims.length > 0 && (
-        <div className="mb-4">
-          <h4 className="text-xs font-semibold text-slate-400 mb-2">Claims made in the interview</h4>
-          <ul className="list-disc list-inside space-y-1 text-sm text-slate-300">
-            {report.interview_claims.map((claim, i) => (
-              <li key={i}>{claim}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {report.internet_findings ? (
-        <ScoutMarkdown markdown={report.internet_findings} />
-      ) : (
-        <p className="text-sm text-slate-500 italic">Research synthesis did not complete for this interview.</p>
-      )}
+      <div className="mb-4">
+        <DataScoutReport
+          companyName={vendorProfile?.company_name || 'the company'}
+          repName={vendorProfile?.contact_name || ''}
+          repRole={vendorProfile?.contact_role || ''}
+          reportDate={new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
+          claims={claimsReport?.claims ?? []}
+          additionalFindings={claimsReport?.additional_findings ?? []}
+          verificationMarkdown={verification}
+        />
+      </div>
     </section>
   );
 }
@@ -166,6 +185,7 @@ export function SummaryPanel({
   pipelineStatus,
   scorecard,
   insights,
+  vendorProfile,
   recommendation,
   evaluationFailed,
   onDismiss,
@@ -255,7 +275,7 @@ export function SummaryPanel({
           {!isGenerating && <FollowupPanel recommendation={recommendation} scorecard={scorecard} />}
 
           {/* Data Scout Agent's research report, once the pipeline fills it in */}
-          {!isGenerating && <ScoutReportSection report={insights} />}
+          {!isGenerating && <ScoutReportSection report={insights} vendorProfile={vendorProfile} />}
 
           {/* Full transcript section */}
           <section>

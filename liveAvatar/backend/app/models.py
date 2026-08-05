@@ -96,6 +96,47 @@ class ScorecardModel(BaseModel):
     status: Literal["APPROVED", "REJECTED"] | None
 
 
+class ScoutClaimSourceModel(BaseModel):
+    """One cited source for a structured claim (nested in ScoutClaimModel)."""
+
+    name: str
+    url: str
+    text: str
+
+
+class ScoutClaimModel(BaseModel):
+    """One judged claim in the structured claims report (see
+    app.services.data_scout_agent._synthesize_claims_report) - the
+    structured-JSON counterpart of one Markdown claim block in
+    `internet_findings`, for the frontend's DataScoutReport component."""
+
+    status: Literal["CONTRADICTED", "PARTIAL", "VERIFIED", "NO_DATA"]
+    claim: str
+    note: str
+    sources: list[ScoutClaimSourceModel]
+
+
+class ScoutAdditionalFindingModel(BaseModel):
+    """One bullet-equivalent entry in the structured additional-findings list.
+    `category` groups findings for the frontend's DataScoutReport component
+    (Financial/Leadership/Legal & Risk/Partnerships/Workforce/Recent News) -
+    defaults to "Recent News" for older persisted records predating this
+    field."""
+
+    text: str
+    url: str
+    category: Literal["Financial", "Leadership", "Legal & Risk", "Partnerships", "Workforce", "Recent News"] = "Recent News"
+
+
+class ScoutClaimsReportModel(BaseModel):
+    """The structured-JSON counterpart of `internet_findings` - claims kept
+    in interview order (never grouped/reordered by status), plus the
+    additional-findings list. See ScoutClaimModel/ScoutAdditionalFindingModel."""
+
+    claims: list[ScoutClaimModel]
+    additional_findings: list[ScoutAdditionalFindingModel]
+
+
 class ScoutReportModel(BaseModel):
     """The Data Scout Agent's full post-interview company research report
     (nested as `insights` in the state and finalize responses) - the
@@ -105,13 +146,20 @@ class ScoutReportModel(BaseModel):
     are the factual claims extracted from the transcript/intake material,
     `findings_ok` is False when synthesis failed but sources were still
     gathered, and `company_website` is whatever the agent derived (or None).
-    The raw `sources` dict is deliberately NOT included here - it's far too
-    large/granular for the UI."""
+    `claims_report` is the structured-JSON counterpart of `internet_findings`
+    (None if that call failed/hasn't been added to an older persisted record).
+    `structured_findings` is a SEPARATE, deterministic parse of
+    `internet_findings` (see app.services.data_scout_agent._build_structured_
+    findings) - no extra LLM call, purely additive; None when synthesis
+    failed or the parse hit anything unexpected. The raw `sources` dict is
+    deliberately NOT included here - it's far too large/granular for the UI."""
 
     internet_findings: str
     interview_claims: list[str]
     findings_ok: bool
     company_website: str | None
+    claims_report: ScoutClaimsReportModel | None = None
+    structured_findings: dict | None = None
 
 
 class FollowupRecommendationModel(BaseModel):
@@ -176,6 +224,9 @@ class CreateInterviewRequest(BaseModel):
     contact_name: str | None = None
     contact_role: str | None = None
     company_name: str | None = None
+    # Optional; feeds Representative Identity Verification in the Data Scout
+    # Agent. Blank/missing degrades to evidence-only verification.
+    email: str | None = None
     # Optional free-text "about you / your company" from the intake form,
     # summarized into state.vendor_context at creation.
     about_text: str | None = None
@@ -220,11 +271,14 @@ class DomainsResponse(BaseModel):
 class VendorProfileModel(BaseModel):
     """The vendor's captured profile, nested in the state and profile
     responses. `company_name`/`contact_name` are strings (possibly empty
-    before onboarding fills them), `contact_role` is optional."""
+    before onboarding fills them), `contact_role`/`email` are optional.
+    `email` defaults to "" so existing sessions without one are unaffected;
+    it feeds Representative Identity Verification in the Data Scout Agent."""
 
     company_name: str
     contact_name: str
     contact_role: str | None
+    email: str = ""
 
 
 class InterviewStateResponse(BaseModel):
@@ -287,6 +341,7 @@ class UpdateProfileRequest(BaseModel):
     company_name: str | None = None
     contact_name: str | None = None
     contact_role: str | None = None
+    email: str | None = None
 
 
 class UpdateProfileResponse(BaseModel):

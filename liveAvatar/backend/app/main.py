@@ -3,7 +3,8 @@
 Configures logging, builds the `app`, adds permissive CORS (the frontend and
 backend are same-origin in production, but the wildcard keeps dev tunnels
 simple), and includes every router: concurrency, interview, sessions,
-transcripts, and the HeyGen llm_gateway. There is no agent worker process and
+transcripts, and the HeyGen llm_gateway. There is no
+agent worker process and
 no startup provisioning - the conversation logic runs in-process inside these
 routes, and the per-interview LiveAvatar resources are provisioned per session
 in the sessions router.

@@ -257,6 +257,7 @@ def test_fresh_interview_state(client):
         "company_name": "Acme Corp",
         "contact_name": "Jane Doe",
         "contact_role": "CTO",
+        "email": "",
     }
 
     updated_at = datetime.fromisoformat(body["updated_at"])
@@ -291,6 +292,8 @@ def test_seeded_interview_state(client):
         "interview_claims": [],
         "findings_ok": True,
         "company_website": "https://acme.example",
+        "claims_report": None,
+        "structured_findings": None,
     }
 
 
@@ -547,6 +550,7 @@ def test_patch_profile_partial_update_only_touches_provided_fields(client):
         "company_name": "New Co",
         "contact_name": "Jane Doe",
         "contact_role": "CTO",
+        "email": "",
     }
     assert body["manually_edited_fields"] == ["company_name"]
 
