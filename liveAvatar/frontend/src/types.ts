@@ -53,6 +53,7 @@ export interface VendorProfile {
   company_name: string;
   contact_name: string;
   contact_role: string | null;
+  email: string;
 }
 
 // Post-interview pipeline progress; null until finalize hands off to the
@@ -192,40 +193,4 @@ export interface ChatResponse {
 // it's intentionally not typed here.
 export interface UpdateProfileResponse {
   vendor_profile: VendorProfile;
-}
-
-// --- DEV-ONLY: Data Scout Agent manual test harness (POST /api/scout-test) ---
-// Not part of the real interview flow - see components/ScoutTestPage.tsx.
-
-// Mirrors backend RepresentativeVerification (app.services.
-// representative_verification) field-for-field.
-export interface RepresentativeVerification {
-  verdict: 'VERIFIED' | 'UNVERIFIED' | 'FLAG' | 'NO_DATA';
-  email_valid: boolean;
-  email_type: 'corporate' | 'personal' | 'invalid' | 'missing';
-  email_domain: string;
-  domain_match: boolean;
-  employer_found: string;
-  role: string;
-  summary: string;
-  background: {
-    tenure: string;
-    projects: string[];
-    focus_areas: string[];
-  };
-  source_urls: string[];
-}
-
-// POST /api/scout-test response (backend ScoutTestResponse). Unlike the
-// production ScoutReport type above, this DOES carry the raw `sources` dict
-// and the full `representative_verification` structure - this dev harness
-// exists to inspect everything Scout gathered and decided.
-export interface ScoutTestResponse {
-  internet_findings: string;
-  interview_claims: string[];
-  sources: Record<string, unknown>;
-  findings_ok: boolean;
-  company_website: string | null;
-  representative_verification: RepresentativeVerification;
-  claims_report: ScoutClaimsReport;
 }

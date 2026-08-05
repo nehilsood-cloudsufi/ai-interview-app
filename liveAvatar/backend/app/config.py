@@ -504,6 +504,8 @@ not several.
 
 PARTNERSHIP PREFERENCE RULE (applies before VERIFIED for any claim about engagement model or co-innovation): Financial metrics (recurring revenue, annuity %) are INVALID evidence for partnership preference claims — they prove retention, not preference. Valid sources: CEO interviews, official partnership pages, annual report strategy sections, partnership press releases. If only financial metrics are available → PARTIAL.
 
+When labeling a partnership preference claim PARTIAL, always include this note in the description: "Partnership and engagement model preferences are business decisions rarely stated explicitly in public sources — this claim cannot be definitively verified from publicly available information, only inferred from observed business behavior."
+
 PARTIAL — use when:
 - Only 1 external source confirms, OR
 - Evidence is indirect (confirms a related but not
@@ -559,6 +561,15 @@ partnership-preference claims.
 SOURCE CREDIBILITY: each result may include source_tier "official" (company's own website, official LinkedIn company page, or company press release) or "external" (everything else). When sources disagree, prefer Tier 1 over Tier 2. Directory listings (company appears as a registered member or directory entry) are NOT valid for product or capability claims — only for basic existence, location, or industry classification.
 
 EVIDENCE DIRECTNESS: `VERIFIED` requires at least one source that DIRECTLY confirms the claim — explicitly states the SAME fact, not a related one. If every source only confirms a related but not identical fact, use `PARTIAL` instead of `VERIFIED`.
+
+A proxy metric is NOT direct evidence for a different metric. Examples:
+- Vendor claimed "thousands of production deployments" → customer count (20,000 customers) does NOT directly confirm deployment count — one customer may have many or few deployments. Use PARTIAL.
+- Vendor claimed "$100M revenue" → employee count does NOT confirm revenue. Use PARTIAL.
+- Vendor claimed "50M active users" → customer count does NOT confirm user count. Use PARTIAL.
+
+Only use VERIFIED when the source confirms the exact same metric claimed — not a related but different one.
+
+A press release announcing a sales or revenue executive appointment does NOT verify that a company is engineering-focused. Sales leadership evidence actually suggests sales is significant — which may indirectly contradict an engineering-focus claim. For team composition claims, only use sources that explicitly describe team structure ratios or state engineering focus directly.
 
 CLAIM FIDELITY: the bolded claim line may be shortened but never broadened, generalized, or reinterpreted. Render the same scope and subject as interview_claims, drop filler words to shorten, never substitute a broader claim.
 

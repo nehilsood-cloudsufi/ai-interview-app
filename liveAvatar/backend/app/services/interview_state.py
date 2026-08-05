@@ -48,6 +48,9 @@ class VendorProfile:
     company_name: str = ""
     contact_name: str = ""
     contact_role: str | None = None
+    # Feeds Representative Identity Verification in the Data Scout Agent;
+    # blank (the default) degrades verification to evidence-only.
+    email: str = ""
     # Not yet on the intake form (UI field pending) - plumbed through the
     # backend for app.services.data_scout_agent.run_scout's representative
     # verification; defaults to "" until a form field exists.

@@ -257,6 +257,7 @@ def test_fresh_interview_state(client):
         "company_name": "Acme Corp",
         "contact_name": "Jane Doe",
         "contact_role": "CTO",
+        "email": "",
     }
 
     updated_at = datetime.fromisoformat(body["updated_at"])
@@ -549,6 +550,7 @@ def test_patch_profile_partial_update_only_touches_provided_fields(client):
         "company_name": "New Co",
         "contact_name": "Jane Doe",
         "contact_role": "CTO",
+        "email": "",
     }
     assert body["manually_edited_fields"] == ["company_name"]
 

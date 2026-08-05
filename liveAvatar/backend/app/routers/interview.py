@@ -107,14 +107,15 @@ async def _summarize_context(text: str) -> str:
 
 # Maps UpdateProfileRequest/VendorProfile field names to their display label
 # in the system-note turn, in canonical (request-shape) order. Clearing a
-# required-str field (_REQUIRED_STR_FIELDS) sets "", clearing an optional
-# field sets None.
+# non-nullable str field (_REQUIRED_STR_FIELDS - VendorProfile types it
+# `str`) sets "", clearing an Optional field (typed `str | None`) sets None.
 _PROFILE_FIELD_LABELS = {
     "company_name": "Company name",
     "contact_name": "Contact name",
     "contact_role": "Contact role",
+    "email": "Email",
 }
-_REQUIRED_STR_FIELDS = {"company_name", "contact_name"}
+_REQUIRED_STR_FIELDS = {"company_name", "contact_name", "email"}
 
 
 @router.get("/api/domains", response_model=DomainsResponse)
@@ -316,12 +317,10 @@ async def get_interview_state(interview_id: str):
         "recommendation": dataclasses.asdict(state.recommendation) if state.recommendation is not None else None,
         "evaluation_failed": state.evaluation_failed,
         "vendor_profile": {
-            # Serializes the profile's three fields (company_name,
-            # contact_name, contact_role); matches the finalize route's
-            # enrichment.
             "company_name": profile.company_name,
             "contact_name": profile.contact_name,
             "contact_role": profile.contact_role,
+            "email": profile.email,
         },
     }
 
@@ -400,6 +399,7 @@ async def update_profile(interview_id: str, body: UpdateProfileRequest):
             "company_name": profile.company_name,
             "contact_name": profile.contact_name,
             "contact_role": profile.contact_role,
+            "email": profile.email,
         },
         "manually_edited_fields": sorted(state.manually_edited_fields),
     }
